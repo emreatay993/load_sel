@@ -1,17 +1,14 @@
 import sys
 import pandas as pd
 import re
-import logging
+from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
 from PyQt5.QtWidgets import QApplication, QVBoxLayout, QWidget, QTabWidget, QSplitter, QComboBox
-from PyQt5.QtWebChannel import QWebChannel
 import plotly.graph_objects as go
 import os
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
 
-logging.basicConfig(level=logging.DEBUG, filename='debug.log', filemode='w',
-                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 def select_directory(title):
     app = QApplication(sys.argv)
@@ -143,6 +140,7 @@ class PlotlyGraphs(QWidget):
         self.interfaces = sorted(set(filter(None,
             [interface_pattern.match(col.split(' ')[0]).group() if interface_pattern.match(col.split(' ')[0]) else None
             for col in self.df.columns])))
+        self.interfaces = natsorted(self.interfaces)
         self.interface_selector.addItems(self.interfaces)
 
         self.interface_selector.currentIndexChanged.connect(self.update_plots_tab2)
@@ -206,10 +204,13 @@ class PlotlyGraphs(QWidget):
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
         if interface:
+            # Compile a regex that matches the exact interface at the start of the column names
+            pattern = re.compile(r'^' + re.escape(interface) + r'([-\s]|$)')
+
             # Filter columns for T and R series based on the selected interface
-            t_series_columns = [col for col in self.df.columns if interface in col and any(
+            t_series_columns = [col for col in self.df.columns if pattern.match(col) and any(
                 sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith('Phase_')]
-            r_series_columns = [col for col in self.df.columns if interface in col and any(
+            r_series_columns = [col for col in self.df.columns if pattern.match(col) and any(
                 sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith('Phase_')]
 
             # Update T series plot
