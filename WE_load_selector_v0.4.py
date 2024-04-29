@@ -88,6 +88,7 @@ data.to_csv("full_data.csv", index=False)
 class PlotlyGraphs(QWidget):
     def __init__(self, parent=None):
         super(PlotlyGraphs, self).__init__(parent)
+        self.legend_visible = True  # Keep track of legend visibility state
         self.df = pd.read_csv('full_data.csv')
         self.initUI()
 
@@ -211,6 +212,15 @@ class PlotlyGraphs(QWidget):
         splitter.addWidget(self.r_series_plot)
         splitter.setSizes([self.height() // 2, self.height() // 2])
         layout.addWidget(splitter)
+
+    def keyPressEvent(self, event):
+        # Check if the 'L' key was pressed
+        if event.key() == QtCore.Qt.Key_L:
+            # Toggle the legend visibility
+            self.legend_visible = not self.legend_visible
+            self.update_plots()
+            self.update_plots_tab2()
+            self.update_plots_tab3()  # Assuming you want to toggle legends across all tabs
 
     def update_side_selection(self):
         selected_side = self.side_selector.currentText()
@@ -348,7 +358,8 @@ class PlotlyGraphs(QWidget):
             ),
             hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=8),
             hovermode=hover_mode,
-            font=default_font
+            font=default_font,
+            showlegend=self.legend_visible
         )
 
         # Convert figure to HTML
@@ -372,7 +383,8 @@ class PlotlyGraphs(QWidget):
             fig_reg.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
                                   hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=8),
                                   hovermode='x unified',
-                                  font=default_font)  # Set default font for the layout
+                                  font=default_font,
+                                  showlegend=self.legend_visible)  # Set default font for the layout
 
             # Create the phase data plot with custom hover
             phase_column = 'Phase_' + selected_column
@@ -381,7 +393,8 @@ class PlotlyGraphs(QWidget):
             fig_phase.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
                                     hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=8),
                                     hovermode='x unified',
-                                    font=default_font)  # Set default font for the layout
+                                    font=default_font,
+                                    showlegend=self.legend_visible)  # Set default font for the layout
 
             # Convert figures to HTML
             html_reg = fig_reg.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
