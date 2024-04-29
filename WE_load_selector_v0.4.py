@@ -71,7 +71,7 @@ def main():
     df_intf = insert_phase_columns(df_intf_before)
 
     df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
-    new_columns = ['FREQ'] + df_intf_labels.iloc[0].tolist()
+    new_columns = ['NO'] + ['FREQ'] + df_intf_labels.iloc[0].tolist()
     df.columns = new_columns[:len(df.columns)]  # Adjust columns if mismatched
     df.columns = [col.strip() for col in new_columns[:len(df.columns)]]
 
@@ -95,9 +95,26 @@ class PlotlyGraphs(QWidget):
         tab_widget = QTabWidget(self)
         tab1 = QWidget()
         tab2 = QWidget()
+        tab3 = QWidget()  # New tab for side filter data
         main_layout = QVBoxLayout(self)
 
-        # Existing setup for tab1
+        # Setup individual tabs
+        self.setupTab1(tab1)
+        self.setupTab2(tab2)
+        self.setupTab3(tab3)  # Setup for the new tab
+
+        # Add tabs to the tab widget
+        tab_widget.addTab(tab1, "Single Data")
+        tab_widget.addTab(tab2, "Interface Data")
+        tab_widget.addTab(tab3, "Part Loads")  # Add the third tab to the widget
+
+        # Set up the main layout
+        main_layout.addWidget(tab_widget)
+        self.setLayout(main_layout)
+        self.setWindowTitle("WE Harmonic Load Plotter")
+        self.showMaximized()
+
+    def setupTab1(self, tab):
         splitter = QSplitter(QtCore.Qt.Vertical)
         self.regular_plot = QtWebEngineWidgets.QWebEngineView()
         self.phase_plot = QtWebEngineWidgets.QWebEngineView()
@@ -107,77 +124,130 @@ class PlotlyGraphs(QWidget):
 
         self.column_selector = QComboBox()
         self.column_selector.setEditable(True)
-        regular_columns = [col for col in self.df.columns if 'Phase_' not in col and col != 'FREQ']
+        regular_columns = [col for col in self.df.columns if 'Phase_' not in col and col != 'FREQ' and col !='No']
         self.column_selector.addItems(regular_columns)
         self.column_selector.currentIndexChanged.connect(self.update_plots)
 
-        layout_tab1 = QVBoxLayout(tab1)
-        layout_tab1.addWidget(self.column_selector)
-        layout_tab1.addWidget(splitter)
-        tab_widget.addTab(tab1, "Single Data")
+        layout = QVBoxLayout(tab)
+        layout.addWidget(self.column_selector)
+        layout.addWidget(splitter)
 
-        # Setup for tab2
-        tab2_layout = QVBoxLayout(tab2)
+    def setupTab2(self, tab):
+        layout = QVBoxLayout(tab)
+        self.setupInterfaceSelector(layout)
+        self.setupHoverMode(layout)
+        self.setupSideSelection(layout)
+        self.setupPlots(layout)
+
+    def setupTab3(self, tab):
+        layout = QVBoxLayout(tab)
+        self.setupSideFilterSelector(layout)
+        self.setupSideFilterPlots(layout)
+
+    def setupInterfaceSelector(self, layout):
         self.interface_selector = QComboBox()
         self.interface_selector.setEditable(True)
         interface_pattern = re.compile(r'I\d{1,6}[A-Za-z]?')
-        self.interfaces = sorted(set(filter(None, [interface_pattern.match(col.split(' ')[0]).group()
-                         if interface_pattern.match(col.split(' ')[0]) else None for col in self.df.columns])))
-        self.interfaces = natsorted(self.interfaces)
-        self.interface_selector.addItems(self.interfaces)
+        interfaces = sorted(set(filter(None, [interface_pattern.match(col.split(' ')[0]).group()
+                                              if interface_pattern.match(col.split(' ')[0]) else None for col in
+                                              self.df.columns])))
+        interfaces = natsorted(interfaces)
+        self.interface_selector.addItems(interfaces)
         self.interface_selector.currentIndexChanged.connect(self.update_plots_tab2)
+        layout.addWidget(self.interface_selector)
 
-        # New ComboBox for hover mode
-        hover_mode_layout = QHBoxLayout()  # Horizontal layout to put label and combobox on the same line
+    def setupHoverMode(self, layout):
+        hover_mode_layout = QHBoxLayout()
         hover_mode_label = QLabel("Hover Mode")
-        hover_mode_policy = QSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
-        hover_mode_label.setSizePolicy(hover_mode_policy)
+        hover_mode_label.setSizePolicy(QSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred))
         self.hover_mode_selector = QComboBox()
         self.hover_mode_selector.addItems(['x unified', 'closest', 'x'])
         self.hover_mode_selector.currentIndexChanged.connect(self.update_hover_mode)
         hover_mode_layout.addWidget(hover_mode_label)
         hover_mode_layout.addWidget(self.hover_mode_selector)
+        layout.addLayout(hover_mode_layout)
 
-        # New dynamic ComboBox for side selection
-        side_selection_layout = QHBoxLayout()  # Horizontal layout for side selection label and combobox
+    def setupSideSelection(self, layout):
+        side_selection_layout = QHBoxLayout()
         side_selection_label = QLabel("Part Side Filter")
-        side_selection_policy = QSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
-        side_selection_label.setSizePolicy(side_selection_policy)
+        side_selection_label.setSizePolicy(QSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred))
         self.side_selector = QComboBox()
         self.side_selector.setEditable(True)
         self.side_selector.currentIndexChanged.connect(self.update_side_selection)
         side_selection_layout.addWidget(side_selection_label)
         side_selection_layout.addWidget(self.side_selector)
+        layout.addLayout(side_selection_layout)
 
-        tab2_layout.addWidget(self.interface_selector)
-        tab2_layout.addLayout(hover_mode_layout)
-        tab2_layout.addLayout(side_selection_layout)
+    def setupSideFilterSelector(self, layout):
+        self.side_filter_selector = QComboBox()
+        self.side_filter_selector.setEditable(True)
+        self.populate_side_filter_selector()  # Populate the combobox with unique sides
+        self.side_filter_selector.currentIndexChanged.connect(self.update_plots_tab3)
+        layout.addWidget(self.side_filter_selector)
 
+    def populate_side_filter_selector(self):
+        pattern = re.compile(r'(?:-[^-]*-)(.*?)(\s*\()')  # Regex to extract side info
+        sides = set()
+        for col in self.df.columns:
+            match = pattern.search(col)
+            if match:
+                sides.add(match.group(1).strip())
+        self.side_filter_selector.addItems(sorted(sides))
+
+    def setupSideFilterPlots(self, layout):
+        splitter = QSplitter(QtCore.Qt.Vertical)
+        self.t_series_plot_tab3 = QtWebEngineWidgets.QWebEngineView()
+        self.r_series_plot_tab3 = QtWebEngineWidgets.QWebEngineView()
+        splitter.addWidget(self.t_series_plot_tab3)
+        splitter.addWidget(self.r_series_plot_tab3)
+        splitter.setSizes([self.height() // 2, self.height() // 2])
+        layout.addWidget(splitter)
+
+    def setupPlots(self, layout):
+        splitter = QSplitter(QtCore.Qt.Vertical)
         self.t_series_plot = QtWebEngineWidgets.QWebEngineView()
         self.r_series_plot = QtWebEngineWidgets.QWebEngineView()
-        tab2_splitter = QSplitter(QtCore.Qt.Vertical)
-        tab2_splitter.addWidget(self.t_series_plot)
-        tab2_splitter.addWidget(self.r_series_plot)
-        tab2_splitter.setSizes([self.height() // 2, self.height() // 2])
-        tab2_layout.addWidget(tab2_splitter)
-
-        tab_widget.addTab(tab2, "Interface Data")
-        main_layout.addWidget(tab_widget)
-        self.setLayout(main_layout)
-        self.setWindowTitle("Plotly Graphs Viewer")
-        self.showMaximized()
-
-        # Initial plot update
-        self.update_plots()
-
-    def update_hover_mode(self):
-        hover_mode = self.hover_mode_selector.currentText()
-        self.update_plots()
-        self.update_plots_tab2()
+        splitter.addWidget(self.t_series_plot)
+        splitter.addWidget(self.r_series_plot)
+        splitter.setSizes([self.height() // 2, self.height() // 2])
+        layout.addWidget(splitter)
 
     def update_side_selection(self):
         selected_side = self.side_selector.currentText()
         self.update_plots_for_selected_side(selected_side)
+
+    def update_plots_for_selected_side(self, selected_side):
+        # This method assumes that selected_side is valid and there is a need to update plots based on this selection.
+        if not selected_side:  # Ensure there is a side selected to filter by.
+            return
+
+        interface = self.interface_selector.currentText()
+        if not interface:  # Ensure there is an interface selected to work with.
+            return
+
+        # Compile a regex that matches the exact interface at the start of the column names
+        pattern = re.compile(r'^' + re.escape(interface) + r'([-\s]|$)')
+
+        # Further refine the selection by checking the selected side if it is not empty
+        side_pattern = re.compile(re.escape(selected_side))
+
+        # Filter columns for T and R series based on the selected interface and side
+        t_series_columns = [
+            col for col in self.df.columns
+            if pattern.match(col) and any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith(
+                'Phase_')
+               and side_pattern.search(col)
+        ]
+        r_series_columns = [
+            col for col in self.df.columns
+            if pattern.match(col) and any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith(
+                'Phase_')
+               and side_pattern.search(col)
+        ]
+
+        # Update plots for both T and R series
+        self.update_plot(self.t_series_plot, t_series_columns, f'T Series Filtered by {selected_side}')
+        self.update_plot(self.r_series_plot, r_series_columns, f'R Series Filtered by {selected_side}')
 
     def populate_side_selector(self, interface):
         # Pattern to capture text between the second "-" and the first "("
@@ -191,40 +261,6 @@ class PlotlyGraphs(QWidget):
         self.side_selector.clear()
         if sides:
             self.side_selector.addItems(sides)
-
-    def update_plots(self):
-        selected_column = self.column_selector.currentText()
-        if selected_column:
-            x_data = self.df['FREQ']
-
-            # Define the custom hover template
-            custom_hover = (selected_column + '<br>Hz: %{x}<br>Value: %{y:.3f}<extra></extra>')
-
-            # Define a default font for the whole figure
-            default_font = dict(family='Open Sans', size=10, color='black')
-
-            # Create the regular data plot with custom hover
-            fig_reg = go.Figure(go.Scatter(x=x_data, y=self.df[selected_column], mode='lines', name=selected_column,
-                                           hovertemplate=custom_hover))
-            fig_reg.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
-                                  hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=8),
-                                  hovermode='x unified',
-                                  font=default_font)  # Set default font for the layout
-
-            # Create the phase data plot with custom hover
-            phase_column = 'Phase_' + selected_column
-            fig_phase = go.Figure(go.Scatter(x=x_data, y=self.df[phase_column], mode='lines', name=phase_column,
-                                             hovertemplate=custom_hover))
-            fig_phase.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
-                                    hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=8),
-                                    hovermode='x unified',
-                                    font=default_font)  # Set default font for the layout
-
-            # Convert figures to HTML
-            html_reg = fig_reg.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            self.regular_plot.setHtml(html_reg)
-            html_phase = fig_phase.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            self.phase_plot.setHtml(html_phase)
 
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
@@ -259,6 +295,30 @@ class PlotlyGraphs(QWidget):
 
             # Populate the side selector if interface changes
             self.populate_side_selector(interface)
+
+    def update_plots_tab3(self):
+        selected_side = self.side_filter_selector.currentText()
+        if not selected_side:
+            return
+
+        # Define regex to match the selected side in column names
+        side_pattern = re.compile(re.escape(selected_side))
+
+        # Filter columns for T and R series based on the selected side
+        t_series_columns = [col for col in self.df.columns if
+                            side_pattern.search(col) and 'T' in col and not col.startswith('Phase_')]
+        r_series_columns = [col for col in self.df.columns if
+                            side_pattern.search(col) and 'R' in col and not col.startswith('Phase_')]
+
+        # Update plots with the filtered columns
+        self.update_plot(self.t_series_plot_tab3, t_series_columns, 'Filtered T Series')
+        self.update_plot(self.r_series_plot_tab3, r_series_columns, 'Filtered R Series')
+
+    def update_hover_mode(self):
+        hover_mode = self.hover_mode_selector.currentText()
+        self.update_plots()
+        self.update_plots_tab2()
+        self.update_plots_tab3()
 
     def update_plot(self, web_view, columns, title):
         x_data = self.df['FREQ']
@@ -295,6 +355,39 @@ class PlotlyGraphs(QWidget):
         html_content = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
         web_view.setHtml(html_content)
 
+    def update_plots(self):
+        selected_column = self.column_selector.currentText()
+        if selected_column:
+            x_data = self.df['FREQ']
+
+            # Define the custom hover template
+            custom_hover = (selected_column + '<br>Hz: %{x}<br>Value: %{y:.3f}<extra></extra>')
+
+            # Define a default font for the whole figure
+            default_font = dict(family='Open Sans', size=10, color='black')
+
+            # Create the regular data plot with custom hover
+            fig_reg = go.Figure(go.Scatter(x=x_data, y=self.df[selected_column], mode='lines', name=selected_column,
+                                           hovertemplate=custom_hover))
+            fig_reg.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
+                                  hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=8),
+                                  hovermode='x unified',
+                                  font=default_font)  # Set default font for the layout
+
+            # Create the phase data plot with custom hover
+            phase_column = 'Phase_' + selected_column
+            fig_phase = go.Figure(go.Scatter(x=x_data, y=self.df[phase_column], mode='lines', name=phase_column,
+                                             hovertemplate=custom_hover))
+            fig_phase.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
+                                    hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=8),
+                                    hovermode='x unified',
+                                    font=default_font)  # Set default font for the layout
+
+            # Convert figures to HTML
+            html_reg = fig_reg.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+            self.regular_plot.setHtml(html_reg)
+            html_phase = fig_phase.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+            self.phase_plot.setHtml(html_phase)
 
 if __name__ == "__main__":
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
