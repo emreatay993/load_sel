@@ -261,7 +261,9 @@ class PlotlyGraphs(QWidget):
 
     def populate_side_selector(self, interface):
         # Pattern to capture text between the second "-" and the first "("
-        pattern = re.compile(r'(?:-[^-]*-)(.*?)(\s*\()')
+        #pattern = re.compile(r'(?<=I\d+-\s)(.*?)(?=\s*\()')
+        # Pattern to capture text between the first "-" and the first "("
+        pattern = re.compile(r'(?<=I\d+[a-zA-Z]?-\s*)(.*?)(?=\s*\()')
 
         # Filter columns to those relevant to the selected interface and search for side descriptions
         relevant_columns = [col for col in self.df.columns if col.startswith(interface)]
