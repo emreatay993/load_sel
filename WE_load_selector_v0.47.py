@@ -265,7 +265,7 @@ class PlotlyGraphs(QWidget):
         pattern = re.compile(r'I\d+[a-zA-Z]?\s*-\s*(.*?)(?=\s*\()')
     
         # Filter columns to those relevant to the selected interface and search for side descriptions
-        relevant_columns = [col for col in self.df.columns if col.startswith(interface)]
+        relevant_columns = [col for col in self.df.columns if re.match(f"^{re.escape(interface)}(?=\D)", col)]
         sides = sorted(set(pattern.search(col).group(1).strip() for col in relevant_columns if pattern.search(col)))
     
         # Clear the ComboBox and add new items if any sides are found
