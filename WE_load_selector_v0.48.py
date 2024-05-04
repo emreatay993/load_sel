@@ -19,8 +19,10 @@ def select_directory(title):
         sys.exit()
     return folder
 
+
 def get_file_path(folder, file_suffix):
     return [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(file_suffix)]
+
 
 def read_max_pld_file(file_path):
     with open(file_path, 'r') as file:
@@ -29,6 +31,7 @@ def read_max_pld_file(file_path):
     df_intf = pd.DataFrame(data_rows, columns=['Interface Labels', 'Units'])
     return df_intf.T
 
+
 def insert_phase_columns(df):
     new_df = pd.DataFrame()
     for col in df.columns:
@@ -36,6 +39,7 @@ def insert_phase_columns(df):
         new_col_label = 'Phase_' + df[col].iloc[0].strip()
         new_df[new_col_label] = [new_col_label, 'deg']
     return new_df
+
 
 def read_pld_file(file_path):
     with open(file_path, 'r') as file:
@@ -52,6 +56,7 @@ def read_pld_file(file_path):
             data_cells = [float(re.sub('[^0-9.E-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
             processed_data.append(data_cells)
     return pd.DataFrame(processed_data, columns=headers)
+
 
 def main():
     folder_selected_raw_data = select_directory('Please select a directory for raw data')
@@ -79,8 +84,9 @@ def main():
 
     return df
 
+
 if __name__ == "__main__":
-    data=main()
+    data = main()
 
 data.to_csv("full_data.csv", index=False)
 
@@ -89,6 +95,8 @@ class PlotlyGraphs(QWidget):
     def __init__(self, parent=None):
         super(PlotlyGraphs, self).__init__(parent)
         self.legend_visible = True  # Keep track of legend visibility state
+        self.legend_positions = ['default', 'top left', 'top right', 'bottom right', 'bottom left']
+        self.current_legend_position = 0  # Start with the 'default' position
         self.df = pd.read_csv('full_data.csv')
         self.initUI()
 
@@ -125,7 +133,7 @@ class PlotlyGraphs(QWidget):
 
         self.column_selector = QComboBox()
         self.column_selector.setEditable(True)
-        regular_columns = [col for col in self.df.columns if 'Phase_' not in col and col != 'FREQ' and col !='No']
+        regular_columns = [col for col in self.df.columns if 'Phase_' not in col and col != 'FREQ' and col != 'No']
         self.column_selector.addItems(regular_columns)
         self.column_selector.currentIndexChanged.connect(self.update_plots)
 
@@ -218,9 +226,24 @@ class PlotlyGraphs(QWidget):
         if event.key() == QtCore.Qt.Key_L:
             # Toggle the legend visibility
             self.legend_visible = not self.legend_visible
+        # Cycle through legend positions with 'K'
+        elif event.key() == QtCore.Qt.Key_K:
+            self.current_legend_position = (self.current_legend_position + 1) % len(self.legend_positions)
             self.update_plots()
             self.update_plots_tab2()
             self.update_plots_tab3()  # Assuming you want to toggle legends across all tabs
+
+    def get_legend_position(self):
+        """Return the coordinates for the legend based on the current position index."""
+        positions = {
+            'default': {'x': 1.02, 'y': 1, 'xanchor': 'left', 'yanchor': 'top'},  # Default position outside the plot
+            'top left': {'x': 0, 'y': 1, 'xanchor': 'auto', 'yanchor': 'auto'},
+            'top right': {'x': 1, 'y': 1, 'xanchor': 'auto', 'yanchor': 'auto'},
+            'bottom right': {'x': 1, 'y': 0, 'xanchor': 'auto', 'yanchor': 'auto'},
+            'bottom left': {'x': 0, 'y': 0, 'xanchor': 'auto', 'yanchor': 'auto'}
+        }
+        return positions.get(self.legend_positions[self.current_legend_position],
+                             {'x': 1.02, 'y': 1, 'xanchor': 'left', 'yanchor': 'top'})
 
     def update_side_selection(self):
         selected_side = self.side_selector.currentText()
@@ -256,18 +279,18 @@ class PlotlyGraphs(QWidget):
         ]
 
         # Update plots for both T and R series
-        self.update_plot(self.t_series_plot, t_series_columns, f'T Series Filtered by {selected_side}')
-        self.update_plot(self.r_series_plot, r_series_columns, f'R Series Filtered by {selected_side}')
+        self.update_plot(self.t_series_plot, t_series_columns, f'T Plot')
+        self.update_plot(self.r_series_plot, r_series_columns, f'R Plot')
 
     def populate_side_selector(self, interface):
         # Pattern to capture text between the first "-" and the first "(" without using lookbehind
         # This pattern starts matching at the interface identifier and captures descriptions up to just before an opening parenthesis.
         pattern = re.compile(r'I\d+[a-zA-Z]?\s*-\s*(.*?)(?=\s*\()')
-    
+
         # Filter columns to those relevant to the selected interface and search for side descriptions
         relevant_columns = [col for col in self.df.columns if re.match(f"^{re.escape(interface)}(?=\D)", col)]
         sides = sorted(set(pattern.search(col).group(1).strip() for col in relevant_columns if pattern.search(col)))
-    
+
         # Clear the ComboBox and add new items if any sides are found
         self.side_selector.clear()
         if sides:
@@ -324,8 +347,8 @@ class PlotlyGraphs(QWidget):
                             any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith('Phase_')]
 
         # Update plots with the filtered columns
-        self.update_plot(self.t_series_plot_tab3, t_series_columns, 'Filtered T Series')
-        self.update_plot(self.r_series_plot_tab3, r_series_columns, 'Filtered R Series')
+        self.update_plot(self.t_series_plot_tab3, t_series_columns, 'T Plot')
+        self.update_plot(self.r_series_plot_tab3, r_series_columns, 'R Plot')
 
     def update_hover_mode(self):
         hover_mode = self.hover_mode_selector.currentText()
@@ -345,6 +368,9 @@ class PlotlyGraphs(QWidget):
         custom_hover = ('%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
         fig.update_traces(hovertemplate=custom_hover, meta=columns)
 
+        # Get the legend position details
+        legend_position = self.get_legend_position()
+
         # Define a default font for the whole figure
         default_font = dict(family='Open Sans', size=10, color='black')
 
@@ -355,8 +381,10 @@ class PlotlyGraphs(QWidget):
             legend=dict(
                 font=default_font,
                 orientation="h",
-                x=1, y=0,  # Coordinates for bottom right positioning
-                xanchor='auto', yanchor='auto',
+                x=legend_position['x'],
+                y=legend_position['y'],
+                xanchor=legend_position.get('xanchor', 'auto'),
+                yanchor=legend_position.get('yanchor', 'top'),
                 bgcolor='rgba(255, 255, 255, 0.5)'
             ),
             hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=8),
@@ -404,6 +432,7 @@ class PlotlyGraphs(QWidget):
             self.regular_plot.setHtml(html_reg)
             html_phase = fig_phase.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
             self.phase_plot.setHtml(html_phase)
+
 
 if __name__ == "__main__":
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
