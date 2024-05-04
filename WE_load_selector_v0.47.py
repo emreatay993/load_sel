@@ -260,15 +260,14 @@ class PlotlyGraphs(QWidget):
         self.update_plot(self.r_series_plot, r_series_columns, f'R Series Filtered by {selected_side}')
 
     def populate_side_selector(self, interface):
-        # Pattern to capture text between the second "-" and the first "("
-        #pattern = re.compile(r'(?<=I\d+-\s)(.*?)(?=\s*\()')
-        # Pattern to capture text between the first "-" and the first "("
-        pattern = re.compile(r'(?<=I\d+[a-zA-Z]?-\s*)(.*?)(?=\s*\()')
-
+        # Pattern to capture text between the first "-" and the first "(" without using lookbehind
+        # This pattern starts matching at the interface identifier and captures descriptions up to just before an opening parenthesis.
+        pattern = re.compile(r'I\d+[a-zA-Z]?\s*-\s*(.*?)(?=\s*\()')
+    
         # Filter columns to those relevant to the selected interface and search for side descriptions
         relevant_columns = [col for col in self.df.columns if col.startswith(interface)]
-        sides = sorted(set(m.group(1).strip() for col in relevant_columns if (m := pattern.search(col))))
-
+        sides = sorted(set(pattern.search(col).group(1).strip() for col in relevant_columns if pattern.search(col)))
+    
         # Clear the ComboBox and add new items if any sides are found
         self.side_selector.clear()
         if sides:
