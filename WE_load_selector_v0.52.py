@@ -25,11 +25,20 @@ def get_file_path(folder, file_suffix):
 
 
 def read_max_pld_file(file_path):
+    data = []
     with open(file_path, 'r') as file:
-        lines = file.readlines()
-        data_rows = [line.strip().split('|')[1:3] for line in lines[2:] if line.strip()]
-    df_intf = pd.DataFrame(data_rows, columns=['Interface Labels', 'Units'])
-    return df_intf.T
+        reader = csv.reader(file, delimiter='|')
+        for row in reader:
+            # Strip spaces from each cell in the row and filter out empty rows or header lines
+            cleaned_row = [cell.strip() for cell in row if cell.strip()]
+            if cleaned_row and not cleaned_row[0].startswith('_'):
+                # Append only the Interface Label and UNIT columns
+                if len(cleaned_row) >= 2:  # Ensure there are enough columns to select
+                    data.append([cleaned_row[0], cleaned_row[1]])
+
+    # Create a DataFrame from the list of data, selecting only the 'Interface Labels' and 'Units'
+    df = pd.DataFrame(data[1:], columns=['Interface Labels', 'Units'])  # Assuming the first row contains the headers
+    return df.T  # Transpose the DataFrame
 
 
 def insert_phase_columns(df):
