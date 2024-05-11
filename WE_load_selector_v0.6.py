@@ -303,10 +303,19 @@ class PlotlyGraphs(QWidget):
             # Create DataFrame with organized data per column
             extracted_data = pd.DataFrame(data_dict)
             extracted_data.to_csv("extracted_values.csv", index=False)
+            self.convert_to_Nmm_units(extracted_data)  # Convert and save in Nmm units
             QMessageBox.information(None, "Extraction Complete",
-                                    "Data has been extracted and saved to extracted_values.csv.")
+                                    "Data has been extracted and saved to extracted_values.csv and extracted_values_in_Nmm_units.csv.")
         except Exception as e:
             QMessageBox.critical(None, "Error", f"An error occurred: {str(e)}")
+
+    def convert_to_Nmm_units(self, data):
+        """Converts extracted y-data to Nmm units and saves it to a CSV file."""
+        nmm_data = data.copy()
+        for col in nmm_data.columns:
+            if col != 'Theta':  # Avoid converting theta column
+                nmm_data[col] = nmm_data[col].astype(float) * 1000  # Convert to Nmm by multiplying by 1000
+        nmm_data.to_csv("extracted_values_in_Nmm_units.csv", index=False)
 
     def setupInterfaceSelector(self, layout):
         self.interface_selector = QComboBox()
