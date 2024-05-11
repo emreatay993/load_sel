@@ -256,7 +256,7 @@ class PlotlyGraphs(QWidget):
             phase_col = 'Phase_' + col
             amplitude = self.df.loc[self.df['FREQ'] == freq, amplitude_col].values[0]
             phase = self.df.loc[self.df['FREQ'] == freq, phase_col].values[0]
-            y_data = amplitude * np.sin(x_data - np.radians(phase))
+            y_data = amplitude * np.cos(x_data - np.radians(phase))
             fig.add_trace(go.Scatter(x=theta, y=y_data, mode='lines', name=col,
                                      hoverinfo='name+x+y', hovertemplate='%{x:.2f}°: %{y:.2f}<extra></extra>'))
             self.current_plot_data[col] = {'theta': theta, 'y_data': y_data}  # Store data for extraction
