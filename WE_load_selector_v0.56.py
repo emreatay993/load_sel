@@ -37,8 +37,8 @@ def read_max_pld_file(file_path):
                 if len(cleaned_row) >= 2:  # Ensure there are enough columns to select
                     data.append([cleaned_row[0], cleaned_row[1]])
 
-    # Create a DataFrame from the list of data, selecting only the 'Interface Labels' and 'Units'
-    df = pd.DataFrame(data[1:], columns=['Interface Labels', 'Units'])  # Assuming the first row contains the headers
+    # Create a DataFrame from the list of data
+    df = pd.DataFrame(data[1:])  # Assuming the first row contains the headers
     return df.T  # Transpose the DataFrame
 
 
@@ -50,12 +50,12 @@ def insert_phase_columns(df):
     for i in range(len(df.columns)):
         col_index = i * 2  # Original data column index
         phase_index = col_index + 1  # Phase data column index
-        
+
         # Original data column
         original_col = df.iloc[:, i]
-        
+
         # Phase data column, initialize with 'Phase_' prefix and 'deg'
-        phase_label = f"Phase_{df.iloc[0, i]} deg"
+        phase_label = f"Phase_{df.iloc[0, i]}"
         phase_col = [phase_label] + ['deg'] * (len(df) - 1)
 
         # Append both columns to the list
@@ -114,7 +114,6 @@ def main():
         df.columns = new_columns[:len(df.columns)]  # Adjust columns if mismatched
 
     df.columns = new_columns[:len(df.columns)]  # Adjust columns if mismatched
-    df.columns = [col.strip() for col in new_columns[:len(df.columns)]]
 
     print(df)
 
