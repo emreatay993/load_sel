@@ -733,29 +733,6 @@ class PlotlyGraphs(QWidget):
                                       font=default_font,
                                       showlegend=self.legend_visible)
 
-                phase_column = 'Phase_' + selected_column
-                fig_phase = go.Figure()
-                fig_phase.add_trace(
-                    go.Scatter(x=x_data, y=self.df[phase_column], mode='lines', name=f'Original {phase_column}',
-                               hovertemplate=custom_hover))
-                fig_phase.add_trace(go.Scatter(x=x_data_compare, y=self.df_compare[phase_column], mode='lines',
-                                               name=f'Compare {phase_column}',
-                                               hovertemplate=custom_hover))
-                fig_phase.update_layout(margin=dict(l=20, r=20, t=35, b=35),
-                                        legend=dict(
-                                            font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                                            #orientation="h",
-                                            x=legend_position['x'],
-                                            y=legend_position['y'],
-                                            xanchor=legend_position.get('xanchor', 'auto'),
-                                            yanchor=legend_position.get('yanchor', 'top'),
-                                            bgcolor='rgba(255, 255, 255, 0.5)'
-                                        ),
-                                        hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-                                        hovermode=self.hover_mode,
-                                        font=default_font,
-                                        showlegend=self.legend_visible)
-
                 fig_absolute_diff = go.Figure()
                 abs_diff = abs(self.df[selected_column] - self.df_compare[selected_column])
                 fig_absolute_diff.add_trace(
@@ -802,8 +779,6 @@ class PlotlyGraphs(QWidget):
 
                 html_reg = fig_reg.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
                 self.compare_regular_plot.setHtml(html_reg)
-                html_phase = fig_phase.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-                self.compare_phase_plot.setHtml(html_phase)
                 html_abs_diff = fig_absolute_diff.to_html(full_html=False, include_plotlyjs='cdn',
                                                           config={'responsive': True})
                 self.compare_absolute_diff_plot.setHtml(html_abs_diff)
