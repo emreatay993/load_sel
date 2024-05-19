@@ -326,18 +326,22 @@ class PlotlyGraphs(QWidget):
 
     def setupComparePartLoadsTab(self, tab):
         layout = QVBoxLayout(tab)
-        self.setupSideFilterSelector(layout, for_compare=True)
+        self.setupSideFilterSelectorForCompare(layout)
         self.setupComparePartLoadsPlots(layout)
 
-    def setupSideFilterSelector(self, layout, for_compare=False):
+    def setupSideFilterSelector(self, layout):
         self.side_filter_selector = QComboBox()
         self.side_filter_selector.setEditable(True)
         self.populate_side_filter_selector()
-        if for_compare:
-            self.side_filter_selector.currentIndexChanged.connect(self.update_compare_part_loads_plots)
-        else:
-            self.side_filter_selector.currentIndexChanged.connect(self.update_plots_tab3)
+        self.side_filter_selector.currentIndexChanged.connect(self.update_plots_tab3)
         layout.addWidget(self.side_filter_selector)
+
+    def setupSideFilterSelectorForCompare(self, layout):
+        self.side_filter_selector_for_compare = QComboBox()
+        self.side_filter_selector_for_compare.setEditable(True)
+        self.populate_side_filter_selector()
+        self.side_filter_selector_for_compare.currentIndexChanged.connect(self.update_compare_part_loads_plots)
+        layout.addWidget(self.side_filter_selector_for_compare)
 
     def setupComparePartLoadsPlots(self, layout):
         splitter = QSplitter(QtCore.Qt.Vertical)
