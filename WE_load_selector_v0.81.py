@@ -125,6 +125,7 @@ class PlotlyGraphs(QWidget):
         self.current_legend_position = 0
         self.df = pd.read_csv('full_data.csv')
         self.df_compare = None
+        self.side_filter_selector_for_compare = QComboBox()
         self.current_plot_data = {}
 
         self.default_font_size = 10
@@ -378,7 +379,8 @@ class PlotlyGraphs(QWidget):
 
             additional_columns_needed = len(df_compare.columns) - len(new_columns)
             if (additional_columns_needed > 0):
-                extended_new_columns = new_columns + [f"Extra_Column_{i}" for i in range(1, additional_columns_needed + 1)]
+                extended_new_columns = new_columns + [f"Extra_Column_{i}" for i in
+                                                      range(1, additional_columns_needed + 1)]
                 df_compare.columns = extended_new_columns
             else:
                 df_compare.columns = new_columns[:len(df_compare.columns)]
@@ -387,13 +389,14 @@ class PlotlyGraphs(QWidget):
 
             # Ensure unique column labels
             df_compare = df_compare.loc[:, ~df_compare.columns.duplicated()]
-          
+
             # Align columns with the main dataframe
             self.df_compare = df_compare.reindex(columns=self.df.columns, fill_value=np.nan)
 
             self.df_compare = df_compare
             self.compare_column_selector.clear()
-            compare_columns = [col for col in self.df_compare.columns if 'Phase_' not in col and col != 'FREQ' and col != 'NO']
+            compare_columns = [col for col in self.df_compare.columns if
+                               'Phase_' not in col and col != 'FREQ' and col != 'NO']
             self.compare_column_selector.addItems(compare_columns)
             self.compare_column_selector.currentIndexChanged.connect(self.update_compare_plots)
         except Exception as e:
@@ -565,6 +568,7 @@ class PlotlyGraphs(QWidget):
             if match:
                 sides.add(match.group(1).strip())
         self.side_filter_selector.addItems(sorted(sides))
+        self.side_filter_selector_for_compare.addItems(sorted(sides))
 
     def setupSideFilterPlots(self, layout):
         splitter = QSplitter(QtCore.Qt.Vertical)
@@ -617,7 +621,6 @@ class PlotlyGraphs(QWidget):
         selected_side = self.side_selector.currentText()
         self.update_plots_for_selected_side(selected_side)
         self.update_time_domain_plot()
-
 
     def update_plots_for_selected_side(self, selected_side):
         if not selected_side:
@@ -700,46 +703,46 @@ class PlotlyGraphs(QWidget):
 
     def update_compare_part_loads_plots(self):
         try:
-            selected_side = self.side_filter_selector_compare.currentText()
+            selected_side = self.side_filter_selector_for_compare.currentText()
             if not selected_side or self.df_compare is None:
                 return
-    
+
             side_pattern = re.compile(re.escape(selected_side))
-    
+
             t_series_columns = [col for col in self.df.columns if
                                 side_pattern.search(col) and
                                 any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith('Phase_')]
             r_series_columns = [col for col in self.df.columns if
                                 side_pattern.search(col) and
                                 any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith('Phase_')]
-    
-            if not t_series_columns or not r_series_columns:
+
+            if not t_series_columns and not r_series_columns:
                 QMessageBox.warning(self, "Warning", "No matching columns found for the selected part side.")
                 return
-    
+
             fig_absolute_diff_t = go.Figure()
             fig_absolute_diff_r = go.Figure()
-    
+
             x_data = self.df['FREQ']
             x_data_compare = self.df_compare['FREQ']
-    
+
             for col in t_series_columns:
                 if col in self.df.columns and col in self.df_compare.columns:
                     abs_diff = abs(self.df[col] - self.df_compare[col])
                     fig_absolute_diff_t.add_trace(
                         go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
-    
+
             for col in r_series_columns:
                 if col in self.df.columns and col in self.df_compare.columns:
                     abs_diff = abs(self.df[col] - self.df_compare[col])
                     fig_absolute_diff_r.add_trace(
                         go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
-    
+
             default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
             legend_position = self.get_legend_position()
-    
+
             fig_absolute_diff_t.update_layout(
                 title=f'Absolute Difference T Plot - {selected_side}',
                 margin=dict(l=20, r=20, t=35, b=35),
@@ -756,7 +759,7 @@ class PlotlyGraphs(QWidget):
                 font=default_font,
                 showlegend=self.legend_visible
             )
-    
+
             fig_absolute_diff_r.update_layout(
                 title=f'Absolute Difference R Plot - {selected_side}',
                 margin=dict(l=20, r=20, t=35, b=35),
@@ -773,12 +776,12 @@ class PlotlyGraphs(QWidget):
                 font=default_font,
                 showlegend=self.legend_visible
             )
-    
+
             html_t = fig_absolute_diff_t.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            self.compare_absolute_diff_plot_tab_compare.setHtml(html_t)
-    
+            self.compare_t_series_plot.setHtml(html_t)
+
             html_r = fig_absolute_diff_r.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            self.compare_relative_diff_plot_tab_compare.setHtml(html_r)
+            self.compare_r_series_plot.setHtml(html_r)
         except KeyError as e:
             QMessageBox.critical(None, 'Error', f"KeyError: {str(e)}")
         except Exception as e:
@@ -846,15 +849,16 @@ class PlotlyGraphs(QWidget):
                                              hovertemplate=custom_hover))
                 fig_reg.update_layout(margin=dict(l=20, r=20, t=35, b=35),
                                       legend=dict(
-                                            font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                                            #orientation="h",
-                                            x=legend_position['x'],
-                                            y=legend_position['y'],
-                                            xanchor=legend_position.get('xanchor', 'auto'),
-                                            yanchor=legend_position.get('yanchor', 'top'),
-                                            bgcolor='rgba(255, 255, 255, 0.5)'
+                                          font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                                          # orientation="h",
+                                          x=legend_position['x'],
+                                          y=legend_position['y'],
+                                          xanchor=legend_position.get('xanchor', 'auto'),
+                                          yanchor=legend_position.get('yanchor', 'top'),
+                                          bgcolor='rgba(255, 255, 255, 0.5)'
                                       ),
-                                      hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
+                                      hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
+                                                      font_size=self.hover_font_size),
                                       hovermode=self.hover_mode,
                                       font=default_font,
                                       showlegend=self.legend_visible)
@@ -868,7 +872,7 @@ class PlotlyGraphs(QWidget):
                                                 legend=dict(
                                                     font=dict(family='Open Sans', size=self.legend_font_size,
                                                               color='black'),
-                                                    #orientation="h",
+                                                    # orientation="h",
                                                     x=legend_position['x'],
                                                     y=legend_position['y'],
                                                     xanchor=legend_position.get('xanchor', 'auto'),
@@ -890,7 +894,7 @@ class PlotlyGraphs(QWidget):
                                                 legend=dict(
                                                     font=dict(family='Open Sans', size=self.legend_font_size,
                                                               color='black'),
-                                                    #orientation="h",
+                                                    # orientation="h",
                                                     x=legend_position['x'],
                                                     y=legend_position['y'],
                                                     xanchor=legend_position.get('xanchor', 'auto'),
