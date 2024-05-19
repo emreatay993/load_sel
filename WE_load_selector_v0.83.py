@@ -508,7 +508,11 @@ class PlotlyGraphs(QWidget):
 
             side_pattern = re.compile(re.escape(selected_side))
             columns = ['FREQ']
-            columns += [col for col in filtered_df.columns if side_pattern.search(col) and col != 'FREQ']
+            columns += [col for col in filtered_df.columns 
+                        if side_pattern.search(col) 
+                        and col != 'FREQ' 
+                        and "T2/T3" not in col 
+                        and "R2/R3" not in col]
 
             result_df = filtered_df[columns]
 
