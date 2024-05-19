@@ -298,14 +298,14 @@ class PlotlyGraphs(QWidget):
 
         self.compare_regular_plot = QtWebEngineWidgets.QWebEngineView()
         self.compare_phase_plot = QtWebEngineWidgets.QWebEngineView()
-        self.compare_absolute_diff_plot = QtWebEngineWidgets.QWebEngineView()
+        self.compare_numerical_diff_plot = QtWebEngineWidgets.QWebEngineView()
         self.compare_relative_diff_plot = QtWebEngineWidgets.QWebEngineView()
 
         splitter_upper.addWidget(self.compare_regular_plot)
         splitter_upper.addWidget(self.compare_phase_plot)
         splitter_upper.setSizes([self.height() // 4, self.height() // 4])
 
-        splitter_lower.addWidget(self.compare_absolute_diff_plot)
+        splitter_lower.addWidget(self.compare_numerical_diff_plot)
         splitter_lower.addWidget(self.compare_relative_diff_plot)
         splitter_lower.setSizes([self.height() // 4, self.height() // 4])
 
@@ -720,8 +720,8 @@ class PlotlyGraphs(QWidget):
                 QMessageBox.warning(self, "Warning", "No matching columns found for the selected part side.")
                 return
 
-            fig_absolute_diff_t = go.Figure()
-            fig_absolute_diff_r = go.Figure()
+            fig_numerical_diff_t = go.Figure()
+            fig_numerical_diff_r = go.Figure()
 
             x_data = self.df['FREQ']
             x_data_compare = self.df_compare['FREQ']
@@ -729,21 +729,21 @@ class PlotlyGraphs(QWidget):
             for col in t_series_columns:
                 if col in self.df.columns and col in self.df_compare.columns:
                     abs_diff = abs(self.df[col] - self.df_compare[col])
-                    fig_absolute_diff_t.add_trace(
+                    fig_numerical_diff_t.add_trace(
                         go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
 
             for col in r_series_columns:
                 if col in self.df.columns and col in self.df_compare.columns:
                     abs_diff = abs(self.df[col] - self.df_compare[col])
-                    fig_absolute_diff_r.add_trace(
+                    fig_numerical_diff_r.add_trace(
                         go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
 
             default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
             legend_position = self.get_legend_position()
 
-            fig_absolute_diff_t.update_layout(
+            fig_numerical_diff_t.update_layout(
                 title=f'Absolute Difference T Plot - {selected_side}',
                 margin=dict(l=20, r=20, t=35, b=35),
                 legend=dict(
@@ -760,7 +760,7 @@ class PlotlyGraphs(QWidget):
                 showlegend=self.legend_visible
             )
 
-            fig_absolute_diff_r.update_layout(
+            fig_numerical_diff_r.update_layout(
                 title=f'Absolute Difference R Plot - {selected_side}',
                 margin=dict(l=20, r=20, t=35, b=35),
                 legend=dict(
@@ -777,10 +777,10 @@ class PlotlyGraphs(QWidget):
                 showlegend=self.legend_visible
             )
 
-            html_t = fig_absolute_diff_t.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+            html_t = fig_numerical_diff_t.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
             self.compare_t_series_plot.setHtml(html_t)
 
-            html_r = fig_absolute_diff_r.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+            html_r = fig_numerical_diff_r.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
             self.compare_r_series_plot.setHtml(html_r)
         except KeyError as e:
             QMessageBox.critical(None, 'Error', f"KeyError: {str(e)}")
@@ -863,12 +863,12 @@ class PlotlyGraphs(QWidget):
                                       font=default_font,
                                       showlegend=self.legend_visible)
 
-                fig_absolute_diff = go.Figure()
+                fig_numerical_diff = go.Figure()
                 abs_diff = abs(self.df[selected_column] - self.df_compare[selected_column])
-                fig_absolute_diff.add_trace(
+                fig_numerical_diff.add_trace(
                     go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {selected_column}',
                                hovertemplate=custom_hover))
-                fig_absolute_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
+                fig_numerical_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
                                                 legend=dict(
                                                     font=dict(family='Open Sans', size=self.legend_font_size,
                                                               color='black'),
@@ -909,9 +909,9 @@ class PlotlyGraphs(QWidget):
 
                 html_reg = fig_reg.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
                 self.compare_regular_plot.setHtml(html_reg)
-                html_abs_diff = fig_absolute_diff.to_html(full_html=False, include_plotlyjs='cdn',
+                html_abs_diff = fig_numerical_diff.to_html(full_html=False, include_plotlyjs='cdn',
                                                           config={'responsive': True})
-                self.compare_absolute_diff_plot.setHtml(html_abs_diff)
+                self.compare_numerical_diff_plot.setHtml(html_abs_diff)
                 html_rel_diff = fig_relative_diff.to_html(full_html=False, include_plotlyjs='cdn',
                                                           config={'responsive': True})
                 self.compare_relative_diff_plot.setHtml(html_rel_diff)
