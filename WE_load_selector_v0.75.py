@@ -1,3 +1,5 @@
+Good. I updated my code based on your suggestions. Here is my latest, working code below:
+
 import sys
 import csv
 import pandas as pd
@@ -141,7 +143,6 @@ class PlotlyGraphs(QWidget):
         tab3 = QWidget()
         tab4 = QWidget()
         compare_tab = QWidget()
-        compare_part_loads_tab = QWidget()
         settings_tab = QWidget()
         main_layout = QVBoxLayout(self)
 
@@ -150,7 +151,6 @@ class PlotlyGraphs(QWidget):
         self.setupTab3(tab3)
         self.setupTab4(tab4)
         self.setupCompareTab(compare_tab)
-        self.setupComparePartLoadsTab(compare_part_loads_tab)
         self.setupSettingsTab(settings_tab)
         self.time_domain_plot.show()
 
@@ -159,7 +159,6 @@ class PlotlyGraphs(QWidget):
         tab_widget.addTab(tab3, "Part Loads")
         tab_widget.addTab(tab4, "Time Domain Representation")
         tab_widget.addTab(compare_tab, "Compare Data")
-        tab_widget.addTab(compare_part_loads_tab, "Compare Data (Part Loads)")
         tab_widget.addTab(settings_tab, "Settings")
 
         main_layout.addWidget(tab_widget)
@@ -324,30 +323,6 @@ class PlotlyGraphs(QWidget):
 
         tab.setLayout(layout)
 
-    def setupComparePartLoadsTab(self, tab):
-        layout = QVBoxLayout(tab)
-        self.setupSideFilterSelector(layout, for_compare=True)
-        self.setupComparePartLoadsPlots(layout)
-
-    def setupSideFilterSelector(self, layout, for_compare=False):
-        self.side_filter_selector = QComboBox()
-        self.side_filter_selector.setEditable(True)
-        self.populate_side_filter_selector()
-        if for_compare:
-            self.side_filter_selector.currentIndexChanged.connect(self.update_compare_part_loads_plots)
-        else:
-            self.side_filter_selector.currentIndexChanged.connect(self.update_plots_tab3)
-        layout.addWidget(self.side_filter_selector)
-
-    def setupComparePartLoadsPlots(self, layout):
-        splitter = QSplitter(QtCore.Qt.Vertical)
-        self.compare_t_series_plot = QtWebEngineWidgets.QWebEngineView()
-        self.compare_r_series_plot = QtWebEngineWidgets.QWebEngineView()
-        splitter.addWidget(self.compare_t_series_plot)
-        splitter.addWidget(self.compare_r_series_plot)
-        splitter.setSizes([self.height() // 2, self.height() // 2])
-        layout.addWidget(splitter)
-
     def select_compare_data(self):
         try:
             folder_selected_raw_data = select_directory('Please select a directory for raw data (Comparison)')
@@ -402,7 +377,6 @@ class PlotlyGraphs(QWidget):
         self.update_plots_tab3()
         self.update_time_domain_plot()
         self.update_compare_plots()
-        self.update_compare_part_loads_plots()
 
     def update_time_domain_plot(self):
         try:
@@ -540,14 +514,11 @@ class PlotlyGraphs(QWidget):
         side_selection_layout.addWidget(self.side_selector)
         layout.addLayout(side_selection_layout)
 
-    def setupSideFilterSelector(self, layout, for_compare=False):
+    def setupSideFilterSelector(self, layout):
         self.side_filter_selector = QComboBox()
         self.side_filter_selector.setEditable(True)
         self.populate_side_filter_selector()
-        if for_compare:
-            self.side_filter_selector.currentIndexChanged.connect(self.update_compare_part_loads_plots)
-        else:
-            self.side_filter_selector.currentIndexChanged.connect(self.update_plots_tab3)
+        self.side_filter_selector.currentIndexChanged.connect(self.update_plots_tab3)
         layout.addWidget(self.side_filter_selector)
 
     def populate_side_filter_selector(self):
@@ -585,7 +556,6 @@ class PlotlyGraphs(QWidget):
             self.update_plots_tab3()
             self.update_time_domain_plot()
             self.update_compare_plots()
-            self.update_compare_part_loads_plots()
         elif event.key() == QtCore.Qt.Key_K:
             self.current_legend_position = (self.current_legend_position + 1) % len(self.legend_positions)
             self.update_plots()
@@ -593,7 +563,6 @@ class PlotlyGraphs(QWidget):
             self.update_plots_tab3()
             self.update_time_domain_plot()
             self.update_compare_plots()
-            self.update_compare_part_loads_plots()
 
     def get_legend_position(self):
         positions = {
@@ -691,57 +660,6 @@ class PlotlyGraphs(QWidget):
         self.update_plot(self.r_series_plot_tab3, r_series_columns, 'R Plot')
         self.update_time_domain_plot()
 
-    def update_compare_part_loads_plots(self):
-        selected_side = self.side_filter_selector.currentText()
-        if not selected_side or not self.df_compare:
-            return
-
-        side_pattern = re.compile(re.escape(selected_side))
-
-        t_series_columns = [col for col in self.df.columns if
-                            side_pattern.search(col) and
-                            any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith('Phase_')]
-        r_series_columns = [col for col in self.df.columns if
-                            side_pattern.search(col) and
-                            any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith('Phase_')]
-
-        self.update_compare_part_loads_plot(self.compare_t_series_plot, t_series_columns, 'T Plot')
-        self.update_compare_part_loads_plot(self.compare_r_series_plot, r_series_columns, 'R Plot')
-
-    def update_compare_part_loads_plot(self, web_view, columns, title):
-        x_data = self.df['FREQ']
-        fig = go.Figure()
-
-        for col in columns:
-            abs_diff = abs(self.df[col] - self.df_compare[col])
-            fig.add_trace(go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {col}'))
-
-        custom_hover = ('%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
-        fig.update_traces(hovertemplate=custom_hover, meta=columns)
-
-        legend_position = self.get_legend_position()
-        default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
-
-        fig.update_layout(
-            title=title,
-            margin=dict(l=20, r=20, t=35, b=35),
-            legend=dict(
-                font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                orientation="h",
-                x=legend_position['x'],
-                y=legend_position['y'],
-                xanchor=legend_position.get('xanchor', 'auto'),
-                yanchor=legend_position.get('yanchor', 'top'),
-                bgcolor='rgba(255, 255, 255, 0.5)'
-            ),
-            hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-            hovermode=self.hover_mode,
-            font=default_font,
-            showlegend=self.legend_visible
-        )
-
-        html_content = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-        web_view.setHtml(html_content)
 
     def update_hover_mode(self):
         hover_mode = self.hover_mode_selector.currentText()
@@ -749,7 +667,6 @@ class PlotlyGraphs(QWidget):
         self.update_plots_tab2()
         self.update_plots_tab3()
         self.update_compare_plots()
-        self.update_compare_part_loads_plots()
 
     def update_plot(self, web_view, columns, title):
         x_data = self.df['FREQ']
