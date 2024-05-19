@@ -728,23 +728,23 @@ class PlotlyGraphs(QWidget):
 
             for col in t_series_columns:
                 if col in self.df.columns and col in self.df_compare.columns:
-                    abs_diff = abs(self.df[col] - self.df_compare[col])
+                    abs_diff = (self.df[col] - self.df_compare[col])
                     fig_numerical_diff_t.add_trace(
-                        go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {col}',
+                        go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Difference {col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
 
             for col in r_series_columns:
                 if col in self.df.columns and col in self.df_compare.columns:
                     abs_diff = abs(self.df[col] - self.df_compare[col])
                     fig_numerical_diff_r.add_trace(
-                        go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {col}',
+                        go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Difference {col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
 
             default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
             legend_position = self.get_legend_position()
 
             fig_numerical_diff_t.update_layout(
-                title=f'Absolute Difference T Plot - {selected_side}',
+                title=f'Numerical Difference T Plot - {selected_side}',
                 margin=dict(l=20, r=20, t=35, b=35),
                 legend=dict(
                     font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
