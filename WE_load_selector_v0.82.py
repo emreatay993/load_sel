@@ -728,14 +728,14 @@ class PlotlyGraphs(QWidget):
 
             for col in t_series_columns:
                 if col in self.df.columns and col in self.df_compare.columns:
-                    delta_diff = -(self.df[col] - self.df_compare[col])
+                    delta_diff = (self.df[col] - self.df_compare[col])
                     fig_numerical_diff_t.add_trace(
                         go.Scatter(x=x_data, y=delta_diff, mode='lines', name=f'Delta {col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
 
             for col in r_series_columns:
                 if col in self.df.columns and col in self.df_compare.columns:
-                    delta_diff = -(self.df[col] - self.df_compare[col])
+                    delta_diff = (self.df[col] - self.df_compare[col])
                     fig_numerical_diff_r.add_trace(
                         go.Scatter(x=x_data, y=delta_diff, mode='lines', name=f'Delta {col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
