@@ -695,56 +695,90 @@ class PlotlyGraphs(QWidget):
         self.update_time_domain_plot()
 
     def update_compare_part_loads_plots(self):
-        selected_side = self.side_filter_selector.currentText()
-        if not selected_side or not self.df_compare:
-            return
-
-        side_pattern = re.compile(re.escape(selected_side))
-
-        t_series_columns = [col for col in self.df.columns if
-                            side_pattern.search(col) and
-                            any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith('Phase_')]
-        r_series_columns = [col for col in self.df.columns if
-                            side_pattern.search(col) and
-                            any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith('Phase_')]
-
-        self.update_compare_part_loads_plot(self.compare_t_series_plot, t_series_columns, 'T Plot')
-        self.update_compare_part_loads_plot(self.compare_r_series_plot, r_series_columns, 'R Plot')
-
-    def update_compare_part_loads_plot(self, web_view, columns, title):
-        x_data = self.df['FREQ']
-        fig = go.Figure()
-
-        for col in columns:
-            abs_diff = abs(self.df[col] - self.df_compare[col])
-            fig.add_trace(go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {col}'))
-
-        custom_hover = ('%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
-        fig.update_traces(hovertemplate=custom_hover, meta=columns)
-
-        legend_position = self.get_legend_position()
-        default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
-
-        fig.update_layout(
-            title=title,
-            margin=dict(l=20, r=20, t=35, b=35),
-            legend=dict(
-                font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                orientation="h",
-                x=legend_position['x'],
-                y=legend_position['y'],
-                xanchor=legend_position.get('xanchor', 'auto'),
-                yanchor=legend_position.get('yanchor', 'top'),
-                bgcolor='rgba(255, 255, 255, 0.5)'
-            ),
-            hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-            hovermode=self.hover_mode,
-            font=default_font,
-            showlegend=self.legend_visible
-        )
-
-        html_content = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-        web_view.setHtml(html_content)
+        try:
+            selected_side = self.side_filter_selector_compare.currentText()
+            if not selected_side or self.df_compare is None:
+                return
+    
+            side_pattern = re.compile(re.escape(selected_side))
+    
+            t_series_columns = [col for col in self.df.columns if
+                                side_pattern.search(col) and
+                                any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith('Phase_')]
+            r_series_columns = [col for col in self.df.columns if
+                                side_pattern.search(col) and
+                                any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith('Phase_')]
+    
+            if not t_series_columns or not r_series_columns:
+                QMessageBox.warning(self, "Warning", "No matching columns found for the selected part side.")
+                return
+    
+            fig_absolute_diff_t = go.Figure()
+            fig_absolute_diff_r = go.Figure()
+    
+            x_data = self.df['FREQ']
+            x_data_compare = self.df_compare['FREQ']
+    
+            for col in t_series_columns:
+                if col in self.df.columns and col in self.df_compare.columns:
+                    abs_diff = abs(self.df[col] - self.df_compare[col])
+                    fig_absolute_diff_t.add_trace(
+                        go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {col}',
+                                   hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
+    
+            for col in r_series_columns:
+                if col in self.df.columns and col in self.df_compare.columns:
+                    abs_diff = abs(self.df[col] - self.df_compare[col])
+                    fig_absolute_diff_r.add_trace(
+                        go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {col}',
+                                   hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
+    
+            default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
+            legend_position = self.get_legend_position()
+    
+            fig_absolute_diff_t.update_layout(
+                title=f'Absolute Difference T Plot - {selected_side}',
+                margin=dict(l=20, r=20, t=35, b=35),
+                legend=dict(
+                    font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                    x=legend_position['x'],
+                    y=legend_position['y'],
+                    xanchor=legend_position.get('xanchor', 'auto'),
+                    yanchor=legend_position.get('yanchor', 'top'),
+                    bgcolor='rgba(255, 255, 255, 0.5)'
+                ),
+                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
+                hovermode=self.hover_mode,
+                font=default_font,
+                showlegend=self.legend_visible
+            )
+    
+            fig_absolute_diff_r.update_layout(
+                title=f'Absolute Difference R Plot - {selected_side}',
+                margin=dict(l=20, r=20, t=35, b=35),
+                legend=dict(
+                    font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                    x=legend_position['x'],
+                    y=legend_position['y'],
+                    xanchor=legend_position.get('xanchor', 'auto'),
+                    yanchor=legend_position.get('yanchor', 'top'),
+                    bgcolor='rgba(255, 255, 255, 0.5)'
+                ),
+                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
+                hovermode=self.hover_mode,
+                font=default_font,
+                showlegend=self.legend_visible
+            )
+    
+            html_t = fig_absolute_diff_t.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+            self.compare_absolute_diff_plot_tab_compare.setHtml(html_t)
+    
+            html_r = fig_absolute_diff_r.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+            self.compare_relative_diff_plot_tab_compare.setHtml(html_r)
+        except KeyError as e:
+            QMessageBox.critical(None, 'Error', f"KeyError: {str(e)}")
+        except Exception as e:
+            QMessageBox.critical(None, 'Error', f"An error occurred while updating compare part loads plots: {str(e)}")
 
     def update_hover_mode(self):
         hover_mode = self.hover_mode_selector.currentText()
