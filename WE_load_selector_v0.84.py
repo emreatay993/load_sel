@@ -90,10 +90,15 @@ def main():
         df = pd.concat(dfs, ignore_index=True)
 
         df_intf_before = read_max_pld_file(file_path_headers_data[0])
-        df_intf = insert_phase_columns(df_intf_before)
+        if df.columns[1] == 'FREQ':
+            df_intf = insert_phase_columns(df_intf_before)
+            df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
+            new_columns = ['NO'] + ['FREQ'] + df_intf_labels.iloc[0].tolist()
+        elif df.columns[1] == 'TIME':
+            df_intf = df_intf_before
+            df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
+            new_columns = ['NO'] + ['TIME'] + df_intf_labels.iloc[0].tolist()
 
-        df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
-        new_columns = ['NO'] + ['FREQ'] + df_intf_labels.iloc[0].tolist()
 
         additional_columns_needed = len(df.columns) - len(new_columns)
         if additional_columns_needed > 0:
@@ -128,37 +133,40 @@ class PlotlyGraphs(QWidget):
         self.side_filter_selector_for_compare = QComboBox()
         self.current_plot_data = {}
 
-        self.default_font_size = 10
-        self.legend_font_size = 12
-        self.hover_font_size = 8
-        self.hover_mode = 'x unified'
+        self.default_font_size = 12
+        self.legend_font_size = 10
+        self.hover_font_size = 15
+        self.hover_mode = 'closest'
 
         self.initUI()
 
     def initUI(self):
         tab_widget = QTabWidget(self)
-        tab1 = QWidget()
-        tab2 = QWidget()
-        tab3 = QWidget()
-        tab4 = QWidget()
+        self.tab1 = QWidget()
+        self.tab2 = QWidget()
+        self.tab3 = QWidget()
+        self.tab4 = QWidget()
         compare_tab = QWidget()
         compare_part_loads_tab = QWidget()
         settings_tab = QWidget()
         main_layout = QVBoxLayout(self)
 
-        self.setupTab1(tab1)
-        self.setupTab2(tab2)
-        self.setupTab3(tab3)
-        self.setupTab4(tab4)
+        self.setupTab1(self.tab1)
+        self.setupTab2(self.tab2)
+        self.setupTab3(self.tab3)
+        if self.df.columns[1] == 'FREQ':
+            self.setupTab4(self.tab4)
         self.setupCompareTab(compare_tab)
         self.setupComparePartLoadsTab(compare_part_loads_tab)
         self.setupSettingsTab(settings_tab)
-        self.time_domain_plot.show()
+        if self.df.columns[1] == 'FREQ':
+            self.time_domain_plot.show()
 
-        tab_widget.addTab(tab1, "Single Data")
-        tab_widget.addTab(tab2, "Interface Data")
-        tab_widget.addTab(tab3, "Part Loads")
-        tab_widget.addTab(tab4, "Time Domain Representation")
+        tab_widget.addTab(self.tab1, "Single Data")
+        tab_widget.addTab(self.tab2, "Interface Data")
+        tab_widget.addTab(self.tab3, "Part Loads")
+        if self.df.columns[1] == 'FREQ':
+            tab_widget.addTab(self.tab4, "Time Domain Representation")
         tab_widget.addTab(compare_tab, "Compare Data")
         tab_widget.addTab(compare_part_loads_tab, "Compare Data (Part Loads)")
         tab_widget.addTab(settings_tab, "Settings")
@@ -171,14 +179,15 @@ class PlotlyGraphs(QWidget):
     def setupTab1(self, tab):
         splitter = QSplitter(QtCore.Qt.Vertical)
         self.regular_plot = QtWebEngineWidgets.QWebEngineView()
-        self.phase_plot = QtWebEngineWidgets.QWebEngineView()
         splitter.addWidget(self.regular_plot)
-        splitter.addWidget(self.phase_plot)
-        splitter.setSizes([self.height() // 2, self.height() // 2])
+        if self.df.columns[1] == 'FREQ':
+            self.phase_plot = QtWebEngineWidgets.QWebEngineView()
+            splitter.addWidget(self.phase_plot)
+            splitter.setSizes([self.height() // 2, self.height() // 2])
 
         self.column_selector = QComboBox()
         self.column_selector.setEditable(False)
-        regular_columns = [col for col in self.df.columns if 'Phase_' not in col and col != 'FREQ' and col != 'NO']
+        regular_columns = [col for col in self.df.columns if 'Phase_' not in col and col != 'FREQ' and col != 'TIME' and col != 'NO']
         self.column_selector.addItems(regular_columns)
         self.column_selector.currentIndexChanged.connect(self.update_plots)
 
@@ -197,32 +206,39 @@ class PlotlyGraphs(QWidget):
         self.setupSideFilterSelector(layout)
         self.setupSideFilterPlots(layout)
 
-        self.frequency_selector_tab3 = QComboBox()
-        self.frequency_selector_tab3.setEditable(True)
-        self.frequency_selector_tab3.addItem("Select a frequency [Hz] to extract the raw data")
-        self.frequency_selector_tab3.addItems([str(freq) for freq in sorted(self.df['FREQ'].unique())])
-        frequency_selector_tab3_layout = QHBoxLayout()
-        frequency_selector_tab3_layout.addWidget(self.frequency_selector_tab3)
+        self.data_point_selector_tab3 = QComboBox()
+        self.data_point_selector_tab3.setEditable(True)
+        if self.df.columns[1] == 'FREQ':
+            self.data_point_selector_tab3.addItem("Select a frequency [Hz] to extract the raw data")
+            self.data_point_selector_tab3.addItems([str(freq_point) for freq_point in sorted(self.df['FREQ'].unique())])
+        if self.df.columns[1] == 'TIME':
+            self.data_point_selector_tab3.addItem("Select a time point [sec] to extract the raw data")
+            self.data_point_selector_tab3.addItems([str(time_point) for time_point in sorted(self.df['TIME'].unique())])
+        data_point_selector_tab3_layout = QHBoxLayout()
+        data_point_selector_tab3_layout.addWidget(self.data_point_selector_tab3)
 
-        self.extract_data_button = QPushButton("Extract Data for Selected Frequency")
-        self.extract_data_button.clicked.connect(self.extract_frequency_data)
-        frequency_selector_tab3_layout.addWidget(self.extract_data_button)
+        if self.df.columns[1] == 'FREQ':
+            self.extract_data_button = QPushButton("Extract Data for Selected Frequency")
+        if self.df.columns[1] == 'TIME':
+            self.extract_data_button = QPushButton("Extract Data for Selected Time")
+        self.extract_data_button.clicked.connect(self.extract_data_point)
+        data_point_selector_tab3_layout.addWidget(self.extract_data_button)
 
-        layout.addLayout(frequency_selector_tab3_layout)
+        layout.addLayout(data_point_selector_tab3_layout)
 
     def setupTab4(self, tab):
         layout = QVBoxLayout(tab)
 
-        self.frequency_selector = QComboBox()
-        self.frequency_selector.setEditable(True)
-        self.frequency_selector.addItem("Select a frequency [Hz] to plot the time domain data")
-        self.frequency_selector.addItems([str(freq) for freq in sorted(self.df['FREQ'].unique())])
-        self.frequency_selector.currentIndexChanged.connect(self.update_time_domain_plot)
-        frequency_selector_layout = QHBoxLayout()
-        frequency_selector_label = QLabel("Select a Frequency")
-        frequency_selector_layout.addWidget(frequency_selector_label)
-        frequency_selector_layout.addWidget(self.frequency_selector)
-        layout.addLayout(frequency_selector_layout)
+        self.data_point_selector = QComboBox()
+        self.data_point_selector.setEditable(True)
+        self.data_point_selector.addItem("Select a frequency [Hz] to plot the time domain data")
+        self.data_point_selector.addItems([str(freq) for freq in sorted(self.df['FREQ'].unique())])
+        self.data_point_selector.currentIndexChanged.connect(self.update_time_domain_plot)
+        data_point_selector_layout = QHBoxLayout()
+        data_point_selector_label = QLabel("Select a Frequency")
+        data_point_selector_layout.addWidget(data_point_selector_label)
+        data_point_selector_layout.addWidget(self.data_point_selector)
+        layout.addLayout(data_point_selector_layout)
 
         self.time_domain_plot = QtWebEngineWidgets.QWebEngineView()
         layout.addWidget(self.time_domain_plot)
@@ -297,12 +313,12 @@ class PlotlyGraphs(QWidget):
         splitter_lower = QSplitter(QtCore.Qt.Vertical)
 
         self.compare_regular_plot = QtWebEngineWidgets.QWebEngineView()
-        self.compare_phase_plot = QtWebEngineWidgets.QWebEngineView()
+        #self.compare_phase_plot = QtWebEngineWidgets.QWebEngineView()
         self.compare_absolute_diff_plot = QtWebEngineWidgets.QWebEngineView()
         self.compare_relative_diff_plot = QtWebEngineWidgets.QWebEngineView()
 
         splitter_upper.addWidget(self.compare_regular_plot)
-        splitter_upper.addWidget(self.compare_phase_plot)
+        #splitter_upper.addWidget(self.compare_phase_plot)
         splitter_upper.setSizes([self.height() // 4, self.height() // 4])
 
         splitter_lower.addWidget(self.compare_absolute_diff_plot)
@@ -372,10 +388,14 @@ class PlotlyGraphs(QWidget):
             df_compare = pd.concat(dfs, ignore_index=True)
 
             df_intf_before = read_max_pld_file(file_path_headers_data[0])
-            df_intf = insert_phase_columns(df_intf_before)
-
-            df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
-            new_columns = ['NO'] + ['FREQ'] + df_intf_labels.iloc[0].tolist()
+            if self.df.columns[1] == 'FREQ':
+                df_intf = insert_phase_columns(df_intf_before)
+                df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
+                new_columns = ['NO'] + ['FREQ'] + df_intf_labels.iloc[0].tolist()
+            elif self.df.columns[1] == 'TIME':
+                df_intf = df_intf_before
+                df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
+                new_columns = ['NO'] + ['TIME'] + df_intf_labels.iloc[0].tolist()
 
             additional_columns_needed = len(df_compare.columns) - len(new_columns)
             if (additional_columns_needed > 0):
@@ -396,7 +416,7 @@ class PlotlyGraphs(QWidget):
             self.df_compare = df_compare
             self.compare_column_selector.clear()
             compare_columns = [col for col in self.df_compare.columns if
-                               'Phase_' not in col and col != 'FREQ' and col != 'NO']
+                               'Phase_' not in col and col != 'FREQ' and col != 'TIME' and col != 'NO']
             self.compare_column_selector.addItems(compare_columns)
             self.compare_column_selector.currentIndexChanged.connect(self.update_compare_plots)
         except Exception as e:
@@ -410,13 +430,14 @@ class PlotlyGraphs(QWidget):
         self.update_plots()
         self.update_plots_tab2()
         self.update_plots_tab3()
-        self.update_time_domain_plot()
+        if self.df.columns[1] == 'FREQ':
+            self.update_time_domain_plot()
         self.update_compare_plots()
         self.update_compare_part_loads_plots()
 
     def update_time_domain_plot(self):
         try:
-            freq = float(self.frequency_selector.currentText())
+            freq = float(self.data_point_selector.currentText())
         except ValueError:
             return
 
@@ -494,8 +515,8 @@ class PlotlyGraphs(QWidget):
                 nmm_data[col] = nmm_data[col].astype(float) * 1000
         nmm_data.to_csv("extracted_values_in_Nmm_units.csv", index=False)
 
-    def extract_frequency_data(self):
-        selected_frequency_tab3 = self.frequency_selector_tab3.currentText()
+    def extract_data_point(self):
+        selected_frequency_tab3 = self.data_point_selector_tab3.currentText()
         selected_side = self.side_filter_selector.currentText()
 
         if selected_frequency_tab3 == "Select a Frequency":
@@ -508,10 +529,10 @@ class PlotlyGraphs(QWidget):
 
             side_pattern = re.compile(re.escape(selected_side))
             columns = ['FREQ']
-            columns += [col for col in filtered_df.columns 
-                        if side_pattern.search(col) 
-                        and col != 'FREQ' 
-                        and "T2/T3" not in col 
+            columns += [col for col in filtered_df.columns
+                        if side_pattern.search(col)
+                        and col != 'FREQ'
+                        and "T2/T3" not in col
                         and "R2/R3" not in col]
 
             result_df = filtered_df[columns]
@@ -598,7 +619,8 @@ class PlotlyGraphs(QWidget):
             self.update_plots()
             self.update_plots_tab2()
             self.update_plots_tab3()
-            self.update_time_domain_plot()
+            if self.df.columns[1] == 'FREQ':
+                self.update_time_domain_plot()
             self.update_compare_plots()
             self.update_compare_part_loads_plots()
         elif event.key() == QtCore.Qt.Key_K:
@@ -606,7 +628,8 @@ class PlotlyGraphs(QWidget):
             self.update_plots()
             self.update_plots_tab2()
             self.update_plots_tab3()
-            self.update_time_domain_plot()
+            if self.df.columns[1] == 'FREQ':
+                self.update_time_domain_plot()
             self.update_compare_plots()
             self.update_compare_part_loads_plots()
 
@@ -624,7 +647,8 @@ class PlotlyGraphs(QWidget):
     def update_side_selection(self):
         selected_side = self.side_selector.currentText()
         self.update_plots_for_selected_side(selected_side)
-        self.update_time_domain_plot()
+        if self.df.columns[1] == 'FREQ':
+            self.update_time_domain_plot()
 
     def update_plots_for_selected_side(self, selected_side):
         if not selected_side:
@@ -703,7 +727,8 @@ class PlotlyGraphs(QWidget):
 
         self.update_plot(self.t_series_plot_tab3, t_series_columns, 'T Plot')
         self.update_plot(self.r_series_plot_tab3, r_series_columns, 'R Plot')
-        self.update_time_domain_plot()
+        if self.df.columns[1] == 'FREQ':
+            self.update_time_domain_plot()
 
     def update_compare_part_loads_plots(self):
         try:
@@ -727,8 +752,12 @@ class PlotlyGraphs(QWidget):
             fig_numerical_diff_t = go.Figure()
             fig_numerical_diff_r = go.Figure()
 
-            x_data = self.df['FREQ']
-            x_data_compare = self.df_compare['FREQ']
+            if self.df.columns[1] == 'FREQ':
+                x_data = self.df['FREQ']
+                x_data_compare = self.df_compare['FREQ']
+            elif self.df.columns[1] == 'TIME':
+                x_data = self.df['TIME']
+                x_data_compare = self.df_compare['TIME']
 
             for col in t_series_columns:
                 if col in self.df.columns and col in self.df_compare.columns:
@@ -800,7 +829,10 @@ class PlotlyGraphs(QWidget):
         self.update_compare_part_loads_plots()
 
     def update_plot(self, web_view, columns, title):
-        x_data = self.df['FREQ']
+        if self.df.columns[1] == 'FREQ':
+            x_data = self.df['FREQ']
+        elif self.df.columns[1] == 'TIME':
+            x_data = self.df['TIME']
         fig = go.Figure()
 
         for col in columns:
@@ -827,8 +859,9 @@ class PlotlyGraphs(QWidget):
             hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
             hovermode=self.hover_mode,
             font=default_font,
-            showlegend=self.legend_visible
-        )
+        showlegend = self.legend_visible
+
+    )
 
         html_content = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
         web_view.setHtml(html_content)
@@ -837,8 +870,12 @@ class PlotlyGraphs(QWidget):
         try:
             selected_column = self.compare_column_selector.currentText()
             if selected_column and self.df_compare is not None:
-                x_data = self.df['FREQ']
-                x_data_compare = self.df_compare['FREQ']
+                if self.df.columns[1] == 'FREQ':
+                    x_data = self.df['FREQ']
+                    x_data_compare = self.df_compare['FREQ']
+                elif self.df.columns[1] == 'TIME':
+                    x_data = self.df['TIME']
+                    x_data_compare = self.df_compare['TIME']
 
                 custom_hover = (selected_column + '<br>Hz: %{x}<br>Value: %{y:.3f}<extra></extra>')
                 default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
@@ -925,7 +962,10 @@ class PlotlyGraphs(QWidget):
     def update_plots(self):
         selected_column = self.column_selector.currentText()
         if selected_column:
-            x_data = self.df['FREQ']
+            if self.df.columns[1] == 'FREQ':
+                x_data = self.df['FREQ']
+            elif self.df.columns[1] == 'TIME':
+                x_data = self.df['TIME']
             custom_hover = (selected_column + '<br>Hz: %{x}<br>Value: %{y:.3f}<extra></extra>')
             default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
 
@@ -937,19 +977,21 @@ class PlotlyGraphs(QWidget):
                                   font=default_font,
                                   showlegend=self.legend_visible)
 
-            phase_column = 'Phase_' + selected_column
-            fig_phase = go.Figure(go.Scatter(x=x_data, y=self.df[phase_column], mode='lines', name=phase_column,
-                                             hovertemplate=custom_hover))
-            fig_phase.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
-                                    hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-                                    hovermode=self.hover_mode,
-                                    font=default_font,
-                                    showlegend=self.legend_visible)
-
             html_reg = fig_reg.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
             self.regular_plot.setHtml(html_reg)
-            html_phase = fig_phase.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            self.phase_plot.setHtml(html_phase)
+
+            if self.df.columns[1] == 'FREQ':
+                phase_column = 'Phase_' + selected_column
+                fig_phase = go.Figure(go.Scatter(x=x_data, y=self.df[phase_column], mode='lines', name=phase_column,
+                                                 hovertemplate=custom_hover))
+                fig_phase.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
+                                        hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
+                                        hovermode=self.hover_mode,
+                                        font=default_font,
+                                        showlegend=self.legend_visible)
+
+                html_phase = fig_phase.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+                self.phase_plot.setHtml(html_phase)
 
 
 if __name__ == "__main__":
