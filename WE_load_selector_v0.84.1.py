@@ -447,7 +447,7 @@ class PlotlyGraphs(QWidget):
         fig = go.Figure()
 
         selected_side = self.side_filter_selector.currentText()
-        side_pattern = re.compile(re.escape(selected_side))
+        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
         displayed_columns = [col for col in self.df.columns if
                              side_pattern.search(col) and
                              any(sub in col for sub in ["T1", "T2", "T3", "T2/T3", "R1", "R2", "R3", "R2/R3"]) and
@@ -527,7 +527,7 @@ class PlotlyGraphs(QWidget):
             freq = float(selected_frequency_tab3)
             filtered_df = self.df[self.df['FREQ'] == freq]
 
-            side_pattern = re.compile(re.escape(selected_side))
+            side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
             columns = ['FREQ']
             columns += [col for col in filtered_df.columns
                         if side_pattern.search(col)
@@ -659,7 +659,7 @@ class PlotlyGraphs(QWidget):
             return
 
         pattern = re.compile(r'^' + re.escape(interface) + r'([-\s]|$)')
-        side_pattern = re.compile(re.escape(selected_side))
+        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
         t_series_columns = [
             col for col in self.df.columns
@@ -692,7 +692,7 @@ class PlotlyGraphs(QWidget):
         if interface:
             pattern = re.compile(r'^' + re.escape(interface) + r'([-\s]|$)')
             if selected_side:
-                side_pattern = re.compile(re.escape(selected_side))
+                side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
             t_series_columns = [
                 col for col in self.df.columns
@@ -716,7 +716,7 @@ class PlotlyGraphs(QWidget):
         if not selected_side:
             return
 
-        side_pattern = re.compile(re.escape(selected_side))
+        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
         t_series_columns = [col for col in self.df.columns if
                             side_pattern.search(col) and
@@ -736,7 +736,7 @@ class PlotlyGraphs(QWidget):
             if not selected_side or self.df_compare is None:
                 return
 
-            side_pattern = re.compile(re.escape(selected_side))
+            side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
             t_series_columns = [col for col in self.df.columns if
                                 side_pattern.search(col) and
