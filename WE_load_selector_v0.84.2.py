@@ -62,7 +62,10 @@ def read_pld_file(file_path):
                 line = '|' + line
             if not line.endswith('|'):
                 line = line + '|'
-            data_cells = [float(re.sub('[^0-9.E-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
+            try:
+              data_cells = [float(re.sub('[^0-9.E-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
+            except:
+              data_cells = [float(re.sub('[^0-9.e-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
             processed_data.append(data_cells)
     return pd.DataFrame(processed_data, columns=headers)
 
