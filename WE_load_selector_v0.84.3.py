@@ -763,17 +763,51 @@ class PlotlyGraphs(QWidget):
                 x_data_compare = self.df_compare['TIME']
 
             for col in t_series_columns:
-                if col in self.df.columns and col in self.df_compare.columns:
-                    delta_diff = (self.df[col] - self.df_compare[col])
+                phase_col = f'Phase_{col}'
+                if col in self.df.columns and col in self.df_compare.columns and phase_col in self.df.columns and phase_col in self.df_compare.columns:
+                    magnitude1 = self.df[col]
+                    phase1 = self.df[phase_col]
+                    magnitude2 = self.df_compare[col]
+                    phase2 = self.df_compare[phase_col]
+
+                    complex1 = magnitude1 * np.exp(1j * phase1)
+                    complex2 = magnitude2 * np.exp(1j * phase2)
+
+                    complex_diff = complex1 - complex2
+
+                    magnitude_diff = np.abs(complex_diff)
+                    phase_diff = np.angle(complex_diff)
+
                     fig_numerical_diff_t.add_trace(
-                        go.Scatter(x=x_data, y=delta_diff, mode='lines', name=f'Delta {col}',
+                        go.Scatter(x=x_data, y=magnitude_diff, mode='lines', name=f'Delta Magnitude {col}',
+                                   hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
+
+                    fig_numerical_diff_t.add_trace(
+                        go.Scatter(x=x_data, y=phase_diff, mode='lines', name=f'Delta Phase {phase_col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
 
             for col in r_series_columns:
-                if col in self.df.columns and col in self.df_compare.columns:
-                    delta_diff = (self.df[col] - self.df_compare[col])
+                phase_col = f'Phase_{col}'
+                if col in self.df.columns and col in self.df_compare.columns and phase_col in self.df.columns and phase_col in self.df_compare.columns:
+                    magnitude1 = self.df[col]
+                    phase1 = self.df[phase_col]
+                    magnitude2 = self.df_compare[col]
+                    phase2 = self.df_compare[phase_col]
+
+                    complex1 = magnitude1 * np.exp(1j * phase1)
+                    complex2 = magnitude2 * np.exp(1j * phase2)
+
+                    complex_diff = complex1 - complex2
+
+                    magnitude_diff = np.abs(complex_diff)
+                    phase_diff = np.angle(complex_diff)
+
                     fig_numerical_diff_r.add_trace(
-                        go.Scatter(x=x_data, y=delta_diff, mode='lines', name=f'Delta {col}',
+                        go.Scatter(x=x_data, y=magnitude_diff, mode='lines', name=f'Delta Magnitude {col}',
+                                   hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
+
+                    fig_numerical_diff_r.add_trace(
+                        go.Scatter(x=x_data, y=phase_diff, mode='lines', name=f'Delta Phase {phase_col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
 
             default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
