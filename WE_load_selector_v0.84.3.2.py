@@ -932,10 +932,26 @@ class PlotlyGraphs(QWidget):
                                       showlegend=self.legend_visible)
 
                 fig_absolute_diff = go.Figure()
-                abs_diff = abs(self.df[selected_column] - self.df_compare[selected_column])
-                fig_absolute_diff.add_trace(
-                    go.Scatter(x=x_data, y=abs_diff, mode='lines', name=f'Absolute Diff {selected_column}',
-                               hovertemplate=custom_hover))
+
+                # Convert magnitude and phase to complex numbers and compute the difference
+                phase_col = f'Phase_{selected_column}'
+                if selected_column in self.df.columns and selected_column in self.df_compare.columns and phase_col in self.df.columns and phase_col in self.df_compare.columns:
+                    magnitude1 = self.df[selected_column]
+                    phase1 = self.df[phase_col]
+                    magnitude2 = self.df_compare[selected_column]
+                    phase2 = self.df_compare[phase_col]
+
+                    complex1 = magnitude1 * np.exp(1j * phase1)
+                    complex2 = magnitude2 * np.exp(1j * phase2)
+
+                    complex_diff = complex1 - complex2
+
+                    magnitude_diff = np.abs(complex_diff)
+
+                    fig_absolute_diff.add_trace(
+                        go.Scatter(x=x_data, y=magnitude_diff, mode='lines', name=f'Absolute Δ {selected_column}',
+                                   hovertemplate=custom_hover))
+
                 fig_absolute_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
                                                 legend=dict(
                                                     font=dict(family='Open Sans', size=self.legend_font_size,
@@ -954,9 +970,9 @@ class PlotlyGraphs(QWidget):
                                                 showlegend=self.legend_visible)
 
                 fig_relative_diff = go.Figure()
-                relative_diff = 100 * abs_diff / self.df[selected_column]
+                relative_diff = 100 * magnitude_diff / self.df[selected_column]
                 fig_relative_diff.add_trace(
-                    go.Scatter(x=x_data, y=relative_diff, mode='lines', name=f'Relative Diff {selected_column} (%)',
+                    go.Scatter(x=x_data, y=relative_diff, mode='lines', name=f'Relative Δ {selected_column} (%)',
                                hovertemplate=custom_hover))
                 fig_relative_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
                                                 legend=dict(
