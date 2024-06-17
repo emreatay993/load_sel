@@ -210,7 +210,7 @@ class PlotlyGraphs(QWidget):
 
         self.setupSideFilterSelector(upper_layout)
 
-        self.exclude_checkbox = QCheckBox(" Filter out T2, T3, R2, R3 from graphs")
+        self.exclude_checkbox = QCheckBox(" Filter out T2, T3, R2, and R3 from graphs")
         self.exclude_checkbox.stateChanged.connect(self.update_plots_tab3)
         upper_layout.addWidget(self.exclude_checkbox)
 
@@ -354,7 +354,15 @@ class PlotlyGraphs(QWidget):
 
     def setupComparePartLoadsTab(self, tab):
         layout = QVBoxLayout(tab)
-        self.setupSideFilterSelectorForCompare(layout)
+        upper_layout = QHBoxLayout()
+
+        self.setupSideFilterSelectorForCompare(upper_layout)
+
+        self.exclude_checkbox_compare = QCheckBox("Filter out T2, T3, R2, and R3 from graphs")
+        self.exclude_checkbox_compare.stateChanged.connect(self.update_compare_part_loads_plots)
+        upper_layout.addWidget(self.exclude_checkbox_compare)
+
+        layout.addLayout(upper_layout)
         self.setupComparePartLoadsPlots(layout)
 
     def setupSideFilterSelector(self, layout):
@@ -363,12 +371,6 @@ class PlotlyGraphs(QWidget):
         self.side_filter_selector.setEditable(True)
         self.populate_side_filter_selector()
         self.side_filter_selector.currentIndexChanged.connect(self.update_plots_tab3)
-
-        self.exclude_checkbox = QCheckBox("Exclude T2, T3, R2, and R3")
-        self.exclude_checkbox.setChecked(True)  # Default state can be set to True or False as per requirement
-
-        #side_filter_layout.addWidget(self.side_filter_selector)
-        side_filter_layout.addWidget(self.exclude_checkbox)
 
         layout.addLayout(side_filter_layout)
 
@@ -758,14 +760,17 @@ class PlotlyGraphs(QWidget):
             if not selected_side or self.df_compare is None:
                 return
 
+            exclude_t2_t3_r2_r3 = self.exclude_checkbox_compare.isChecked()
             side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
             t_series_columns = [col for col in self.df.columns if
                                 side_pattern.search(col) and
-                                any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith('Phase_')]
+                                any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith('Phase_')
+                                and not (exclude_t2_t3_r2_r3 and any(sub in col for sub in ["T2", "T3"]))]
             r_series_columns = [col for col in self.df.columns if
                                 side_pattern.search(col) and
-                                any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith('Phase_')]
+                                any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith('Phase_')
+                                and not (exclude_t2_t3_r2_r3 and any(sub in col for sub in ["R2", "R3"]))]
 
             if not t_series_columns and not r_series_columns:
                 QMessageBox.warning(self, "Warning", "No matching columns found for the selected part side.")
