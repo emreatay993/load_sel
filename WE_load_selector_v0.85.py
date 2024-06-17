@@ -230,10 +230,13 @@ class PlotlyGraphs(QWidget):
 
         if self.df.columns[1] == 'FREQ':
             self.extract_data_button = QPushButton("Extract Data for Selected Frequency")
+            self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part")
+            self.extract_data_button.clicked.connect(self.extract_data_point)
+            data_point_selector_tab3_layout.addWidget(self.extract_data_button)
+            self.extract_all_data_button.clicked.connect(self.extract_all_data_points)
+            data_point_selector_tab3_layout.addWidget(self.extract_all_data_button)
         if self.df.columns[1] == 'TIME':
             self.extract_data_button = QPushButton("Extract Data for Selected Time")
-        self.extract_data_button.clicked.connect(self.extract_data_point)
-        data_point_selector_tab3_layout.addWidget(self.extract_data_button)
 
         layout.addLayout(data_point_selector_tab3_layout)
 
@@ -266,7 +269,7 @@ class PlotlyGraphs(QWidget):
         interval_selector_layout.addWidget(self.interval_selector)
 
         self.extract_button = QPushButton("Extract Data at Each Interval as CSV file")
-        self.extract_button.clicked.connect(self.extract_values)
+        self.extract_button.clicked.connect(self.extract_time_data)
         interval_selector_layout.addWidget(self.extract_button)
 
         layout.addLayout(interval_selector_layout)
@@ -500,7 +503,7 @@ class PlotlyGraphs(QWidget):
         html_content = fig.to_html(full_html=False, include_plotlyjs='cdn')
         self.time_domain_plot.setHtml(html_content)
 
-    def extract_values(self):
+    def extract_time_data(self):
         try:
             interval = int(self.interval_selector.currentText())
             num_points = 360 // interval + 1
@@ -522,10 +525,10 @@ class PlotlyGraphs(QWidget):
                 data_dict[col] = sampled_y_data
 
             extracted_data = pd.DataFrame(data_dict)
-            extracted_data.to_csv("extracted_values.csv", index=False)
+            extracted_data.to_csv("extracted_time_data_values.csv", index=False)
             self.convert_to_Nmm_units(extracted_data)
             QMessageBox.information(None, "Extraction Complete",
-                                    "Data has been extracted and saved to extracted_values.csv and extracted_values_in_Nmm_units.csv.")
+                                    "Data has been extracted and saved to extracted_time_data_values.csv and extracted_time_data_values_in_Nmm_units.csv.")
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
@@ -534,7 +537,7 @@ class PlotlyGraphs(QWidget):
         for col in nmm_data.columns:
             if col != 'Theta':
                 nmm_data[col] = nmm_data[col].astype(float) * 1000
-        nmm_data.to_csv("extracted_values_in_Nmm_units.csv", index=False)
+        nmm_data.to_csv("extracted_time_data_values_in_Nmm_units.csv", index=False)
 
     def extract_data_point(self):
         selected_frequency_tab3 = self.data_point_selector_tab3.currentText()
@@ -566,6 +569,38 @@ class PlotlyGraphs(QWidget):
                     result_df[col] = result_df[col] * 1000
 
             converted_file_path = f"extracted_data_for_{selected_side}_at_{selected_frequency_tab3}_Hz_multiplied_by_1000.csv"
+            result_df.to_csv(converted_file_path, index=False)
+
+            QMessageBox.information(self, "Extraction Complete",
+                                    f"Data has been extracted and converted. Original data saved to {original_file_path}. Converted data saved to {converted_file_path}.")
+        except Exception as e:
+            QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
+
+    def extract_all_data_points(self):
+        selected_side = self.side_filter_selector.currentText()
+        if not selected_side:
+            QMessageBox.information(self, "Selection Required", "Please select a valid side.")
+            return
+
+        try:
+            side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
+            columns = ['FREQ']
+            columns += [col for col in self.df.columns
+                        if side_pattern.search(col)
+                        and col != 'FREQ'
+                        and "T2/T3" not in col
+                        and "R2/R3" not in col]
+
+            result_df = self.df[columns]
+
+            original_file_path = f"extracted_data_for_{selected_side}_all_frequencies.csv"
+            result_df.to_csv(original_file_path, index=False)
+
+            for col in result_df.columns:
+                if not col.startswith('Phase_') and col != 'FREQ':
+                    result_df[col] = result_df[col] * 1000
+
+            converted_file_path = f"extracted_data_for_{selected_side}_all_frequencies_multiplied_in_Nmm_units.csv"
             result_df.to_csv(converted_file_path, index=False)
 
             QMessageBox.information(self, "Extraction Complete",
