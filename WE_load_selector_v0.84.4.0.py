@@ -210,7 +210,7 @@ class PlotlyGraphs(QWidget):
 
         self.setupSideFilterSelector(upper_layout)
 
-        self.exclude_checkbox = QCheckBox(" Filter out T2, T3, R2, and R3 from graphs")
+        self.exclude_checkbox = QCheckBox(" Filter out T2, T3, R2, R3 from graphs")
         self.exclude_checkbox.stateChanged.connect(self.update_plots_tab3)
         upper_layout.addWidget(self.exclude_checkbox)
 
