@@ -5,7 +5,7 @@ import re
 from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
 from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget,
-                             QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton)
+                             QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox)
 import plotly.graph_objects as go
 import os
 import numpy as np
@@ -206,7 +206,15 @@ class PlotlyGraphs(QWidget):
 
     def setupTab3(self, tab):
         layout = QVBoxLayout(tab)
-        self.setupSideFilterSelector(layout)
+        upper_layout = QHBoxLayout()
+
+        self.setupSideFilterSelector(upper_layout)
+
+        self.exclude_checkbox = QCheckBox(" Filter out T2, T3, R2, and R3 from graphs")
+        self.exclude_checkbox.stateChanged.connect(self.update_plots_tab3)
+        upper_layout.addWidget(self.exclude_checkbox)
+
+        layout.addLayout(upper_layout)
         self.setupSideFilterPlots(layout)
 
         self.data_point_selector_tab3 = QComboBox()
@@ -350,11 +358,19 @@ class PlotlyGraphs(QWidget):
         self.setupComparePartLoadsPlots(layout)
 
     def setupSideFilterSelector(self, layout):
+        side_filter_layout = QHBoxLayout()
         self.side_filter_selector = QComboBox()
         self.side_filter_selector.setEditable(True)
         self.populate_side_filter_selector()
         self.side_filter_selector.currentIndexChanged.connect(self.update_plots_tab3)
-        layout.addWidget(self.side_filter_selector)
+
+        self.exclude_checkbox = QCheckBox("Exclude T2, T3, R2, and R3")
+        self.exclude_checkbox.setChecked(True)  # Default state can be set to True or False as per requirement
+
+        #side_filter_layout.addWidget(self.side_filter_selector)
+        side_filter_layout.addWidget(self.exclude_checkbox)
+
+        layout.addLayout(side_filter_layout)
 
     def setupSideFilterSelectorForCompare(self, layout):
         self.side_filter_selector_for_compare = QComboBox()
@@ -719,14 +735,17 @@ class PlotlyGraphs(QWidget):
         if not selected_side:
             return
 
+        exclude_t2_t3_r2_r3 = self.exclude_checkbox.isChecked()
         side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
         t_series_columns = [col for col in self.df.columns if
                             side_pattern.search(col) and
-                            any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith('Phase_')]
+                            any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith('Phase_')
+                            and not (exclude_t2_t3_r2_r3 and any(sub in col for sub in ["T2", "T3"]))]
         r_series_columns = [col for col in self.df.columns if
                             side_pattern.search(col) and
-                            any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith('Phase_')]
+                            any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith('Phase_')
+                            and not (exclude_t2_t3_r2_r3 and any(sub in col for sub in ["R2", "R3"]))]
 
         self.update_plot(self.t_series_plot_tab3, t_series_columns, 'T Plot')
         self.update_plot(self.r_series_plot_tab3, r_series_columns, 'R Plot')
