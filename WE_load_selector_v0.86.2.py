@@ -863,11 +863,11 @@ class WE_load_plotter(QWidget):
         t_series_columns = [col for col in self.df.columns if
                             side_pattern.search(col) and
                             any(sub in col for sub in ["T1", "T2", "T3"]) and not col.startswith('Phase_')
-                            and not (exclude_t2_t3_r2_r3 and any(sub in col for sub in ["T2", "T3"]))]
+                            and not (exclude_t2_t3_r2_r3 and any(sub == col for sub in ["T2", "T3"]))]
         r_series_columns = [col for col in self.df.columns if
                             side_pattern.search(col) and
                             any(sub in col for sub in ["R1", "R2", "R3"]) and not col.startswith('Phase_')
-                            and not (exclude_t2_t3_r2_r3 and any(sub in col for sub in ["R2", "R3"]))]
+                            and not (exclude_t2_t3_r2_r3 and any(sub == col for sub in ["R2", "R3"]))]
 
         self.update_plot(self.t_series_plot_tab3, t_series_columns, 'T Plot')
         self.update_plot(self.r_series_plot_tab3, r_series_columns, 'R Plot')
@@ -886,11 +886,11 @@ class WE_load_plotter(QWidget):
             t_series_columns = [col for col in self.df.columns if
                                 side_pattern.search(col) and
                                 any(sub in col for sub in ["T1", "T2", "T3"]) and not col.startswith('Phase_')
-                                and not (exclude_t2_t3_r2_r3 and any(sub in col for sub in ["T2", "T3"]))]
+                                and not (exclude_t2_t3_r2_r3 and any(sub == col for sub in ["T2", "T3"]))]
             r_series_columns = [col for col in self.df.columns if
                                 side_pattern.search(col) and
                                 any(sub in col for sub in ["R1", "R2", "R3"]) and not col.startswith('Phase_')
-                                and not (exclude_t2_t3_r2_r3 and any(sub in col for sub in ["R2", "R3"]))]
+                                and not (exclude_t2_t3_r2_r3 and any(sub == col for sub in ["R2", "R3"]))]
 
             if not t_series_columns and not r_series_columns:
                 QMessageBox.warning(self, "Warning", "No matching columns found for the selected part side.")
