@@ -125,16 +125,18 @@ if __name__ == "__main__":
     data.to_csv("full_data.csv", index=False)
 
 
-class PlotlyGraphs(QWidget):
+class WE_load_plotter(QWidget):
     def __init__(self, parent=None):
-        super(PlotlyGraphs, self).__init__(parent)
+        super(WE_load_plotter, self).__init__(parent)
         self.legend_visible = True
         self.legend_positions = ['default', 'top left', 'top right', 'bottom right', 'bottom left']
         self.current_legend_position = 0
         self.df = pd.read_csv('full_data.csv')
         self.df_compare = None
+        self.result_df_full_part_load = None
         self.side_filter_selector_for_compare = QComboBox()
         self.current_plot_data = {}
+        self.app_ansys = None
 
         self.default_font_size = 12
         self.legend_font_size = 10
@@ -591,22 +593,67 @@ class PlotlyGraphs(QWidget):
                         and "T2/T3" not in col
                         and "R2/R3" not in col]
 
-            result_df = self.df[columns]
+            self.result_df_full_part_load = self.df[columns]
 
             original_file_path = f"extracted_data_for_{selected_side}_all_frequencies.csv"
-            result_df.to_csv(original_file_path, index=False)
+            self.result_df_full_part_load.to_csv(original_file_path, index=False)
 
-            for col in result_df.columns:
+            for col in self.result_df_full_part_load.columns:
                 if not col.startswith('Phase_') and col != 'FREQ':
-                    result_df[col] = result_df[col] * 1000
+                    self.result_df_full_part_load[col] = self.result_df_full_part_load[col] * 1000
 
             converted_file_path = f"extracted_data_for_{selected_side}_all_frequencies_multiplied_in_Nmm_units.csv"
-            result_df.to_csv(converted_file_path, index=False)
+            self.result_df_full_part_load.to_csv(converted_file_path, index=False)
 
             QMessageBox.information(self, "Extraction Complete",
                                     f"Data has been extracted and converted. Original data saved to {original_file_path}. Converted data saved to {converted_file_path}.")
+
+            self.create_ansys_mechanical_input_template()
+
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
+
+    def create_ansys_mechanical_input_template(self):
+        # region Create an ANSYS Mechanical template
+        from ansys.mechanical.core import App
+        import os
+        cwd = os.path.join(os.getcwd())
+
+        # Embed a mechanical instance
+        if self.app_ansys is None:
+            self.app_ansys = App()
+        #print(app)
+
+        # Extract the global API entry points (available from built-in Mechanical scripting)
+        from ansys.mechanical.core import global_variables
+
+        # Merge them into your Python global variables
+        globals().update(global_variables(self.app_ansys))
+
+        # Harmonic analysis setup
+        analysis_HR = Model.AddHarmonicResponseAnalysis()
+        analysis_settings_HR = analysis_HR.AnalysisSettings
+        analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyMax").InternalValue = self.result_df_full_part_load['FREQ'].max()
+        analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyIntervals").InternalValue = 1
+        analysis_settings_HR.PropertyByName("HarmonicSolutionMethod").InternalValue = 1
+
+        # List of interfaces for the selected part
+        list_of_part_interface_names = ["intf1", "intf2", "intf3"]
+
+        for interface_name in list_of_part_interface_names:
+            # Create remote points for each interface
+            RP_interface = Model.AddRemotePoint()
+            RP_interface.Name = "RP_" + interface_name
+
+            # Create remote forces at each interface
+            remote_force = analysis_HR.AddRemoteForce()
+            remote_force.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
+            remote_force.Name = "RF_" + interface_name
+
+        self.app_ansys.save(os.path.join(cwd, "WE_Loading_Template.mechdat"))
+        self.app_ansys.new()
+
+        # endregion
 
     def setupInterfaceSelector(self, layout):
         self.interface_selector = QComboBox()
@@ -1099,6 +1146,6 @@ class PlotlyGraphs(QWidget):
 if __name__ == "__main__":
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
-    main = PlotlyGraphs()
+    main = WE_load_plotter()
     main.show()
     sys.exit(app.exec_())
