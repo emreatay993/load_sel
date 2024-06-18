@@ -19,10 +19,8 @@ def select_directory(title):
         return None
     return folder
 
-
 def get_file_path(folder, file_suffix):
     return [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(file_suffix)]
-
 
 def read_max_pld_file(file_path):
     data = []
@@ -36,7 +34,6 @@ def read_max_pld_file(file_path):
     df = pd.DataFrame(data[1:])
     return df.T
 
-
 def insert_phase_columns(df):
     transformed_columns = []
     for i in range(len(df.columns)):
@@ -49,7 +46,6 @@ def insert_phase_columns(df):
         transformed_columns.append(pd.DataFrame({phase_index: phase_col}))
     new_df = pd.concat(transformed_columns, axis=1)
     return new_df
-
 
 def read_pld_file(file_path):
     with open(file_path, 'r') as file:
@@ -68,7 +64,6 @@ def read_pld_file(file_path):
               data_cells = [float(re.sub('[^0-9.e-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
             processed_data.append(data_cells)
     return pd.DataFrame(processed_data, columns=headers)
-
 
 def main():
     try:
@@ -530,7 +525,7 @@ class WE_load_plotter(QWidget):
             extracted_data.to_csv("extracted_time_data_values.csv", index=False)
             self.convert_to_Nmm_units(extracted_data)
             QMessageBox.information(None, "Extraction Complete",
-                                    "Data has been extracted and saved to extracted_time_data_values.csv and extracted_time_data_values_in_Nmm_units.csv.")
+                                    "Data has been extracted and saved to:\n\n extracted_time_data_values.csv and extracted_time_data_values_in_Nmm_units.csv.")
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
@@ -574,7 +569,7 @@ class WE_load_plotter(QWidget):
             result_df.to_csv(converted_file_path, index=False)
 
             QMessageBox.information(self, "Extraction Complete",
-                                    f"Data has been extracted and converted. Original data saved to {original_file_path}. Converted data saved to {converted_file_path}.")
+                                    f"Data has been extracted and converted. \n\nOriginal data is saved to: \n{original_file_path}. \n\nConverted data saved to: \n{converted_file_path}.")
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
@@ -606,7 +601,7 @@ class WE_load_plotter(QWidget):
             self.result_df_full_part_load.to_csv(converted_file_path, index=False)
 
             QMessageBox.information(self, "Extraction Complete",
-                                    f"Data has been extracted and converted. Original data saved to {original_file_path}. Converted data saved to {converted_file_path}.")
+                                    f"Data has been extracted and converted. \n\nOriginal data is saved to: \n\n{original_file_path}. \n\nConverted data is saved to: \n\n{converted_file_path}.")
 
             self.create_ansys_mechanical_input_template()
 
@@ -614,6 +609,47 @@ class WE_load_plotter(QWidget):
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
     def create_ansys_mechanical_input_template(self):
+        # region Prepare interface data to be used as input loads for the selected part
+        # List of all possible keys for load components and phase angles
+        all_keys = ["T1", "T2", "T3", "R1", "R2", "R3", "Phase_T1", "Phase_T2", "Phase_T3", "Phase_R1", "Phase_R2",
+                    "Phase_R3"]
+
+        # Function to extract the interface name including phase angles
+        def get_full_interface_name(column_name):
+            column_name = re.sub(r'\s+[TR][1-3]$', '', column_name)
+            column_name = re.sub(r'^Phase_', '', column_name)
+            return column_name
+
+        # Identify unique interfaces and their corresponding columns, including phase angles
+        full_interfaces = {}
+        for col in self.result_df_full_part_load.columns:
+            if col != "FREQ":
+                interface_name = get_full_interface_name(col)
+                if interface_name not in full_interfaces:
+                    full_interfaces[interface_name] = []
+                full_interfaces[interface_name].append(col)
+
+        # Function to create interface dictionary with all keys populated, missing ones with zeroes
+        def create_full_interface_dict(df, columns):
+            # Initialize the dictionary with all keys set to lists of zeroes
+            interface_dict = {key: [0] * len(df) for key in all_keys}
+            for col in columns:
+                key = col.split()[-1]  # Get the last part which is T1, T2, etc.
+                if col.startswith("Phase_"):
+                    phase_key = "Phase_" + key
+                    interface_dict[phase_key] = df[col].tolist()
+                else:
+                    interface_dict[key] = df[col].tolist()
+            return interface_dict
+
+        # Create full dictionaries for each unique interface
+        interface_dicts_full = {interface: create_full_interface_dict(self.result_df_full_part_load, cols) for interface, cols in
+                                full_interfaces.items()}
+
+        # Create a separate list for FREQ
+        freq_list = self.result_df_full_part_load["FREQ"].tolist()
+        # endregion
+
         # region Create an ANSYS Mechanical template
         from ansys.mechanical.core import App
         import os
@@ -638,7 +674,7 @@ class WE_load_plotter(QWidget):
         analysis_settings_HR.PropertyByName("HarmonicSolutionMethod").InternalValue = 1
 
         # List of interfaces for the selected part
-        list_of_part_interface_names = ["intf1", "intf2", "intf3"]
+        list_of_part_interface_names = list(interface_dicts_full.keys())
 
         for interface_name in list_of_part_interface_names:
             # Create remote points for each interface
@@ -653,6 +689,8 @@ class WE_load_plotter(QWidget):
         self.app_ansys.save(os.path.join(cwd, "WE_Loading_Template.mechdat"))
         self.app_ansys.new()
 
+        QMessageBox.information(None, "File Saved",
+                                'Analysis template file has been saved and can be located in: \n"' + os.path.join(cwd, "WE_Loading_Template.mechdat") + '"')
         # endregion
 
     def setupInterfaceSelector(self, layout):
