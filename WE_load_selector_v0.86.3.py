@@ -860,14 +860,25 @@ class WE_load_plotter(QWidget):
         exclude_t2_t3_r2_r3 = self.exclude_checkbox.isChecked()
         side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
+        def should_exclude(col):
+            if re.search(r'\bT2\b', col) and not re.search(r'T2/T3', col):
+                return True
+            if re.search(r'\bT3\b', col) and not re.search(r'T2/T3', col):
+                return True
+            if re.search(r'\bR2\b', col) and not re.search(r'R2/R3', col):
+                return True
+            if re.search(r'\bR3\b', col) and not re.search(r'R2/R3', col):
+                return True
+            return False
+
         t_series_columns = [col for col in self.df.columns if
                             side_pattern.search(col) and
                             any(sub in col for sub in ["T1", "T2", "T3"]) and not col.startswith('Phase_')
-                            and not (exclude_t2_t3_r2_r3 and re.search(r'\b(T2|T3)\b', col))]
+                            and not (exclude_t2_t3_r2_r3 and should_exclude(col))]
         r_series_columns = [col for col in self.df.columns if
                             side_pattern.search(col) and
                             any(sub in col for sub in ["R1", "R2", "R3"]) and not col.startswith('Phase_')
-                            and not (exclude_t2_t3_r2_r3 and re.search(r'\b(R2|R3)\b', col))]
+                            and not (exclude_t2_t3_r2_r3 and should_exclude(col))]
 
         self.update_plot(self.t_series_plot_tab3, t_series_columns, 'T Plot')
         self.update_plot(self.r_series_plot_tab3, r_series_columns, 'R Plot')
@@ -883,14 +894,25 @@ class WE_load_plotter(QWidget):
             exclude_t2_t3_r2_r3 = self.exclude_checkbox_compare.isChecked()
             side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
+            def should_exclude(col):
+                if re.search(r'\bT2\b', col) and not re.search(r'T2/T3', col):
+                    return True
+                if re.search(r'\bT3\b', col) and not re.search(r'T2/T3', col):
+                    return True
+                if re.search(r'\bR2\b', col) and not re.search(r'R2/R3', col):
+                    return True
+                if re.search(r'\bR3\b', col) and not re.search(r'R2/R3', col):
+                    return True
+                return False
+
             t_series_columns = [col for col in self.df.columns if
                                 side_pattern.search(col) and
                                 any(sub in col for sub in ["T1", "T2", "T3"]) and not col.startswith('Phase_')
-                                and not (exclude_t2_t3_r2_r3 and re.search(r'\b(T2|T3)\b', col))]
+                                and not (exclude_t2_t3_r2_r3 and should_exclude(col))]
             r_series_columns = [col for col in self.df.columns if
                                 side_pattern.search(col) and
                                 any(sub in col for sub in ["R1", "R2", "R3"]) and not col.startswith('Phase_')
-                                and not (exclude_t2_t3_r2_r3 and re.search(r'\b(R2|R3)\b', col))]
+                                and not (exclude_t2_t3_r2_r3 and should_exclude(col))]
 
             if not t_series_columns and not r_series_columns:
                 QMessageBox.warning(self, "Warning", "No matching columns found for the selected part side.")
