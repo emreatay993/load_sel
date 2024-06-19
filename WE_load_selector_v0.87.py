@@ -2,6 +2,8 @@ import sys
 import csv
 import pandas as pd
 import re
+from time import sleep
+from collections import OrderedDict
 from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
 from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget,
@@ -132,6 +134,7 @@ class WE_load_plotter(QWidget):
         self.side_filter_selector_for_compare = QComboBox()
         self.current_plot_data = {}
         self.app_ansys = None
+        self.mechanical = None
 
         self.default_font_size = 12
         self.legend_font_size = 10
@@ -621,7 +624,7 @@ class WE_load_plotter(QWidget):
             return column_name
 
         # Identify unique interfaces and their corresponding columns, including phase angles
-        full_interfaces = {}
+        full_interfaces = OrderedDict()
         for col in self.result_df_full_part_load.columns:
             if col != "FREQ":
                 interface_name = get_full_interface_name(col)
@@ -647,50 +650,144 @@ class WE_load_plotter(QWidget):
                                 full_interfaces.items()}
 
         # Create a separate list for FREQ
-        freq_list = self.result_df_full_part_load["FREQ"].tolist()
-        # endregion
+        list_of_all_frequencies = self.result_df_full_part_load["FREQ"].tolist()
 
         # region Create an ANSYS Mechanical template
-        from ansys.mechanical.core import App
-        import os
-        cwd = os.path.join(os.getcwd())
+        from ansys.mechanical.core import launch_mechanical
+        self.mechanical = launch_mechanical(batch=False, clear_on_connect=True, start_instance=True, verbose_mechanical=True)
 
-        # Embed a mechanical instance
-        if self.app_ansys is None:
-            self.app_ansys = App()
-        #print(app)
+        commands = """
 
-        # Extract the global API entry points (available from built-in Mechanical scripting)
-        from ansys.mechanical.core import global_variables
+# Convert list of frequencies to a list of frequencies as quantities (in Hz)
+list_of_all_frequencies_as_quantity = []
+for frequency_value in """ + str(list_of_all_frequencies) + """:
+    list_of_all_frequencies_as_quantity.append(Quantity(frequency_value, "Hz"))
 
-        # Merge them into your Python global variables
-        globals().update(global_variables(self.app_ansys))
+# Harmonic analysis setup
+analysis_HR = Model.AddHarmonicResponseAnalysis()
+analysis_settings_HR = analysis_HR.AnalysisSettings
+analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyMax").InternalValue = """ + str(self.result_df_full_part_load['FREQ'].max()) + """
+analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyIntervals").InternalValue = 1
+analysis_settings_HR.PropertyByName("HarmonicSolutionMethod").InternalValue = 1
 
-        # Harmonic analysis setup
-        analysis_HR = Model.AddHarmonicResponseAnalysis()
-        analysis_settings_HR = analysis_HR.AnalysisSettings
-        analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyMax").InternalValue = self.result_df_full_part_load['FREQ'].max()
-        analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyIntervals").InternalValue = 1
-        analysis_settings_HR.PropertyByName("HarmonicSolutionMethod").InternalValue = 1
+# List of interfaces for the selected part
+list_of_part_interface_names = """ + str(list(interface_dicts_full.keys())) + """
 
-        # List of interfaces for the selected part
-        list_of_part_interface_names = list(interface_dicts_full.keys())
+# Check whether input lists are all zero for a set of lists
+def are_all_zeroes(*lists):
+    return all(all(x == 0 for x in lst) for lst in lists)
 
-        for interface_name in list_of_part_interface_names:
-            # Create remote points for each interface
-            RP_interface = Model.AddRemotePoint()
-            RP_interface.Name = "RP_" + interface_name
+for interface_name in list_of_part_interface_names:
 
-            # Create remote forces at each interface
-            remote_force = analysis_HR.AddRemoteForce()
-            remote_force.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
-            remote_force.Name = "RF_" + interface_name
+    # Add a reference coordinate system for each interface
+    CS_interface = Model.CoordinateSystems.AddCoordinateSystem()
+    CS_interface.Name = "CS_" + interface_name
 
-        self.app_ansys.save(os.path.join(cwd, "WE_Loading_Template.mechdat"))
-        self.app_ansys.new()
+    # Create remote points for each interface
+    RP_interface = Model.AddRemotePoint()
+    RP_interface.Name = "RP_" + interface_name
+    RP_interface.CoordinateSystem = CS_interface
 
-        QMessageBox.information(None, "File Saved",
-                                'Analysis template file has been saved and can be located in: \n"' + os.path.join(cwd, "WE_Loading_Template.mechdat") + '"')
+    # Create remote forces at each interface
+    remote_force = analysis_HR.AddRemoteForce()
+    remote_force.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
+    remote_force.Name = "RF_" + interface_name
+    remote_force.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote point
+    remote_force.Location = RP_interface
+
+    # Create moments at each interface
+    moment = analysis_HR.AddMoment()
+    moment.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
+    moment.Name = "RM_" + interface_name
+    moment.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote point
+    moment.Location = RP_interface
+
+    # region Define loads and their phase angles
+
+    # Initialize lists of data to be used as tabular input
+    list_of_fx_values = []
+    list_of_fy_values = []
+    list_of_fz_values = []
+    list_of_angle_fx_values = []
+    list_of_angle_fy_values = []
+    list_of_angle_fz_values = []
+
+    list_of_mx_values = []
+    list_of_my_values = []
+    list_of_mz_values = []
+    list_of_angle_mx_values = []
+    list_of_angle_my_values = []
+    list_of_angle_mz_values = []
+
+    # Create lists of quantities (for T1, T2, T3)
+    for fx, fy, fz, angle_fx, angle_fy, angle_fz  in zip(""" + str(interface_dicts_full) + """[interface_name]["T1"],
+                                                         """ + str(interface_dicts_full) + """[interface_name]["T2"],
+                                                         """ + str(interface_dicts_full) + """[interface_name]["T3"],
+                                                         """ + str(interface_dicts_full) + """[interface_name]["Phase_T1"],
+                                                         """ + str(interface_dicts_full) + """[interface_name]["Phase_T2"],
+                                                         """ + str(interface_dicts_full) + """[interface_name]["Phase_T3"]):
+        list_of_fx_values.append(Quantity(fx, "N"))
+        list_of_fy_values.append(Quantity(fy, "N"))
+        list_of_fz_values.append(Quantity(fz, "N"))
+        list_of_angle_fx_values.append(Quantity(angle_fx, "deg"))
+        list_of_angle_fy_values.append(Quantity(angle_fy, "deg"))
+        list_of_angle_fz_values.append(Quantity(angle_fz, "deg"))
+
+    # Create lists of quantities (for R1, R2, R3)
+    for mx, my, mz, angle_mx, angle_my, angle_mz  in zip(""" + str(interface_dicts_full) + """[interface_name]["R1"],
+                                                         """ + str(interface_dicts_full) + """[interface_name]["R2"],
+                                                         """ + str(interface_dicts_full) + """[interface_name]["R3"],
+                                                         """ + str(interface_dicts_full) + """[interface_name]["Phase_R1"],
+                                                         """ + str(interface_dicts_full) + """[interface_name]["Phase_R2"],
+                                                         """ + str(interface_dicts_full) + """[interface_name]["Phase_R3"]):
+        list_of_mx_values.append(Quantity(mx, "N mm"))
+        list_of_my_values.append(Quantity(my, "N mm"))
+        list_of_mz_values.append(Quantity(mz, "N mm"))
+        list_of_angle_mx_values.append(Quantity(angle_mx, "deg"))
+        list_of_angle_my_values.append(Quantity(angle_my, "deg"))
+        list_of_angle_mz_values.append(Quantity(angle_mz, "deg"))
+
+    # Define remote force frequencies
+    remote_force.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+    remote_force.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+    remote_force.ZComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+    remote_force.XPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+    remote_force.YPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+    remote_force.ZPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+
+    # Define remote force forces and angles
+    remote_force.XComponent.Output.DiscreteValues = list_of_fx_values
+    remote_force.YComponent.Output.DiscreteValues = list_of_fy_values
+    remote_force.ZComponent.Output.DiscreteValues = list_of_fz_values
+    remote_force.XPhaseAngle.Output.DiscreteValues = list_of_angle_fx_values
+    remote_force.YPhaseAngle.Output.DiscreteValues = list_of_angle_fy_values
+    remote_force.ZPhaseAngle.Output.DiscreteValues = list_of_angle_fz_values
+    
+    # Define moment frequencies
+    moment.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+    moment.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+    moment.ZComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+    moment.XPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+    moment.YPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+    moment.ZPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+
+    # Define moments and angles
+    moment.XComponent.Output.DiscreteValues = list_of_mx_values
+    moment.YComponent.Output.DiscreteValues = list_of_my_values
+    moment.ZComponent.Output.DiscreteValues = list_of_mz_values
+    moment.XPhaseAngle.Output.DiscreteValues = list_of_angle_mx_values
+    moment.YPhaseAngle.Output.DiscreteValues = list_of_angle_my_values
+    moment.ZPhaseAngle.Output.DiscreteValues = list_of_angle_mz_values
+    
+    if are_all_zeroes(""" + str(interface_dicts_full) + """[interface_name]["R1"],
+                      """ + str(interface_dicts_full) + """[interface_name]["R2"],
+                      """ + str(interface_dicts_full) + """[interface_name]["R3"]):
+        moment.Delete()    #    Delete moment object if no R1, R2, R3 components are all zero, making moment undefined
+    
+    # endregion
+"""
+
+        self.mechanical.run_python_script(commands)
         # endregion
 
     def setupInterfaceSelector(self, layout):
