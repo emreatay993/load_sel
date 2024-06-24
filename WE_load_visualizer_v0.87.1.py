@@ -21,8 +21,10 @@ def select_directory(title):
         return None
     return folder
 
+
 def get_file_path(folder, file_suffix):
     return [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(file_suffix)]
+
 
 def read_max_pld_file(file_path):
     data = []
@@ -35,6 +37,7 @@ def read_max_pld_file(file_path):
                     data.append([cleaned_row[0], cleaned_row[1]])
     df = pd.DataFrame(data[1:])
     return df.T
+
 
 def insert_phase_columns(df):
     transformed_columns = []
@@ -49,6 +52,7 @@ def insert_phase_columns(df):
     new_df = pd.concat(transformed_columns, axis=1)
     return new_df
 
+
 def read_pld_file(file_path):
     with open(file_path, 'r') as file:
         lines = file.readlines()
@@ -61,11 +65,12 @@ def read_pld_file(file_path):
             if not line.endswith('|'):
                 line = line + '|'
             try:
-              data_cells = [float(re.sub('[^0-9.E-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
+                data_cells = [float(re.sub('[^0-9.E-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
             except:
-              data_cells = [float(re.sub('[^0-9.e-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
+                data_cells = [float(re.sub('[^0-9.e-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
             processed_data.append(data_cells)
     return pd.DataFrame(processed_data, columns=headers)
+
 
 def main():
     try:
@@ -98,7 +103,6 @@ def main():
             df_intf = df_intf_before
             df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
             new_columns = ['NO'] + ['TIME'] + df_intf_labels.iloc[0].tolist()
-
 
         additional_columns_needed = len(df.columns) - len(new_columns)
         if additional_columns_needed > 0:
@@ -176,7 +180,7 @@ class WE_load_plotter(QWidget):
 
         main_layout.addWidget(tab_widget)
         self.setLayout(main_layout)
-        self.setWindowTitle("WE Harmonic Load Plotter")
+        self.setWindowTitle("WE Load Visualizer - v0.87")
         self.showMaximized()
 
     def setupTab1(self, tab):
@@ -190,7 +194,8 @@ class WE_load_plotter(QWidget):
 
         self.column_selector = QComboBox()
         self.column_selector.setEditable(False)
-        regular_columns = [col for col in self.df.columns if 'Phase_' not in col and col != 'FREQ' and col != 'TIME' and col != 'NO']
+        regular_columns = [col for col in self.df.columns if
+                           'Phase_' not in col and col != 'FREQ' and col != 'TIME' and col != 'NO']
         self.column_selector.addItems(regular_columns)
         self.column_selector.currentIndexChanged.connect(self.update_plots)
 
@@ -321,18 +326,21 @@ class WE_load_plotter(QWidget):
         layout.addLayout(hover_mode_layout)
         tab.setLayout(layout)
 
+        contact_label = QLabel("Please reach K. Emre Atay (Compressor Module: Non-Stationary Parts Team) for bug reports / feature requests.")
+        layout.addWidget(contact_label, alignment=QtCore.Qt.AlignBottom)
+
     def setupCompareTab(self, tab):
         splitter_main = QSplitter(QtCore.Qt.Vertical)
         splitter_upper = QSplitter(QtCore.Qt.Vertical)
         splitter_lower = QSplitter(QtCore.Qt.Vertical)
 
         self.compare_regular_plot = QtWebEngineWidgets.QWebEngineView()
-        #self.compare_phase_plot = QtWebEngineWidgets.QWebEngineView()
+        # self.compare_phase_plot = QtWebEngineWidgets.QWebEngineView()
         self.compare_absolute_diff_plot = QtWebEngineWidgets.QWebEngineView()
         self.compare_relative_diff_plot = QtWebEngineWidgets.QWebEngineView()
 
         splitter_upper.addWidget(self.compare_regular_plot)
-        #splitter_upper.addWidget(self.compare_phase_plot)
+        # splitter_upper.addWidget(self.compare_phase_plot)
         splitter_upper.setSizes([self.height() // 4, self.height() // 4])
 
         splitter_lower.addWidget(self.compare_absolute_diff_plot)
@@ -646,7 +654,8 @@ class WE_load_plotter(QWidget):
             return interface_dict
 
         # Create full dictionaries for each unique interface
-        interface_dicts_full = {interface: create_full_interface_dict(self.result_df_full_part_load, cols) for interface, cols in
+        interface_dicts_full = {interface: create_full_interface_dict(self.result_df_full_part_load, cols) for
+                                interface, cols in
                                 full_interfaces.items()}
 
         # Create a separate list for FREQ
@@ -654,7 +663,8 @@ class WE_load_plotter(QWidget):
 
         # region Create an ANSYS Mechanical template
         from ansys.mechanical.core import launch_mechanical
-        self.mechanical = launch_mechanical(batch=False, clear_on_connect=True, start_instance=True, verbose_mechanical=True)
+        self.mechanical = launch_mechanical(batch=False, clear_on_connect=True, start_instance=True,
+                                            verbose_mechanical=True)
 
         commands = """
 
@@ -666,7 +676,8 @@ for frequency_value in """ + str(list_of_all_frequencies) + """:
 # Harmonic analysis setup
 analysis_HR = Model.AddHarmonicResponseAnalysis()
 analysis_settings_HR = analysis_HR.AnalysisSettings
-analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyMax").InternalValue = """ + str(self.result_df_full_part_load['FREQ'].max()) + """
+analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyMax").InternalValue = """ + str(
+            self.result_df_full_part_load['FREQ'].max()) + """
 analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyIntervals").InternalValue = 1
 analysis_settings_HR.PropertyByName("HarmonicSolutionMethod").InternalValue = 1
 
@@ -762,7 +773,7 @@ for interface_name in list_of_part_interface_names:
     remote_force.XPhaseAngle.Output.DiscreteValues = list_of_angle_fx_values
     remote_force.YPhaseAngle.Output.DiscreteValues = list_of_angle_fy_values
     remote_force.ZPhaseAngle.Output.DiscreteValues = list_of_angle_fz_values
-    
+
     # Define moment frequencies
     moment.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
     moment.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
@@ -778,12 +789,12 @@ for interface_name in list_of_part_interface_names:
     moment.XPhaseAngle.Output.DiscreteValues = list_of_angle_mx_values
     moment.YPhaseAngle.Output.DiscreteValues = list_of_angle_my_values
     moment.ZPhaseAngle.Output.DiscreteValues = list_of_angle_mz_values
-    
+
     if are_all_zeroes(""" + str(interface_dicts_full) + """[interface_name]["R1"],
                       """ + str(interface_dicts_full) + """[interface_name]["R2"],
                       """ + str(interface_dicts_full) + """[interface_name]["R3"]):
         moment.Delete()    #    Delete moment object if no R1, R2, R3 components are all zero, making moment undefined
-    
+
     # endregion
 """
 
@@ -1149,9 +1160,9 @@ for interface_name in list_of_part_interface_names:
             hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
             hovermode=self.hover_mode,
             font=default_font,
-        showlegend = self.legend_visible
+            showlegend=self.legend_visible
 
-    )
+        )
 
         html_content = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
         web_view.setHtml(html_content)
@@ -1291,7 +1302,8 @@ for interface_name in list_of_part_interface_names:
                 fig_phase = go.Figure(go.Scatter(x=x_data, y=self.df[phase_column], mode='lines', name=phase_column,
                                                  hovertemplate=custom_hover))
                 fig_phase.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
-                                        hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
+                                        hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
+                                                        font_size=self.hover_font_size),
                                         hovermode=self.hover_mode,
                                         font=default_font,
                                         showlegend=self.legend_visible)
