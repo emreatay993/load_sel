@@ -1,3 +1,4 @@
+# region Import related modules and libraries
 import sys
 import csv
 import pandas as pd
@@ -12,7 +13,7 @@ import plotly.graph_objects as go
 import os
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
-
+# endregion
 
 def select_directory(title):
     folder = QFileDialog.getExistingDirectory(None, title)
@@ -620,7 +621,12 @@ class WE_load_plotter(QWidget):
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
     def create_ansys_mechanical_input_template(self):
-        # region Prepare interface data to be used as input loads for the selected part
+        """
+        Generate input load objects for the selected part side
+
+        Note: run_python_script is run multiple to overcome the limit on message size (max. 4 MB) by grpc module
+        """
+
         # List of all possible keys for load components and phase angles
         all_keys = ["T1", "T2", "T3", "R1", "R2", "R3", "Phase_T1", "Phase_T2", "Phase_T3", "Phase_R1", "Phase_R2",
                     "Phase_R3"]
@@ -642,6 +648,7 @@ class WE_load_plotter(QWidget):
 
         # Function to create interface dictionary with all keys populated, missing ones with zeroes
         def create_full_interface_dict(df, columns):
+
             # Initialize the dictionary with all keys set to lists of zeroes
             interface_dict = {key: [0] * len(df) for key in all_keys}
             for col in columns:
@@ -666,7 +673,9 @@ class WE_load_plotter(QWidget):
         self.mechanical = launch_mechanical(batch=False, clear_on_connect=True, start_instance=True,
                                             verbose_mechanical=True)
 
-        commands = """
+        # region Open up ANSYS Mechanical and initialize load and moment objects
+
+        self.mechanical.run_python_script("""
 
 # Convert list of frequencies to a list of frequencies as quantities (in Hz)
 list_of_all_frequencies_as_quantity = []
@@ -712,8 +721,14 @@ for interface_name in list_of_part_interface_names:
     moment.Name = "RM_" + interface_name
     moment.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote point
     moment.Location = RP_interface
+""")
+        # endregion
 
-    # region Define loads and their phase angles
+        # region Extract interface loads as Quantity lists
+
+        self.mechanical.run_python_script("""
+    
+for interface_name in list_of_part_interface_names:
 
     # Initialize lists of data to be used as tabular input
     list_of_fx_values = []
@@ -757,48 +772,125 @@ for interface_name in list_of_part_interface_names:
         list_of_angle_mx_values.append(Quantity(angle_mx, "deg"))
         list_of_angle_my_values.append(Quantity(angle_my, "deg"))
         list_of_angle_mz_values.append(Quantity(angle_mz, "deg"))
+""")
+        # endregion
 
-    # Define remote force frequencies
+        # region Populate remote force and moment objects with the values from lists of quantities
+
+        # Define all the input frequencies of remote forces and angles
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.ZComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.XPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.YPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.ZPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
 
-    # Define remote force forces and angles
+        # Define all the remote forces and angles
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.XComponent.Output.DiscreteValues = list_of_fx_values
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.YComponent.Output.DiscreteValues = list_of_fy_values
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.ZComponent.Output.DiscreteValues = list_of_fz_values
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.XPhaseAngle.Output.DiscreteValues = list_of_angle_fx_values
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.YPhaseAngle.Output.DiscreteValues = list_of_angle_fy_values
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     remote_force.ZPhaseAngle.Output.DiscreteValues = list_of_angle_fz_values
+""")
 
-    # Define moment frequencies
+        # Define all the input frequencies of remote moments and angles
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.ZComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.XPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.YPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-    moment.ZPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
+        moment.ZPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+""")
 
-    # Define moments and angles
+        # Define all the remote forces and angles
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.XComponent.Output.DiscreteValues = list_of_mx_values
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.YComponent.Output.DiscreteValues = list_of_my_values
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.ZComponent.Output.DiscreteValues = list_of_mz_values
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.XPhaseAngle.Output.DiscreteValues = list_of_angle_mx_values
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.YPhaseAngle.Output.DiscreteValues = list_of_angle_my_values
+""")
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     moment.ZPhaseAngle.Output.DiscreteValues = list_of_angle_mz_values
+""")
 
+        # Delete moment objects if they are not populated
+        self.mechanical.run_python_script("""
+for interface_name in list_of_part_interface_names:
     if are_all_zeroes(""" + str(interface_dicts_full) + """[interface_name]["R1"],
                       """ + str(interface_dicts_full) + """[interface_name]["R2"],
                       """ + str(interface_dicts_full) + """[interface_name]["R3"]):
         moment.Delete()    #    Delete moment object if no R1, R2, R3 components are all zero, making moment undefined
+""")
+        # endregion
 
-    # endregion
-"""
-
-        self.mechanical.run_python_script(commands)
         # endregion
 
     def setupInterfaceSelector(self, layout):
