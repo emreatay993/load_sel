@@ -730,20 +730,12 @@ for interface_name in list_of_part_interface_names:
     
 for interface_name in list_of_part_interface_names:
 
-    # Initialize lists of data to be used as tabular input
     list_of_fx_values = []
     list_of_fy_values = []
     list_of_fz_values = []
     list_of_angle_fx_values = []
     list_of_angle_fy_values = []
     list_of_angle_fz_values = []
-
-    list_of_mx_values = []
-    list_of_my_values = []
-    list_of_mz_values = []
-    list_of_angle_mx_values = []
-    list_of_angle_my_values = []
-    list_of_angle_mz_values = []
 
     # Create lists of quantities (for T1, T2, T3)
     for fx, fy, fz, angle_fx, angle_fy, angle_fz  in zip(""" + str(interface_dicts_full) + """[interface_name]["T1"],
@@ -758,6 +750,17 @@ for interface_name in list_of_part_interface_names:
         list_of_angle_fx_values.append(Quantity(angle_fx, "deg"))
         list_of_angle_fy_values.append(Quantity(angle_fy, "deg"))
         list_of_angle_fz_values.append(Quantity(angle_fz, "deg"))
+""")
+        self.mechanical.run_python_script("""
+
+for interface_name in list_of_part_interface_names:
+
+    list_of_mx_values = []
+    list_of_my_values = []
+    list_of_mz_values = []
+    list_of_angle_mx_values = []
+    list_of_angle_my_values = []
+    list_of_angle_mz_values = []
 
     # Create lists of quantities (for R1, R2, R3)
     for mx, my, mz, angle_mx, angle_my, angle_mz  in zip(""" + str(interface_dicts_full) + """[interface_name]["R1"],
