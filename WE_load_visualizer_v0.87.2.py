@@ -56,7 +56,7 @@ def insert_phase_columns(df):
 def read_pld_file(file_path):
     with open(file_path, 'r') as file:
         lines = file.readlines()
-        headers = [h.strip() for h in lines[0].strip().split('|')[1:-1]]
+        headers = [h.strip() for h in lines[1].strip().split('|')[1:-1]]
         processed_data = []
         for line in lines[2:]:
             line = line.strip()
@@ -64,11 +64,15 @@ def read_pld_file(file_path):
                 line = '|' + line
             if not line.endswith('|'):
                 line = line + '|'
-            try:
-                data_cells = [float(re.sub('[^0-9.E-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
-            except:
-                data_cells = [float(re.sub('[^0-9.e-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
-            processed_data.append(data_cells)
+            data_cells = []
+            for cell in line.split('|')[1:-1]:
+                cell_cleaned = re.sub('[^0-9.Ee-]', '', cell.strip())
+                try:
+                    data_cells.append(float(cell_cleaned))
+                except ValueError:
+                    break
+            else:
+                processed_data.append(data_cells)
     return pd.DataFrame(processed_data, columns=headers)
 
 
