@@ -1,3 +1,4 @@
+# region Import libraries
 import sys
 import csv
 import pandas as pd
@@ -12,8 +13,11 @@ import plotly.graph_objects as go
 import os
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
+import traceback
+import shutil
+# endregion
 
-
+# region Select and read WE raw data
 def select_directory(title):
     folder = QFileDialog.getExistingDirectory(None, title)
     if not folder:
@@ -21,10 +25,8 @@ def select_directory(title):
         return None
     return folder
 
-
 def get_file_path(folder, file_suffix):
     return [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(file_suffix)]
-
 
 def read_max_pld_file(file_path):
     data = []
@@ -37,7 +39,6 @@ def read_max_pld_file(file_path):
                     data.append([cleaned_row[0], cleaned_row[1]])
     df = pd.DataFrame(data[1:])
     return df.T
-
 
 def insert_phase_columns(df):
     transformed_columns = []
@@ -52,11 +53,10 @@ def insert_phase_columns(df):
     new_df = pd.concat(transformed_columns, axis=1)
     return new_df
 
-
 def read_pld_file(file_path):
     with open(file_path, 'r') as file:
         lines = file.readlines()
-        headers = [h.strip() for h in lines[1].strip().split('|')[1:-1]]
+        headers = [h.strip() for h in lines[0].strip().split('|')[1:-1]]
         processed_data = []
         for line in lines[2:]:
             line = line.strip()
@@ -64,17 +64,12 @@ def read_pld_file(file_path):
                 line = '|' + line
             if not line.endswith('|'):
                 line = line + '|'
-            data_cells = []
-            for cell in line.split('|')[1:-1]:
-                cell_cleaned = re.sub('[^0-9.Ee-]', '', cell.strip())
-                try:
-                    data_cells.append(float(cell_cleaned))
-                except ValueError:
-                    break
-            else:
-                processed_data.append(data_cells)
+            try:
+                data_cells = [float(re.sub('[^0-9.E-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
+            except:
+                data_cells = [float(re.sub('[^0-9.e-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
+            processed_data.append(data_cells)
     return pd.DataFrame(processed_data, columns=headers)
-
 
 def main():
     try:
@@ -124,12 +119,12 @@ def main():
         QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
         sys.exit()
 
-
 if __name__ == "__main__":
     data = main()
     data.to_csv("full_data.csv", index=False)
+# endregion
 
-
+# region Main GUI
 class WE_load_plotter(QWidget):
     def __init__(self, parent=None):
         super(WE_load_plotter, self).__init__(parent)
@@ -184,7 +179,7 @@ class WE_load_plotter(QWidget):
 
         main_layout.addWidget(tab_widget)
         self.setLayout(main_layout)
-        self.setWindowTitle("WE Load Visualizer - v0.87")
+        self.setWindowTitle("WE Load Visualizer - v0.88")
         self.showMaximized()
 
     def setupTab1(self, tab):
@@ -621,10 +616,12 @@ class WE_load_plotter(QWidget):
             self.create_ansys_mechanical_input_template()
 
         except Exception as e:
+            traceback_info = traceback.format_exc()
+            print(traceback_info)
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
     def create_ansys_mechanical_input_template(self):
-        # region Prepare interface data to be used as input loads for the selected part
+        # region Determine the interface data to be used as input loads for the selected part
         # List of all possible keys for load components and phase angles
         all_keys = ["T1", "T2", "T3", "R1", "R2", "R3", "Phase_T1", "Phase_T2", "Phase_T3", "Phase_R1", "Phase_R2",
                     "Phase_R3"]
@@ -661,24 +658,31 @@ class WE_load_plotter(QWidget):
         interface_dicts_full = {interface: create_full_interface_dict(self.result_df_full_part_load, cols) for
                                 interface, cols in
                                 full_interfaces.items()}
+        # endregion
+
+        # region Create an ANSYS Mechanical template
+        print("Importing ansys-mechanical-core library...")
+        import ansys.api.mechanical
+        import ansys.mechanical.core
+        from ansys.mechanical.core import global_variables
+        from ansys.mechanical.core import App
+        print("Imported.")
+
+        print("Starting Ansys Mechanical...")
+        app_ansys = App(private_appdata=False)
+        print("Running the scripts...")
+        globals().update(global_variables(app_ansys))
+        print("Updating the global variables...")
 
         # Create a separate list for FREQ
         list_of_all_frequencies = self.result_df_full_part_load["FREQ"].tolist()
-
-        # region Create an ANSYS Mechanical template
-        from ansys.mechanical.core import launch_mechanical
-        from ansys.mechanical.core import global_variables
-
-        from ansys.mechanical.core import App
-        app = App()
-        globals().update(global_variables(app))
-
-
 
         # Convert list of frequencies to a list of frequencies as quantities (in Hz)
         list_of_all_frequencies_as_quantity = []
         for frequency_value in list_of_all_frequencies:
             list_of_all_frequencies_as_quantity.append(Quantity(frequency_value, "Hz"))
+
+        print("Creating the analysis model...")
 
         # Harmonic analysis setup
         analysis_HR = Model.AddHarmonicResponseAnalysis()
@@ -704,6 +708,8 @@ class WE_load_plotter(QWidget):
             RP_interface = Model.AddRemotePoint()
             RP_interface.Name = "RP_" + interface_name
             RP_interface.CoordinateSystem = CS_interface
+
+            print(f"Creating force & moment objects for {interface_name}...")
 
             # Create remote forces at each interface
             remote_force = analysis_HR.AddRemoteForce()
@@ -764,6 +770,10 @@ class WE_load_plotter(QWidget):
                 list_of_angle_my_values.append(Quantity(angle_my, "deg"))
                 list_of_angle_mz_values.append(Quantity(angle_mz, "deg"))
 
+            print()
+
+            print(f"Populating the input tabular data for {interface_name}...")
+
             # Define remote force frequencies
             remote_force.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
             remote_force.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
@@ -801,11 +811,33 @@ class WE_load_plotter(QWidget):
                               interface_dicts_full[interface_name]["R3"]):
                 moment.Delete()    #    Delete moment object if no R1, R2, R3 components are all zero, making moment undefined
 
-        app.save(os.path.join(os.getcwd(), "WE_Loading_Template.mechdat"))
-        print('Mechdat file is created successfully.')
-            # endregion
+        app_ansys.save(os.path.join(os.getcwd(), "WE_Loading_Template.mechdat"))
 
-                # endregion
+        # Remove the folder which locks the .mechdat file created (so that it can be overwritten)
+        dir_path = 'WE_Loading_Template_Mech_Files'
+
+        try:
+            if os.path.exists(dir_path) and os.path.isdir(dir_path):
+                shutil.rmtree(dir_path)
+                print(f'WE_Loading_Template.mechdat file is created successfully in: \n\n "{os.getcwd()}"')
+            else:
+                print(f"The directory {dir_path} does not exist.")
+        except Exception as e:
+            print(f"An error occurred while trying to delete the directory {dir_path}: {e}")
+
+
+
+        app_ansys.print_tree(DataModel.Project.Model)
+
+        QMessageBox.information(self, "Extraction Complete",
+                                f'WE_Loading_Template.mechdat file is created successfully in: \n\n "{os.getcwd()}." \n\n '
+                                f'Please close the program first if you need to re-run this button.')
+
+        # Open up the folder of the output file
+        os.startfile(os.getcwd())
+
+        app_ansys.close()
+        # endregion
 
     def setupInterfaceSelector(self, layout):
         self.interface_selector = QComboBox()
@@ -1317,10 +1349,10 @@ class WE_load_plotter(QWidget):
                 html_phase = fig_phase.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
                 self.phase_plot.setHtml(html_phase)
 
-
 if __name__ == "__main__":
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
     main = WE_load_plotter()
     main.show()
     sys.exit(app.exec_())
+# endregion
