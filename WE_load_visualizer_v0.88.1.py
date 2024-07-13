@@ -128,6 +128,11 @@ if __name__ == "__main__":
 class WE_load_plotter(QWidget):
     def __init__(self, parent=None):
         super(WE_load_plotter, self).__init__(parent)
+        self.init_variables()
+        self.init_ui()
+
+    def init_variables(self):
+        """Initialize instance variables."""
         self.legend_visible = True
         self.legend_positions = ['default', 'top left', 'top right', 'bottom right', 'bottom left']
         self.current_legend_position = 0
@@ -144,29 +149,19 @@ class WE_load_plotter(QWidget):
         self.hover_font_size = 15
         self.hover_mode = 'closest'
 
-        self.initUI()
-
-    def initUI(self):
+    def init_ui(self):
+        """Initialize the user interface."""
         tab_widget = QTabWidget(self)
-        self.tab1 = QWidget()
-        self.tab2 = QWidget()
-        self.tab3 = QWidget()
-        self.tab4 = QWidget()
-        compare_tab = QWidget()
-        compare_part_loads_tab = QWidget()
-        settings_tab = QWidget()
         main_layout = QVBoxLayout(self)
 
-        self.setupTab1(self.tab1)
-        self.setupTab2(self.tab2)
-        self.setupTab3(self.tab3)
+        self.tab1 = self.create_tab("Single Data", self.setupTab1)
+        self.tab2 = self.create_tab("Interface Data", self.setupTab2)
+        self.tab3 = self.create_tab("Part Loads", self.setupTab3)
         if self.df.columns[1] == 'FREQ':
-            self.setupTab4(self.tab4)
-        self.setupCompareTab(compare_tab)
-        self.setupComparePartLoadsTab(compare_part_loads_tab)
-        self.setupSettingsTab(settings_tab)
-        if self.df.columns[1] == 'FREQ':
-            self.time_domain_plot.show()
+            self.tab4 = self.create_tab("Time Domain Representation", self.setupTab4)
+        compare_tab = self.create_tab("Compare Data", self.setupCompareTab)
+        compare_part_loads_tab = self.create_tab("Compare Data (Part Loads)", self.setupComparePartLoadsTab)
+        settings_tab = self.create_tab("Settings", self.setupSettingsTab)
 
         tab_widget.addTab(self.tab1, "Single Data")
         tab_widget.addTab(self.tab2, "Interface Data")
@@ -182,6 +177,13 @@ class WE_load_plotter(QWidget):
         self.setWindowTitle("WE Load Visualizer - v0.88")
         self.showMaximized()
 
+    def create_tab(self, name, setup_method):
+        """Create a tab with the specified setup method."""
+        tab = QWidget()
+        setup_method(tab)
+        return tab
+
+    # region Initializing widgets & layouts inside each tab of the main window
     def setupTab1(self, tab):
         splitter = QSplitter(QtCore.Qt.Vertical)
         self.regular_plot = QtWebEngineWidgets.QWebEngineView()
@@ -196,7 +198,7 @@ class WE_load_plotter(QWidget):
         regular_columns = [col for col in self.df.columns if
                            'Phase_' not in col and col != 'FREQ' and col != 'TIME' and col != 'NO']
         self.column_selector.addItems(regular_columns)
-        self.column_selector.currentIndexChanged.connect(self.update_plots)
+        self.column_selector.currentIndexChanged.connect(self.update_plots_tab1)
 
         layout = QVBoxLayout(tab)
         layout.addWidget(self.column_selector)
@@ -205,7 +207,7 @@ class WE_load_plotter(QWidget):
     def setupTab2(self, tab):
         layout = QVBoxLayout(tab)
         self.setupInterfaceSelector(layout)
-        self.setupSideSelection(layout)
+        self.setupSideSelectionTab2(layout)
         self.setupPlots(layout)
 
     def setupTab3(self, tab):
@@ -219,7 +221,14 @@ class WE_load_plotter(QWidget):
         upper_layout.addWidget(self.exclude_checkbox)
 
         layout.addLayout(upper_layout)
-        self.setupSideFilterPlots(layout)
+
+        splitter = QSplitter(QtCore.Qt.Vertical)
+        self.t_series_plot_tab3 = QtWebEngineWidgets.QWebEngineView()
+        self.r_series_plot_tab3 = QtWebEngineWidgets.QWebEngineView()
+        splitter.addWidget(self.t_series_plot_tab3)
+        splitter.addWidget(self.r_series_plot_tab3)
+        splitter.setSizes([self.height() // 2, self.height() // 2])
+        layout.addWidget(splitter)
 
         self.data_point_selector_tab3 = QComboBox()
         self.data_point_selector_tab3.setEditable(True)
@@ -399,7 +408,20 @@ class WE_load_plotter(QWidget):
         splitter.addWidget(self.compare_r_series_plot)
         splitter.setSizes([self.height() // 2, self.height() // 2])
         layout.addWidget(splitter)
+    # endregion
 
+    # region Setting up the canvas of each plot area of each tab
+    def setupPlots(self, layout):
+        splitter = QSplitter(QtCore.Qt.Vertical)
+        self.t_series_plot = QtWebEngineWidgets.QWebEngineView()
+        self.r_series_plot = QtWebEngineWidgets.QWebEngineView()
+        splitter.addWidget(self.t_series_plot)
+        splitter.addWidget(self.r_series_plot)
+        splitter.setSizes([self.height() // 2, self.height() // 2])
+        layout.addWidget(splitter)
+    # endregion
+
+    # region Defining the logic for each button
     def select_compare_data(self):
         try:
             folder_selected_raw_data = select_directory('Please select a directory for raw data (Comparison)')
@@ -452,63 +474,6 @@ class WE_load_plotter(QWidget):
             self.compare_column_selector.currentIndexChanged.connect(self.update_compare_plots)
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
-
-    def update_font_settings(self):
-        self.legend_font_size = int(self.legend_font_size_selector.currentText())
-        self.default_font_size = int(self.default_font_size_selector.currentText())
-        self.hover_font_size = int(self.hover_font_size_selector.currentText())
-        self.hover_mode = self.hover_mode_selector.currentText()
-        self.update_plots()
-        self.update_plots_tab2()
-        self.update_plots_tab3()
-        if self.df.columns[1] == 'FREQ':
-            self.update_time_domain_plot()
-        self.update_compare_plots()
-        self.update_compare_part_loads_plots()
-
-    def update_time_domain_plot(self):
-        try:
-            freq = float(self.data_point_selector.currentText())
-        except ValueError:
-            return
-
-        theta = np.linspace(0, 360, 361)
-        x_data = np.radians(theta)
-
-        fig = go.Figure()
-
-        selected_side = self.side_filter_selector.currentText()
-        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
-        displayed_columns = [col for col in self.df.columns if
-                             side_pattern.search(col) and
-                             any(sub in col for sub in ["T1", "T2", "T3", "T2/T3", "R1", "R2", "R3", "R2/R3"]) and
-                             not col.startswith('Phase_')]
-
-        for col in displayed_columns:
-            amplitude_col = col
-            phase_col = 'Phase_' + col
-            amplitude = self.df.loc[self.df['FREQ'] == freq, amplitude_col].values[0]
-            phase = self.df.loc[self.df['FREQ'] == freq, phase_col].values[0]
-            y_data = amplitude * np.cos(x_data - np.radians(phase))
-            fig.add_trace(go.Scatter(x=theta, y=y_data, mode='lines', name=col,
-                                     hoverinfo='name+x+y', hovertemplate='%{fullData.name}: %{y:.2f}<extra></extra>'))
-            self.current_plot_data[col] = {'theta': theta, 'y_data': y_data}
-
-        plot_title = f'Time Domain Representation at {str(freq)} Hz - {selected_side}'
-        fig.update_layout(
-            title=plot_title,
-            xaxis_title='Theta (degrees)',
-            yaxis_title='Amplitude',
-            hovermode=self.hover_mode,
-            margin=dict(l=20, r=20, t=35, b=35),
-            legend=dict(
-                font=dict(family='Open Sans', size=self.legend_font_size, color='black')
-            ),
-            hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-            font=dict(family='Open Sans', size=self.default_font_size, color='black')
-        )
-        html_content = fig.to_html(full_html=False, include_plotlyjs='cdn')
-        self.time_domain_plot.setHtml(html_content)
 
     def extract_time_data(self):
         try:
@@ -838,6 +803,21 @@ class WE_load_plotter(QWidget):
 
         app_ansys.close()
         # endregion
+    # endregion
+
+    # region Defining the logic for each combobox
+    def update_font_settings(self):
+        self.legend_font_size = int(self.legend_font_size_selector.currentText())
+        self.default_font_size = int(self.default_font_size_selector.currentText())
+        self.hover_font_size = int(self.hover_font_size_selector.currentText())
+        self.hover_mode = self.hover_mode_selector.currentText()
+        self.update_plots_tab1()
+        self.update_plots_tab2()
+        self.update_plots_tab3()
+        if self.df.columns[1] == 'FREQ':
+            self.update_time_domain_plot()
+        self.update_compare_plots()
+        self.update_compare_part_loads_plots()
 
     def setupInterfaceSelector(self, layout):
         self.interface_selector = QComboBox()
@@ -851,13 +831,13 @@ class WE_load_plotter(QWidget):
         self.interface_selector.currentIndexChanged.connect(self.update_plots_tab2)
         layout.addWidget(self.interface_selector)
 
-    def setupSideSelection(self, layout):
+    def setupSideSelectionTab2(self, layout):
         side_selection_layout = QHBoxLayout()
         side_selection_label = QLabel("Part Side Filter")
         side_selection_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         self.side_selector = QComboBox()
         self.side_selector.setEditable(True)
-        self.side_selector.currentIndexChanged.connect(self.update_side_selection)
+        self.side_selector.currentIndexChanged.connect(self.update_side_selection_tab_2)
         side_selection_layout.addWidget(side_selection_label)
         side_selection_layout.addWidget(self.side_selector)
         layout.addLayout(side_selection_layout)
@@ -882,28 +862,21 @@ class WE_load_plotter(QWidget):
         self.side_filter_selector.addItems(sorted(sides))
         self.side_filter_selector_for_compare.addItems(sorted(sides))
 
-    def setupSideFilterPlots(self, layout):
-        splitter = QSplitter(QtCore.Qt.Vertical)
-        self.t_series_plot_tab3 = QtWebEngineWidgets.QWebEngineView()
-        self.r_series_plot_tab3 = QtWebEngineWidgets.QWebEngineView()
-        splitter.addWidget(self.t_series_plot_tab3)
-        splitter.addWidget(self.r_series_plot_tab3)
-        splitter.setSizes([self.height() // 2, self.height() // 2])
-        layout.addWidget(splitter)
+    def populate_side_selector_tab_2(self, interface):
+        pattern = re.compile(r'I\d+[a-zA-Z]?\s*-\s*(.*?)(?=\s*\()')
+        relevant_columns = [col for col in self.df.columns if re.match(f"^{re.escape(interface)}(?=\D)", col)]
+        sides = sorted(set(pattern.search(col).group(1).strip() for col in relevant_columns if pattern.search(col)))
 
-    def setupPlots(self, layout):
-        splitter = QSplitter(QtCore.Qt.Vertical)
-        self.t_series_plot = QtWebEngineWidgets.QWebEngineView()
-        self.r_series_plot = QtWebEngineWidgets.QWebEngineView()
-        splitter.addWidget(self.t_series_plot)
-        splitter.addWidget(self.r_series_plot)
-        splitter.setSizes([self.height() // 2, self.height() // 2])
-        layout.addWidget(splitter)
+        self.side_selector.clear()
+        if sides:
+            self.side_selector.addItems(sides)
+    # endregion
 
+    # region Defining keyboard events and their logic
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_L:
             self.legend_visible = not self.legend_visible
-            self.update_plots()
+            self.update_plots_tab1()
             self.update_plots_tab2()
             self.update_plots_tab3()
             if self.df.columns[1] == 'FREQ':
@@ -912,7 +885,7 @@ class WE_load_plotter(QWidget):
             self.update_compare_part_loads_plots()
         elif event.key() == QtCore.Qt.Key_K:
             self.current_legend_position = (self.current_legend_position + 1) % len(self.legend_positions)
-            self.update_plots()
+            self.update_plots_tab1()
             self.update_plots_tab2()
             self.update_plots_tab3()
             if self.df.columns[1] == 'FREQ':
@@ -930,81 +903,67 @@ class WE_load_plotter(QWidget):
         }
         return positions.get(self.legend_positions[self.current_legend_position],
                              {'x': 1.02, 'y': 1, 'xanchor': 'left', 'yanchor': 'top'})
+    # endregion
 
-    def update_side_selection(self):
-        selected_side = self.side_selector.currentText()
-        self.update_plots_for_selected_side(selected_side)
+    # region Helper methods for updating the plots
+    def create_multi_trace_figure(self, x_data, y_data_list, column_names, custom_hover, legend_position, title=None):
+        # Convert floats to numpy arrays
+        y_data_list = [np.array([y_data]) if isinstance(y_data, float) else y_data for y_data in y_data_list]
+
+        if not any(y_data.any() for y_data in y_data_list):  # Check if any y_data is empty
+            return None
+
+        fig = go.Figure()
+        for y_data, name in zip(y_data_list, column_names):
+            fig.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines', name=name, hovertemplate=custom_hover))
+
+        default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
+        fig.update_layout(
+            title=title,
+            margin=dict(l=20, r=20, t=35, b=35),
+            legend=dict(
+                font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                x=legend_position['x'],
+                y=legend_position['y'],
+                xanchor=legend_position.get('xanchor', 'auto'),
+                yanchor=legend_position.get('yanchor', 'top'),
+                bgcolor='rgba(255, 255, 255, 0.5)'
+            ),
+            hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
+            hovermode=self.hover_mode,
+            font=default_font,
+            showlegend=self.legend_visible
+        )
+        return fig
+
+    def populate_web_view_with_plot(self, web_view, columns, title):
+        if not columns:
+            web_view.setHtml("<html><body><p>No data available to plot.</p></body></html>")
+            return
+
         if self.df.columns[1] == 'FREQ':
-            self.update_time_domain_plot()
+            x_data = self.df['FREQ']
+        elif self.df.columns[1] == 'TIME':
+            x_data = self.df['TIME']
 
-    def update_plots_for_selected_side(self, selected_side):
-        if not selected_side:
+        y_data_list = [self.df[col] for col in columns]
+        custom_hover = ('%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
+        legend_position = self.get_legend_position()
+
+        fig = self.create_multi_trace_figure(x_data, y_data_list, columns, custom_hover, legend_position, title)
+
+        if fig is None:
+            web_view.setHtml("<html><body><p>No data available to plot.</p></body></html>")
             return
 
-        interface = self.interface_selector.currentText()
-        if not interface:
+        html_content = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+        web_view.setHtml(html_content)
+
+    def update_series_plots(self, t_plot, r_plot, interface=None, side=None, exclude_t2_t3_r2_r3=False):
+        if not side:
             return
 
-        pattern = re.compile(r'^' + re.escape(interface) + r'([-\s]|$)')
-        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
-
-        t_series_columns = [
-            col for col in self.df.columns
-            if pattern.match(col) and any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith(
-                'Phase_')
-               and side_pattern.search(col)
-        ]
-        r_series_columns = [
-            col for col in self.df.columns
-            if pattern.match(col) and any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith(
-                'Phase_')
-               and side_pattern.search(col)
-        ]
-
-        self.update_plot(self.t_series_plot, t_series_columns, f'T Plot')
-        self.update_plot(self.r_series_plot, r_series_columns, f'R Plot')
-
-    def populate_side_selector(self, interface):
-        pattern = re.compile(r'I\d+[a-zA-Z]?\s*-\s*(.*?)(?=\s*\()')
-        relevant_columns = [col for col in self.df.columns if re.match(f"^{re.escape(interface)}(?=\D)", col)]
-        sides = sorted(set(pattern.search(col).group(1).strip() for col in relevant_columns if pattern.search(col)))
-
-        self.side_selector.clear()
-        if sides:
-            self.side_selector.addItems(sides)
-
-    def update_plots_tab2(self):
-        interface = self.interface_selector.currentText()
-        selected_side = self.side_selector.currentText()
-        if interface:
-            pattern = re.compile(r'^' + re.escape(interface) + r'([-\s]|$)')
-            if selected_side:
-                side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
-
-            t_series_columns = [
-                col for col in self.df.columns
-                if pattern.match(col) and any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith(
-                    'Phase_')
-                   and (not selected_side or side_pattern.search(col))
-            ]
-            r_series_columns = [
-                col for col in self.df.columns
-                if pattern.match(col) and any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith(
-                    'Phase_')
-                   and (not selected_side or side_pattern.search(col))
-            ]
-
-            self.update_plot(self.t_series_plot, t_series_columns, 'T Series')
-            self.update_plot(self.r_series_plot, r_series_columns, 'R Series')
-            self.populate_side_selector(interface)
-
-    def update_plots_tab3(self):
-        selected_side = self.side_filter_selector.currentText()
-        if not selected_side:
-            return
-
-        exclude_t2_t3_r2_r3 = self.exclude_checkbox.isChecked()
-        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
+        side_pattern = re.compile(rf'\b{re.escape(side)}\b')
 
         def should_exclude(col):
             if re.search(r'\bT2\b', col) and not re.search(r'T2/T3', col):
@@ -1017,19 +976,186 @@ class WE_load_plotter(QWidget):
                 return True
             return False
 
-        t_series_columns = [col for col in self.df.columns if
-                            side_pattern.search(col) and
-                            any(sub in col for sub in ["T1", "T2", "T3"]) and not col.startswith('Phase_')
-                            and not (exclude_t2_t3_r2_r3 and should_exclude(col))]
-        r_series_columns = [col for col in self.df.columns if
-                            side_pattern.search(col) and
-                            any(sub in col for sub in ["R1", "R2", "R3"]) and not col.startswith('Phase_')
-                            and not (exclude_t2_t3_r2_r3 and should_exclude(col))]
+        t_series_columns = [
+            col for col in self.df.columns
+            if (not interface or re.match(r'^' + re.escape(interface) + r'([-\s]|$)', col))
+               and any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"])
+               and not col.startswith('Phase_')
+               and side_pattern.search(col)
+               and not (exclude_t2_t3_r2_r3 and should_exclude(col))
+        ]
 
-        self.update_plot(self.t_series_plot_tab3, t_series_columns, 'T Plot')
-        self.update_plot(self.r_series_plot_tab3, r_series_columns, 'R Plot')
+        r_series_columns = [
+            col for col in self.df.columns
+            if (not interface or re.match(r'^' + re.escape(interface) + r'([-\s]|$)', col))
+               and any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"])
+               and not col.startswith('Phase_')
+               and side_pattern.search(col)
+               and not (exclude_t2_t3_r2_r3 and should_exclude(col))
+        ]
+
+        self.populate_web_view_with_plot(t_plot, t_series_columns, 'T Series')
+        self.populate_web_view_with_plot(r_plot, r_series_columns, 'R Series')
+    # endregion
+
+    # region Handle the filtering logic at each tab
+    def update_plots_tab1(self):
+        selected_column = self.column_selector.currentText()
+        if selected_column:
+            self.populate_web_view_with_plot(self.regular_plot, [selected_column], f'{selected_column} Plot')
+            if self.df.columns[1] == 'FREQ':
+                phase_column = 'Phase_' + selected_column
+                self.populate_web_view_with_plot(self.phase_plot, [phase_column], f'Phase {selected_column} Plot')
+
+    def update_plots_tab2(self):
+        interface = self.interface_selector.currentText()
+        selected_side = self.side_selector.currentText()
+        self.update_series_plots(self.t_series_plot, self.r_series_plot, interface, selected_side)
+        if interface:
+            self.populate_side_selector_tab_2(interface)
+
+    def update_plots_tab3(self):
+        selected_side = self.side_filter_selector.currentText()
+        exclude_t2_t3_r2_r3 = self.exclude_checkbox.isChecked()
+        self.update_series_plots(self.t_series_plot_tab3, self.r_series_plot_tab3, side=selected_side,
+                                 exclude_t2_t3_r2_r3=exclude_t2_t3_r2_r3)
         if self.df.columns[1] == 'FREQ':
             self.update_time_domain_plot()
+
+    def update_hover_mode(self):
+        hover_mode = self.hover_mode_selector.currentText()
+        self.update_plots_tab1()
+        self.update_plots_tab2()
+        self.update_plots_tab3()
+        self.update_compare_plots()
+        self.update_compare_part_loads_plots()
+
+    def update_compare_plots(self):
+        try:
+            selected_column = self.compare_column_selector.currentText()
+            if selected_column and self.df_compare is not None:
+                if self.df.columns[1] == 'FREQ':
+                    x_data = self.df['FREQ']
+                    x_data_compare = self.df_compare['FREQ']
+                elif self.df.columns[1] == 'TIME':
+                    x_data = self.df['TIME']
+                    x_data_compare = self.df_compare['TIME']
+
+                custom_hover = (selected_column + '<br>Hz: %{x}<br>Value: %{y:.3f}<extra></extra>')
+                default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
+                legend_position = self.get_legend_position()
+
+                fig_reg = go.Figure()
+                fig_reg.add_trace(
+                    go.Scatter(x=x_data, y=self.df[selected_column], mode='lines', name=f'Original {selected_column}',
+                               hovertemplate=custom_hover))
+                fig_reg.add_trace(go.Scatter(x=x_data_compare, y=self.df_compare[selected_column], mode='lines',
+                                             name=f'Compare {selected_column}',
+                                             hovertemplate=custom_hover))
+                fig_reg.update_layout(margin=dict(l=20, r=20, t=35, b=35),
+                                      legend=dict(
+                                          font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                                          # orientation="h",
+                                          x=legend_position['x'],
+                                          y=legend_position['y'],
+                                          xanchor=legend_position.get('xanchor', 'auto'),
+                                          yanchor=legend_position.get('yanchor', 'top'),
+                                          bgcolor='rgba(255, 255, 255, 0.5)'
+                                      ),
+                                      hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
+                                                      font_size=self.hover_font_size),
+                                      hovermode=self.hover_mode,
+                                      font=default_font,
+                                      showlegend=self.legend_visible)
+
+                fig_absolute_diff = go.Figure()
+
+                # Convert magnitude and phase to complex numbers and compute the difference
+                phase_col = f'Phase_{selected_column}'
+                if selected_column in self.df.columns \
+                        and selected_column in self.df_compare.columns \
+                        and phase_col in self.df.columns \
+                        and phase_col in self.df_compare.columns:
+                    magnitude1 = self.df[selected_column]
+                    phase1 = self.df[phase_col]
+                    magnitude2 = self.df_compare[selected_column]
+                    phase2 = self.df_compare[phase_col]
+
+                    complex1 = magnitude1 * np.exp(1j * phase1)
+                    complex2 = magnitude2 * np.exp(1j * phase2)
+
+                    complex_diff = complex1 - complex2
+
+                    magnitude_diff = np.abs(complex_diff)
+
+                    fig_absolute_diff.add_trace(
+                        go.Scatter(x=x_data,
+                                   y=magnitude_diff,
+                                   mode='lines',
+                                   name=f'Absolute Δ {selected_column}',
+                                   hovertemplate=custom_hover))
+
+                fig_absolute_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
+                                                legend=dict(
+                                                    font=dict(family='Open Sans',
+                                                              size=self.legend_font_size,
+                                                              color='black'),
+                                                    # orientation="h",
+                                                    x=legend_position['x'],
+                                                    y=legend_position['y'],
+                                                    xanchor=legend_position.get('xanchor', 'auto'),
+                                                    yanchor=legend_position.get('yanchor', 'top'),
+                                                    bgcolor='rgba(255, 255, 255, 0.5)'
+                                                ),
+                                                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
+                                                                font_size=self.hover_font_size),
+                                                hovermode=self.hover_mode,
+                                                font=default_font,
+                                                showlegend=self.legend_visible)
+
+                fig_relative_diff = go.Figure()
+                relative_diff = 100 * magnitude_diff / self.df[selected_column]
+                fig_relative_diff.add_trace(
+                    go.Scatter(x=x_data,
+                               y=relative_diff,
+                               mode='lines',
+                               name=f'Relative Δ {selected_column} (%)',
+                               hovertemplate=custom_hover))
+
+                fig_relative_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
+                                                legend=dict(
+                                                    font=dict(family='Open Sans',
+                                                              size=self.legend_font_size,
+                                                              color='black'),
+                                                    # orientation="h",
+                                                    x=legend_position['x'],
+                                                    y=legend_position['y'],
+                                                    xanchor=legend_position.get('xanchor', 'auto'),
+                                                    yanchor=legend_position.get('yanchor', 'top'),
+                                                    bgcolor='rgba(255, 255, 255, 0.5)'
+                                                ),
+                                                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
+                                                                font_size=self.hover_font_size),
+                                                hovermode=self.hover_mode,
+                                                font=default_font,
+                                                showlegend=self.legend_visible)
+
+                html_reg = fig_reg.to_html(full_html=False,
+                                           include_plotlyjs='cdn',
+                                           config={'responsive': True})
+                self.compare_regular_plot.setHtml(html_reg)
+
+                html_abs_diff = fig_absolute_diff.to_html(full_html=False,
+                                                          include_plotlyjs='cdn',
+                                                          config={'responsive': True})
+                self.compare_absolute_diff_plot.setHtml(html_abs_diff)
+
+                html_rel_diff = fig_relative_diff.to_html(full_html=False,
+                                                          include_plotlyjs='cdn',
+                                                          config={'responsive': True})
+                self.compare_relative_diff_plot.setHtml(html_rel_diff)
+        except Exception as e:
+            QMessageBox.critical(None, 'Error', f"An error occurred while updating compare plots: {str(e)}")
 
     def update_compare_part_loads_plots(self):
         try:
@@ -1076,7 +1202,9 @@ class WE_load_plotter(QWidget):
 
             for col in t_series_columns:
                 phase_col = f'Phase_{col}'
-                if col in self.df.columns and col in self.df_compare.columns and phase_col in self.df.columns and phase_col in self.df_compare.columns:
+                if col in self.df.columns and col in self.df_compare.columns \
+                        and phase_col in self.df.columns \
+                        and phase_col in self.df_compare.columns:
                     magnitude1 = self.df[col]
                     phase1 = self.df[phase_col]
                     magnitude2 = self.df_compare[col]
@@ -1095,7 +1223,10 @@ class WE_load_plotter(QWidget):
 
             for col in r_series_columns:
                 phase_col = f'Phase_{col}'
-                if col in self.df.columns and col in self.df_compare.columns and phase_col in self.df.columns and phase_col in self.df_compare.columns:
+                if col in self.df.columns \
+                        and col in self.df_compare.columns \
+                        and phase_col in self.df.columns \
+                        and phase_col in self.df_compare.columns:
                     magnitude1 = self.df[col]
                     phase1 = self.df[phase_col]
                     magnitude2 = self.df_compare[col]
@@ -1159,195 +1290,83 @@ class WE_load_plotter(QWidget):
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred while updating compare part loads plots: {str(e)}")
 
-    def update_hover_mode(self):
-        hover_mode = self.hover_mode_selector.currentText()
-        self.update_plots()
-        self.update_plots_tab2()
-        self.update_plots_tab3()
-        self.update_compare_plots()
-        self.update_compare_part_loads_plots()
+    def update_plots_for_selected_side_tab_2(self, selected_side):
+        if not selected_side:
+            return
 
-    def update_plot(self, web_view, columns, title):
-        if self.df.columns[1] == 'FREQ':
-            x_data = self.df['FREQ']
-        elif self.df.columns[1] == 'TIME':
-            x_data = self.df['TIME']
+        interface = self.interface_selector.currentText()
+        if not interface:
+            return
+
+        pattern = re.compile(r'^' + re.escape(interface) + r'([-\s]|$)')
+        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
+
+        t_series_columns = [
+            col for col in self.df.columns
+            if pattern.match(col) and any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith(
+                'Phase_')
+               and side_pattern.search(col)
+        ]
+        r_series_columns = [
+            col for col in self.df.columns
+            if pattern.match(col) and any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith(
+                'Phase_')
+               and side_pattern.search(col)
+        ]
+
+        self.populate_web_view_with_plot(self.t_series_plot, t_series_columns, f'T Plot')
+        self.populate_web_view_with_plot(self.r_series_plot, r_series_columns, f'R Plot')
+
+    def update_time_domain_plot(self):
+        try:
+            freq = float(self.data_point_selector.currentText())
+        except ValueError:
+            return
+
+        theta = np.linspace(0, 360, 361)
+        x_data = np.radians(theta)
+
         fig = go.Figure()
 
-        for col in columns:
-            fig.add_trace(go.Scatter(x=x_data, y=self.df[col], mode='lines', name=col))
+        selected_side = self.side_filter_selector.currentText()
+        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
+        displayed_columns = [col for col in self.df.columns if
+                             side_pattern.search(col) and
+                             any(sub in col for sub in ["T1", "T2", "T3", "T2/T3", "R1", "R2", "R3", "R2/R3"]) and
+                             not col.startswith('Phase_')]
 
-        custom_hover = ('%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
-        fig.update_traces(hovertemplate=custom_hover, meta=columns)
+        for col in displayed_columns:
+            amplitude_col = col
+            phase_col = 'Phase_' + col
+            amplitude = self.df.loc[self.df['FREQ'] == freq, amplitude_col].values[0]
+            phase = self.df.loc[self.df['FREQ'] == freq, phase_col].values[0]
+            y_data = amplitude * np.cos(x_data - np.radians(phase))
+            fig.add_trace(go.Scatter(x=theta, y=y_data, mode='lines', name=col,
+                                     hoverinfo='name+x+y', hovertemplate='%{fullData.name}: %{y:.2f}<extra></extra>'))
+            self.current_plot_data[col] = {'theta': theta, 'y_data': y_data}
 
-        legend_position = self.get_legend_position()
-        default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
-
+        plot_title = f'Time Domain Representation at {str(freq)} Hz - {selected_side}'
         fig.update_layout(
-            title=title,
+            title=plot_title,
+            xaxis_title='Theta (degrees)',
+            yaxis_title='Amplitude',
+            hovermode=self.hover_mode,
             margin=dict(l=20, r=20, t=35, b=35),
             legend=dict(
-                font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                orientation="h",
-                x=legend_position['x'],
-                y=legend_position['y'],
-                xanchor=legend_position.get('xanchor', 'auto'),
-                yanchor=legend_position.get('yanchor', 'top'),
-                bgcolor='rgba(255, 255, 255, 0.5)'
+                font=dict(family='Open Sans', size=self.legend_font_size, color='black')
             ),
             hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-            hovermode=self.hover_mode,
-            font=default_font,
-            showlegend=self.legend_visible
-
+            font=dict(family='Open Sans', size=self.default_font_size, color='black')
         )
+        html_content = fig.to_html(full_html=False, include_plotlyjs='cdn')
+        self.time_domain_plot.setHtml(html_content)
 
-        html_content = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-        web_view.setHtml(html_content)
-
-    def update_compare_plots(self):
-        try:
-            selected_column = self.compare_column_selector.currentText()
-            if selected_column and self.df_compare is not None:
-                if self.df.columns[1] == 'FREQ':
-                    x_data = self.df['FREQ']
-                    x_data_compare = self.df_compare['FREQ']
-                elif self.df.columns[1] == 'TIME':
-                    x_data = self.df['TIME']
-                    x_data_compare = self.df_compare['TIME']
-
-                custom_hover = (selected_column + '<br>Hz: %{x}<br>Value: %{y:.3f}<extra></extra>')
-                default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
-                legend_position = self.get_legend_position()
-
-                fig_reg = go.Figure()
-                fig_reg.add_trace(
-                    go.Scatter(x=x_data, y=self.df[selected_column], mode='lines', name=f'Original {selected_column}',
-                               hovertemplate=custom_hover))
-                fig_reg.add_trace(go.Scatter(x=x_data_compare, y=self.df_compare[selected_column], mode='lines',
-                                             name=f'Compare {selected_column}',
-                                             hovertemplate=custom_hover))
-                fig_reg.update_layout(margin=dict(l=20, r=20, t=35, b=35),
-                                      legend=dict(
-                                          font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                                          # orientation="h",
-                                          x=legend_position['x'],
-                                          y=legend_position['y'],
-                                          xanchor=legend_position.get('xanchor', 'auto'),
-                                          yanchor=legend_position.get('yanchor', 'top'),
-                                          bgcolor='rgba(255, 255, 255, 0.5)'
-                                      ),
-                                      hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
-                                                      font_size=self.hover_font_size),
-                                      hovermode=self.hover_mode,
-                                      font=default_font,
-                                      showlegend=self.legend_visible)
-
-                fig_absolute_diff = go.Figure()
-
-                # Convert magnitude and phase to complex numbers and compute the difference
-                phase_col = f'Phase_{selected_column}'
-                if selected_column in self.df.columns and selected_column in self.df_compare.columns and phase_col in self.df.columns and phase_col in self.df_compare.columns:
-                    magnitude1 = self.df[selected_column]
-                    phase1 = self.df[phase_col]
-                    magnitude2 = self.df_compare[selected_column]
-                    phase2 = self.df_compare[phase_col]
-
-                    complex1 = magnitude1 * np.exp(1j * phase1)
-                    complex2 = magnitude2 * np.exp(1j * phase2)
-
-                    complex_diff = complex1 - complex2
-
-                    magnitude_diff = np.abs(complex_diff)
-
-                    fig_absolute_diff.add_trace(
-                        go.Scatter(x=x_data, y=magnitude_diff, mode='lines', name=f'Absolute Δ {selected_column}',
-                                   hovertemplate=custom_hover))
-
-                fig_absolute_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
-                                                legend=dict(
-                                                    font=dict(family='Open Sans', size=self.legend_font_size,
-                                                              color='black'),
-                                                    # orientation="h",
-                                                    x=legend_position['x'],
-                                                    y=legend_position['y'],
-                                                    xanchor=legend_position.get('xanchor', 'auto'),
-                                                    yanchor=legend_position.get('yanchor', 'top'),
-                                                    bgcolor='rgba(255, 255, 255, 0.5)'
-                                                ),
-                                                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
-                                                                font_size=self.hover_font_size),
-                                                hovermode=self.hover_mode,
-                                                font=default_font,
-                                                showlegend=self.legend_visible)
-
-                fig_relative_diff = go.Figure()
-                relative_diff = 100 * magnitude_diff / self.df[selected_column]
-                fig_relative_diff.add_trace(
-                    go.Scatter(x=x_data, y=relative_diff, mode='lines', name=f'Relative Δ {selected_column} (%)',
-                               hovertemplate=custom_hover))
-                fig_relative_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
-                                                legend=dict(
-                                                    font=dict(family='Open Sans', size=self.legend_font_size,
-                                                              color='black'),
-                                                    # orientation="h",
-                                                    x=legend_position['x'],
-                                                    y=legend_position['y'],
-                                                    xanchor=legend_position.get('xanchor', 'auto'),
-                                                    yanchor=legend_position.get('yanchor', 'top'),
-                                                    bgcolor='rgba(255, 255, 255, 0.5)'
-                                                ),
-                                                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
-                                                                font_size=self.hover_font_size),
-                                                hovermode=self.hover_mode,
-                                                font=default_font,
-                                                showlegend=self.legend_visible)
-
-                html_reg = fig_reg.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-                self.compare_regular_plot.setHtml(html_reg)
-                html_abs_diff = fig_absolute_diff.to_html(full_html=False, include_plotlyjs='cdn',
-                                                          config={'responsive': True})
-                self.compare_absolute_diff_plot.setHtml(html_abs_diff)
-                html_rel_diff = fig_relative_diff.to_html(full_html=False, include_plotlyjs='cdn',
-                                                          config={'responsive': True})
-                self.compare_relative_diff_plot.setHtml(html_rel_diff)
-        except Exception as e:
-            QMessageBox.critical(None, 'Error', f"An error occurred while updating compare plots: {str(e)}")
-
-    def update_plots(self):
-        selected_column = self.column_selector.currentText()
-        if selected_column:
-            if self.df.columns[1] == 'FREQ':
-                x_data = self.df['FREQ']
-            elif self.df.columns[1] == 'TIME':
-                x_data = self.df['TIME']
-            custom_hover = (selected_column + '<br>Hz: %{x}<br>Value: %{y:.3f}<extra></extra>')
-            default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
-
-            fig_reg = go.Figure(go.Scatter(x=x_data, y=self.df[selected_column], mode='lines', name=selected_column,
-                                           hovertemplate=custom_hover))
-            fig_reg.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
-                                  hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-                                  hovermode=self.hover_mode,
-                                  font=default_font,
-                                  showlegend=self.legend_visible)
-
-            html_reg = fig_reg.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            self.regular_plot.setHtml(html_reg)
-
-            if self.df.columns[1] == 'FREQ':
-                phase_column = 'Phase_' + selected_column
-                fig_phase = go.Figure(go.Scatter(x=x_data, y=self.df[phase_column], mode='lines', name=phase_column,
-                                                 hovertemplate=custom_hover))
-                fig_phase.update_layout(margin=dict(l=20, r=20, t=35, b=35), legend=dict(font=default_font),
-                                        hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
-                                                        font_size=self.hover_font_size),
-                                        hovermode=self.hover_mode,
-                                        font=default_font,
-                                        showlegend=self.legend_visible)
-
-                html_phase = fig_phase.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-                self.phase_plot.setHtml(html_phase)
+    def update_side_selection_tab_2(self):
+        selected_side = self.side_selector.currentText()
+        self.update_plots_for_selected_side_tab_2(selected_side)
+        if self.df.columns[1] == 'FREQ':
+            self.update_time_domain_plot()
+    # endregion
 
 if __name__ == "__main__":
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
