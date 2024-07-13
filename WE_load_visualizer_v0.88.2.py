@@ -959,7 +959,7 @@ class WE_load_plotter(QWidget):
         html_content = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
         web_view.setHtml(html_content)
 
-    def update_series_plots(self, t_plot, r_plot, interface=None, side=None, exclude_t2_t3_r2_r3=False):
+    def update_T_and_R_plots(self, t_plot, r_plot, interface=None, side=None, exclude_t2_t3_r2_r3=False):
         if not side:
             return
 
@@ -1010,14 +1010,14 @@ class WE_load_plotter(QWidget):
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
         selected_side = self.side_selector.currentText()
-        self.update_series_plots(self.t_series_plot, self.r_series_plot, interface, selected_side)
+        self.update_T_and_R_plots(self.t_series_plot, self.r_series_plot, interface, selected_side)
         if interface:
             self.populate_side_selector_tab_2(interface)
 
     def update_plots_tab3(self):
         selected_side = self.side_filter_selector.currentText()
         exclude_t2_t3_r2_r3 = self.exclude_checkbox.isChecked()
-        self.update_series_plots(self.t_series_plot_tab3, self.r_series_plot_tab3, side=selected_side,
+        self.update_T_and_R_plots(self.t_series_plot_tab3, self.r_series_plot_tab3, side=selected_side,
                                  exclude_t2_t3_r2_r3=exclude_t2_t3_r2_r3)
         if self.df.columns[1] == 'FREQ':
             self.update_time_domain_plot()
