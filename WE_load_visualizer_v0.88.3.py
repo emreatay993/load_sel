@@ -345,14 +345,14 @@ class WE_load_plotter(QWidget):
         self.compare_regular_plot = QtWebEngineWidgets.QWebEngineView()
         # self.compare_phase_plot = QtWebEngineWidgets.QWebEngineView()
         self.compare_absolute_diff_plot = QtWebEngineWidgets.QWebEngineView()
-        self.compare_relative_diff_plot = QtWebEngineWidgets.QWebEngineView()
+        self.compare_percent_diff_plot = QtWebEngineWidgets.QWebEngineView()
 
         splitter_upper.addWidget(self.compare_regular_plot)
         # splitter_upper.addWidget(self.compare_phase_plot)
         splitter_upper.setSizes([self.height() // 4, self.height() // 4])
 
         splitter_lower.addWidget(self.compare_absolute_diff_plot)
-        splitter_lower.addWidget(self.compare_relative_diff_plot)
+        splitter_lower.addWidget(self.compare_percent_diff_plot)
         splitter_lower.setSizes([self.height() // 4, self.height() // 4])
 
         splitter_main.addWidget(splitter_upper)
@@ -943,11 +943,14 @@ class WE_load_plotter(QWidget):
 
         if self.df.columns[1] == 'FREQ':
             x_data = self.df['FREQ']
+            custom_hover = ('%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
         elif self.df.columns[1] == 'TIME':
             x_data = self.df['TIME']
+            custom_hover = ('%{fullData.name}<br>Time: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
 
         y_data_list = [self.df[col] for col in columns]
-        custom_hover = ('%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
+
+
         legend_position = self.get_legend_position()
 
         fig = self.create_multi_trace_figure(x_data, y_data_list, columns, custom_hover, legend_position, title)
@@ -1037,11 +1040,12 @@ class WE_load_plotter(QWidget):
                 if self.df.columns[1] == 'FREQ':
                     x_data = self.df['FREQ']
                     x_data_compare = self.df_compare['FREQ']
+                    custom_hover = (selected_column + '<br>Hz: %{x}<br>Value: %{y:.3f}<extra></extra>')
                 elif self.df.columns[1] == 'TIME':
                     x_data = self.df['TIME']
                     x_data_compare = self.df_compare['TIME']
+                    custom_hover = (selected_column + '<br>Time: %{x}<br>Value: %{y:.3f}<extra></extra>')
 
-                custom_hover = (selected_column + '<br>Hz: %{x}<br>Value: %{y:.3f}<extra></extra>')
                 default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
                 legend_position = self.get_legend_position()
 
@@ -1070,23 +1074,26 @@ class WE_load_plotter(QWidget):
 
                 fig_absolute_diff = go.Figure()
 
-                # Convert magnitude and phase to complex numbers and compute the difference
+                magnitude1 = self.df[selected_column]
+                magnitude2 = self.df_compare[selected_column]
+
+                # Convert magnitude and phase to complex numbers and compute the difference (if FREQ data)
                 phase_col = f'Phase_{selected_column}'
                 if selected_column in self.df.columns \
                         and selected_column in self.df_compare.columns \
                         and phase_col in self.df.columns \
                         and phase_col in self.df_compare.columns:
-                    magnitude1 = self.df[selected_column]
                     phase1 = self.df[phase_col]
-                    magnitude2 = self.df_compare[selected_column]
                     phase2 = self.df_compare[phase_col]
 
                     complex1 = magnitude1 * np.exp(1j * phase1)
                     complex2 = magnitude2 * np.exp(1j * phase2)
 
                     complex_diff = complex1 - complex2
-
                     magnitude_diff = np.abs(complex_diff)
+
+                elif self.df.columns[1] == 'TIME':
+                    magnitude_diff = magnitude1 - magnitude2
 
                     fig_absolute_diff.add_trace(
                         go.Scatter(x=x_data,
@@ -1113,16 +1120,16 @@ class WE_load_plotter(QWidget):
                                                 font=default_font,
                                                 showlegend=self.legend_visible)
 
-                fig_relative_diff = go.Figure()
-                relative_diff = 100 * magnitude_diff / self.df[selected_column]
-                fig_relative_diff.add_trace(
+                fig_percent_diff = go.Figure()
+                percent_diff = 100 * magnitude_diff / self.df[selected_column]
+                fig_percent_diff.add_trace(
                     go.Scatter(x=x_data,
-                               y=relative_diff,
+                               y=percent_diff,
                                mode='lines',
                                name=f'Relative Δ {selected_column} (%)',
                                hovertemplate=custom_hover))
 
-                fig_relative_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
+                fig_percent_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
                                                 legend=dict(
                                                     font=dict(family='Open Sans',
                                                               size=self.legend_font_size,
@@ -1150,10 +1157,10 @@ class WE_load_plotter(QWidget):
                                                           config={'responsive': True})
                 self.compare_absolute_diff_plot.setHtml(html_abs_diff)
 
-                html_rel_diff = fig_relative_diff.to_html(full_html=False,
+                html_rel_diff = fig_percent_diff.to_html(full_html=False,
                                                           include_plotlyjs='cdn',
                                                           config={'responsive': True})
-                self.compare_relative_diff_plot.setHtml(html_rel_diff)
+                self.compare_percent_diff_plot.setHtml(html_rel_diff)
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred while updating compare plots: {str(e)}")
 
@@ -1201,43 +1208,47 @@ class WE_load_plotter(QWidget):
                 x_data_compare = self.df_compare['TIME']
 
             for col in t_series_columns:
+                magnitude1 = self.df[col]
+                magnitude2 = self.df_compare[col]
                 phase_col = f'Phase_{col}'
                 if col in self.df.columns and col in self.df_compare.columns \
                         and phase_col in self.df.columns \
                         and phase_col in self.df_compare.columns:
-                    magnitude1 = self.df[col]
                     phase1 = self.df[phase_col]
-                    magnitude2 = self.df_compare[col]
                     phase2 = self.df_compare[phase_col]
 
                     complex1 = magnitude1 * np.exp(1j * phase1)
                     complex2 = magnitude2 * np.exp(1j * phase2)
 
                     complex_diff = complex1 - complex2
-
                     magnitude_diff = np.abs(complex_diff)
+
+                elif self.df.columns[1] == 'TIME':
+                    magnitude_diff = magnitude1 - magnitude2
 
                     fig_numerical_diff_t.add_trace(
                         go.Scatter(x=x_data, y=magnitude_diff, mode='lines', name=f'Δ {col}',
                                    hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
 
             for col in r_series_columns:
+                magnitude1 = self.df[col]
+                magnitude2 = self.df_compare[col]
                 phase_col = f'Phase_{col}'
                 if col in self.df.columns \
                         and col in self.df_compare.columns \
                         and phase_col in self.df.columns \
                         and phase_col in self.df_compare.columns:
-                    magnitude1 = self.df[col]
                     phase1 = self.df[phase_col]
-                    magnitude2 = self.df_compare[col]
                     phase2 = self.df_compare[phase_col]
 
                     complex1 = magnitude1 * np.exp(1j * phase1)
                     complex2 = magnitude2 * np.exp(1j * phase2)
 
                     complex_diff = complex1 - complex2
-
                     magnitude_diff = np.abs(complex_diff)
+
+                elif self.df.columns[1] == 'TIME':
+                    magnitude_diff = magnitude1 - magnitude2
 
                     fig_numerical_diff_r.add_trace(
                         go.Scatter(x=x_data, y=magnitude_diff, mode='lines', name=f'Δ {col}',
