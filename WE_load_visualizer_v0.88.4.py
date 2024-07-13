@@ -938,7 +938,7 @@ class WE_load_plotter(QWidget):
 
     def populate_web_view_with_plot(self, web_view, columns, title):
         if not columns:
-            web_view.setHtml("<html><body><p>No data available to plot.</p></body></html>")
+            web_view.setHtml("<html><body><p>No data available to plot here.</p></body></html>")
             return
 
         if self.df.columns[1] == 'FREQ':
@@ -950,13 +950,12 @@ class WE_load_plotter(QWidget):
 
         y_data_list = [self.df[col] for col in columns]
 
-
         legend_position = self.get_legend_position()
 
         fig = self.create_multi_trace_figure(x_data, y_data_list, columns, custom_hover, legend_position, title)
 
         if fig is None:
-            web_view.setHtml("<html><body><p>No data available to plot.</p></body></html>")
+            web_view.setHtml("<html><body><p>No data available to plot here.</p></body></html>")
             return
 
         html_content = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
@@ -999,6 +998,55 @@ class WE_load_plotter(QWidget):
 
         self.populate_web_view_with_plot(t_plot, t_series_columns, 'T Series')
         self.populate_web_view_with_plot(r_plot, r_series_columns, 'R Series')
+
+    def calculate_differences(self, df, df_compare, columns, is_freq_data):
+        results = []
+        for col in columns:
+            magnitude1 = df[col]
+            magnitude2 = df_compare[col]
+            phase_col = f'Phase_{col}'
+
+            if is_freq_data and all(col in df.columns for col in [col, phase_col]) and all(
+                    col in df_compare.columns for col in [col, phase_col]):
+                phase1 = df[phase_col]
+                phase2 = df_compare[phase_col]
+
+                complex1 = magnitude1 * np.exp(1j * phase1)
+                complex2 = magnitude2 * np.exp(1j * phase2)
+
+                complex_diff = complex1 - complex2
+                magnitude_diff = np.abs(complex_diff)
+            else:
+                magnitude_diff = magnitude1 - magnitude2
+
+            results.append((col, magnitude_diff))
+
+        return results
+
+    def create_and_style_figure(self, x_data, y_data_list, column_names, custom_hover, title):
+        fig = go.Figure()
+        for y_data, name in zip(y_data_list, column_names):
+            fig.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines', name=name, hovertemplate=custom_hover))
+
+        legend_position = self.get_legend_position()
+
+        fig.update_layout(
+            title=title,
+            margin=dict(l=20, r=20, t=35, b=35),
+            legend=dict(
+                font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                x=legend_position['x'],
+                y=legend_position['y'],
+                xanchor=legend_position.get('xanchor', 'auto'),
+                yanchor=legend_position.get('yanchor', 'top'),
+                bgcolor='rgba(255, 255, 255, 0.5)'
+            ),
+            hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
+            hovermode=self.hover_mode,
+            font=dict(family='Open Sans', size=self.default_font_size, color='black'),
+            showlegend=self.legend_visible
+        )
+        return fig
     # endregion
 
     # region Handle the filtering logic at each tab
@@ -1037,130 +1085,44 @@ class WE_load_plotter(QWidget):
         try:
             selected_column = self.compare_column_selector.currentText()
             if selected_column and self.df_compare is not None:
-                if self.df.columns[1] == 'FREQ':
-                    x_data = self.df['FREQ']
-                    x_data_compare = self.df_compare['FREQ']
-                    custom_hover = (selected_column + '<br>Hz: %{x}<br>Value: %{y:.3f}<extra></extra>')
-                elif self.df.columns[1] == 'TIME':
-                    x_data = self.df['TIME']
-                    x_data_compare = self.df_compare['TIME']
-                    custom_hover = (selected_column + '<br>Time: %{x}<br>Value: %{y:.3f}<extra></extra>')
+                is_freq_data = self.df.columns[1] == 'FREQ'
+                x_data = self.df['FREQ'] if is_freq_data else self.df['TIME']
+                x_data_compare = self.df_compare['FREQ'] if is_freq_data else self.df_compare['TIME']
+                custom_hover = ('%{fullData.name}<br>' + (
+                    'Hz: ' if is_freq_data else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
 
-                default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
-                legend_position = self.get_legend_position()
+                fig_reg = self.create_and_style_figure(
+                    x_data,
+                    [self.df[selected_column], self.df_compare[selected_column]],
+                    [f'Original {selected_column}', f'Compare {selected_column}'],
+                    custom_hover,
+                    f'{selected_column} Comparison'
+                )
 
-                fig_reg = go.Figure()
-                fig_reg.add_trace(
-                    go.Scatter(x=x_data, y=self.df[selected_column], mode='lines', name=f'Original {selected_column}',
-                               hovertemplate=custom_hover))
-                fig_reg.add_trace(go.Scatter(x=x_data_compare, y=self.df_compare[selected_column], mode='lines',
-                                             name=f'Compare {selected_column}',
-                                             hovertemplate=custom_hover))
-                fig_reg.update_layout(margin=dict(l=20, r=20, t=35, b=35),
-                                      legend=dict(
-                                          font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                                          # orientation="h",
-                                          x=legend_position['x'],
-                                          y=legend_position['y'],
-                                          xanchor=legend_position.get('xanchor', 'auto'),
-                                          yanchor=legend_position.get('yanchor', 'top'),
-                                          bgcolor='rgba(255, 255, 255, 0.5)'
-                                      ),
-                                      hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
-                                                      font_size=self.hover_font_size),
-                                      hovermode=self.hover_mode,
-                                      font=default_font,
-                                      showlegend=self.legend_visible)
+                results = self.calculate_differences(self.df, self.df_compare, [selected_column], is_freq_data)
 
-                fig_absolute_diff = go.Figure()
+                fig_absolute_diff = self.create_and_style_figure(
+                    x_data,
+                    [magnitude_diff for _, magnitude_diff in results],
+                    [f'Absolute Δ {col}' for col, _ in results],
+                    custom_hover,
+                    f'{selected_column} Absolute Difference'
+                )
 
-                magnitude1 = self.df[selected_column]
-                magnitude2 = self.df_compare[selected_column]
+                fig_percent_diff = self.create_and_style_figure(
+                    x_data,
+                    [100 * magnitude_diff / self.df[col] for col, magnitude_diff in results],
+                    [f'Relative Δ {col} (%)' for col, _ in results],
+                    custom_hover,
+                    f'{selected_column} Relative Difference'
+                )
 
-                # Convert magnitude and phase to complex numbers and compute the difference (if FREQ data)
-                phase_col = f'Phase_{selected_column}'
-                if selected_column in self.df.columns \
-                        and selected_column in self.df_compare.columns \
-                        and phase_col in self.df.columns \
-                        and phase_col in self.df_compare.columns:
-                    phase1 = self.df[phase_col]
-                    phase2 = self.df_compare[phase_col]
-
-                    complex1 = magnitude1 * np.exp(1j * phase1)
-                    complex2 = magnitude2 * np.exp(1j * phase2)
-
-                    complex_diff = complex1 - complex2
-                    magnitude_diff = np.abs(complex_diff)
-
-                elif self.df.columns[1] == 'TIME':
-                    magnitude_diff = magnitude1 - magnitude2
-
-                    fig_absolute_diff.add_trace(
-                        go.Scatter(x=x_data,
-                                   y=magnitude_diff,
-                                   mode='lines',
-                                   name=f'Absolute Δ {selected_column}',
-                                   hovertemplate=custom_hover))
-
-                fig_absolute_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
-                                                legend=dict(
-                                                    font=dict(family='Open Sans',
-                                                              size=self.legend_font_size,
-                                                              color='black'),
-                                                    # orientation="h",
-                                                    x=legend_position['x'],
-                                                    y=legend_position['y'],
-                                                    xanchor=legend_position.get('xanchor', 'auto'),
-                                                    yanchor=legend_position.get('yanchor', 'top'),
-                                                    bgcolor='rgba(255, 255, 255, 0.5)'
-                                                ),
-                                                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
-                                                                font_size=self.hover_font_size),
-                                                hovermode=self.hover_mode,
-                                                font=default_font,
-                                                showlegend=self.legend_visible)
-
-                fig_percent_diff = go.Figure()
-                percent_diff = 100 * magnitude_diff / self.df[selected_column]
-                fig_percent_diff.add_trace(
-                    go.Scatter(x=x_data,
-                               y=percent_diff,
-                               mode='lines',
-                               name=f'Relative Δ {selected_column} (%)',
-                               hovertemplate=custom_hover))
-
-                fig_percent_diff.update_layout(margin=dict(l=20, r=20, t=35, b=35),
-                                                legend=dict(
-                                                    font=dict(family='Open Sans',
-                                                              size=self.legend_font_size,
-                                                              color='black'),
-                                                    # orientation="h",
-                                                    x=legend_position['x'],
-                                                    y=legend_position['y'],
-                                                    xanchor=legend_position.get('xanchor', 'auto'),
-                                                    yanchor=legend_position.get('yanchor', 'top'),
-                                                    bgcolor='rgba(255, 255, 255, 0.5)'
-                                                ),
-                                                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)',
-                                                                font_size=self.hover_font_size),
-                                                hovermode=self.hover_mode,
-                                                font=default_font,
-                                                showlegend=self.legend_visible)
-
-                html_reg = fig_reg.to_html(full_html=False,
-                                           include_plotlyjs='cdn',
-                                           config={'responsive': True})
-                self.compare_regular_plot.setHtml(html_reg)
-
-                html_abs_diff = fig_absolute_diff.to_html(full_html=False,
-                                                          include_plotlyjs='cdn',
-                                                          config={'responsive': True})
-                self.compare_absolute_diff_plot.setHtml(html_abs_diff)
-
-                html_rel_diff = fig_percent_diff.to_html(full_html=False,
-                                                          include_plotlyjs='cdn',
-                                                          config={'responsive': True})
-                self.compare_percent_diff_plot.setHtml(html_rel_diff)
+                self.compare_regular_plot.setHtml(
+                    fig_reg.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
+                self.compare_absolute_diff_plot.setHtml(
+                    fig_absolute_diff.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
+                self.compare_percent_diff_plot.setHtml(
+                    fig_percent_diff.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred while updating compare plots: {str(e)}")
 
@@ -1174,128 +1136,49 @@ class WE_load_plotter(QWidget):
             side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
             def should_exclude(col):
-                if re.search(r'\bT2\b', col) and not re.search(r'T2/T3', col):
-                    return True
-                if re.search(r'\bT3\b', col) and not re.search(r'T2/T3', col):
-                    return True
-                if re.search(r'\bR2\b', col) and not re.search(r'R2/R3', col):
-                    return True
-                if re.search(r'\bR3\b', col) and not re.search(r'R2/R3', col):
-                    return True
-                return False
+                return any(re.search(r'\b' + sub + r'\b', col) and not re.search(rf'{sub}/', col) for sub in
+                           ["T2", "T3", "R2", "R3"])
 
-            t_series_columns = [col for col in self.df.columns if
-                                side_pattern.search(col) and
-                                any(sub in col for sub in ["T1", "T2", "T3"]) and not col.startswith('Phase_')
-                                and not (exclude_t2_t3_r2_r3 and should_exclude(col))]
-            r_series_columns = [col for col in self.df.columns if
-                                side_pattern.search(col) and
-                                any(sub in col for sub in ["R1", "R2", "R3"]) and not col.startswith('Phase_')
-                                and not (exclude_t2_t3_r2_r3 and should_exclude(col))]
+            t_series_columns = [col for col in self.df.columns if side_pattern.search(col) and any(
+                sub in col for sub in ["T1", "T2", "T3"]) and not col.startswith('Phase_') and not (
+                    exclude_t2_t3_r2_r3 and should_exclude(col))]
+            r_series_columns = [col for col in self.df.columns if side_pattern.search(col) and any(
+                sub in col for sub in ["R1", "R2", "R3"]) and not col.startswith('Phase_') and not (
+                    exclude_t2_t3_r2_r3 and should_exclude(col))]
 
             if not t_series_columns and not r_series_columns:
                 QMessageBox.warning(self, "Warning", "No matching columns found for the selected part side.")
                 return
 
-            fig_numerical_diff_t = go.Figure()
-            fig_numerical_diff_r = go.Figure()
+            is_freq_data = self.df.columns[1] == 'FREQ'
+            x_data = self.df['FREQ'] if is_freq_data else self.df['TIME']
+            x_data_compare = self.df_compare['FREQ'] if is_freq_data else self.df_compare['TIME']
+            custom_hover = '%{fullData.name}<br>' + (
+                'Hz: ' if is_freq_data else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>'
 
-            if self.df.columns[1] == 'FREQ':
-                x_data = self.df['FREQ']
-                x_data_compare = self.df_compare['FREQ']
-            elif self.df.columns[1] == 'TIME':
-                x_data = self.df['TIME']
-                x_data_compare = self.df_compare['TIME']
+            results_t = self.calculate_differences(self.df, self.df_compare, t_series_columns, is_freq_data)
+            results_r = self.calculate_differences(self.df, self.df_compare, r_series_columns, is_freq_data)
 
-            for col in t_series_columns:
-                magnitude1 = self.df[col]
-                magnitude2 = self.df_compare[col]
-                phase_col = f'Phase_{col}'
-                if col in self.df.columns and col in self.df_compare.columns \
-                        and phase_col in self.df.columns \
-                        and phase_col in self.df_compare.columns:
-                    phase1 = self.df[phase_col]
-                    phase2 = self.df_compare[phase_col]
-
-                    complex1 = magnitude1 * np.exp(1j * phase1)
-                    complex2 = magnitude2 * np.exp(1j * phase2)
-
-                    complex_diff = complex1 - complex2
-                    magnitude_diff = np.abs(complex_diff)
-
-                elif self.df.columns[1] == 'TIME':
-                    magnitude_diff = magnitude1 - magnitude2
-
-                    fig_numerical_diff_t.add_trace(
-                        go.Scatter(x=x_data, y=magnitude_diff, mode='lines', name=f'Δ {col}',
-                                   hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
-
-            for col in r_series_columns:
-                magnitude1 = self.df[col]
-                magnitude2 = self.df_compare[col]
-                phase_col = f'Phase_{col}'
-                if col in self.df.columns \
-                        and col in self.df_compare.columns \
-                        and phase_col in self.df.columns \
-                        and phase_col in self.df_compare.columns:
-                    phase1 = self.df[phase_col]
-                    phase2 = self.df_compare[phase_col]
-
-                    complex1 = magnitude1 * np.exp(1j * phase1)
-                    complex2 = magnitude2 * np.exp(1j * phase2)
-
-                    complex_diff = complex1 - complex2
-                    magnitude_diff = np.abs(complex_diff)
-
-                elif self.df.columns[1] == 'TIME':
-                    magnitude_diff = magnitude1 - magnitude2
-
-                    fig_numerical_diff_r.add_trace(
-                        go.Scatter(x=x_data, y=magnitude_diff, mode='lines', name=f'Δ {col}',
-                                   hovertemplate='%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>'))
-
-            default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
-            legend_position = self.get_legend_position()
-
-            fig_numerical_diff_t.update_layout(
-                title=f'T Plot (Δ) - {selected_side}',
-                margin=dict(l=20, r=20, t=35, b=35),
-                legend=dict(
-                    font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                    x=legend_position['x'],
-                    y=legend_position['y'],
-                    xanchor=legend_position.get('xanchor', 'auto'),
-                    yanchor=legend_position.get('yanchor', 'top'),
-                    bgcolor='rgba(255, 255, 255, 0.5)'
-                ),
-                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-                hovermode=self.hover_mode,
-                font=default_font,
-                showlegend=self.legend_visible
+            fig_numerical_diff_t = self.create_and_style_figure(
+                x_data,
+                [magnitude_diff for _, magnitude_diff in results_t],
+                [f'Δ {col}' for col, _ in results_t],
+                custom_hover,
+                f'T Plot (Δ) - {selected_side}'
             )
 
-            fig_numerical_diff_r.update_layout(
-                title=f'R Plot (Δ) - {selected_side}',
-                margin=dict(l=20, r=20, t=35, b=35),
-                legend=dict(
-                    font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                    x=legend_position['x'],
-                    y=legend_position['y'],
-                    xanchor=legend_position.get('xanchor', 'auto'),
-                    yanchor=legend_position.get('yanchor', 'top'),
-                    bgcolor='rgba(255, 255, 255, 0.5)'
-                ),
-                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-                hovermode=self.hover_mode,
-                font=default_font,
-                showlegend=self.legend_visible
+            fig_numerical_diff_r = self.create_and_style_figure(
+                x_data,
+                [magnitude_diff for _, magnitude_diff in results_r],
+                [f'Δ {col}' for col, _ in results_r],
+                custom_hover,
+                f'R Plot (Δ) - {selected_side}'
             )
 
-            html_t = fig_numerical_diff_t.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            self.compare_t_series_plot.setHtml(html_t)
-
-            html_r = fig_numerical_diff_r.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            self.compare_r_series_plot.setHtml(html_r)
+            self.compare_t_series_plot.setHtml(
+                fig_numerical_diff_t.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
+            self.compare_r_series_plot.setHtml(
+                fig_numerical_diff_r.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
         except KeyError as e:
             QMessageBox.critical(None, 'Error', f"KeyError: {str(e)}")
         except Exception as e:
