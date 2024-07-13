@@ -1023,7 +1023,7 @@ class WE_load_plotter(QWidget):
 
         return results
 
-    def create_and_style_figure(self, x_data, y_data_list, column_names, custom_hover, title):
+    def create_and_style_figure(self, web_view, x_data, y_data_list, column_names, custom_hover, title):
         fig = go.Figure()
         for y_data, name in zip(y_data_list, column_names):
             fig.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines', name=name, hovertemplate=custom_hover))
@@ -1046,7 +1046,10 @@ class WE_load_plotter(QWidget):
             font=dict(family='Open Sans', size=self.default_font_size, color='black'),
             showlegend=self.legend_visible
         )
-        return fig
+
+        web_view.setHtml(
+            fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+        )
     # endregion
 
     # region Handle the filtering logic at each tab
@@ -1091,7 +1094,8 @@ class WE_load_plotter(QWidget):
                 custom_hover = ('%{fullData.name}<br>' + (
                     'Hz: ' if is_freq_data else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
 
-                fig_reg = self.create_and_style_figure(
+                self.create_and_style_figure(
+                    self.compare_regular_plot,
                     x_data,
                     [self.df[selected_column], self.df_compare[selected_column]],
                     [f'Original {selected_column}', f'Compare {selected_column}'],
@@ -1101,7 +1105,8 @@ class WE_load_plotter(QWidget):
 
                 results = self.calculate_differences(self.df, self.df_compare, [selected_column], is_freq_data)
 
-                fig_absolute_diff = self.create_and_style_figure(
+                self.create_and_style_figure(
+                    self.compare_absolute_diff_plot,
                     x_data,
                     [magnitude_diff for _, magnitude_diff in results],
                     [f'Absolute Δ {col}' for col, _ in results],
@@ -1109,20 +1114,14 @@ class WE_load_plotter(QWidget):
                     f'{selected_column} Absolute Difference'
                 )
 
-                fig_percent_diff = self.create_and_style_figure(
+                self.create_and_style_figure(
+                    self.compare_percent_diff_plot,
                     x_data,
                     [100 * magnitude_diff / self.df[col] for col, magnitude_diff in results],
                     [f'Relative Δ {col} (%)' for col, _ in results],
                     custom_hover,
                     f'{selected_column} Relative Difference'
                 )
-
-                self.compare_regular_plot.setHtml(
-                    fig_reg.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
-                self.compare_absolute_diff_plot.setHtml(
-                    fig_absolute_diff.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
-                self.compare_percent_diff_plot.setHtml(
-                    fig_percent_diff.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred while updating compare plots: {str(e)}")
 
@@ -1159,7 +1158,8 @@ class WE_load_plotter(QWidget):
             results_t = self.calculate_differences(self.df, self.df_compare, t_series_columns, is_freq_data)
             results_r = self.calculate_differences(self.df, self.df_compare, r_series_columns, is_freq_data)
 
-            fig_numerical_diff_t = self.create_and_style_figure(
+            self.create_and_style_figure(
+                self.compare_t_series_plot,
                 x_data,
                 [magnitude_diff for _, magnitude_diff in results_t],
                 [f'Δ {col}' for col, _ in results_t],
@@ -1167,18 +1167,14 @@ class WE_load_plotter(QWidget):
                 f'T Plot (Δ) - {selected_side}'
             )
 
-            fig_numerical_diff_r = self.create_and_style_figure(
+            self.create_and_style_figure(
+                self.compare_r_series_plot,
                 x_data,
                 [magnitude_diff for _, magnitude_diff in results_r],
                 [f'Δ {col}' for col, _ in results_r],
                 custom_hover,
                 f'R Plot (Δ) - {selected_side}'
             )
-
-            self.compare_t_series_plot.setHtml(
-                fig_numerical_diff_t.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
-            self.compare_r_series_plot.setHtml(
-                fig_numerical_diff_r.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
         except KeyError as e:
             QMessageBox.critical(None, 'Error', f"KeyError: {str(e)}")
         except Exception as e:
