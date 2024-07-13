@@ -71,6 +71,7 @@ def read_pld_file(file_path):
             processed_data.append(data_cells)
     return pd.DataFrame(processed_data, columns=headers)
 
+# region Run the reader and parse the data
 def main():
     try:
         app = QApplication.instance()
@@ -118,6 +119,7 @@ def main():
     except Exception as e:
         QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
         sys.exit()
+# endregion
 
 if __name__ == "__main__":
     data = main()
@@ -131,6 +133,7 @@ class WE_load_plotter(QWidget):
         self.init_variables()
         self.init_ui()
 
+    # region Initialize main window & tabs
     def init_variables(self):
         """Initialize instance variables."""
         self.legend_visible = True
@@ -182,8 +185,9 @@ class WE_load_plotter(QWidget):
         tab = QWidget()
         setup_method(tab)
         return tab
+    # endregion
 
-    # region Initializing widgets & layouts inside each tab of the main window
+    # region Initialize widgets & layouts inside each tab of the main window
     def setupTab1(self, tab):
         splitter = QSplitter(QtCore.Qt.Vertical)
         self.regular_plot = QtWebEngineWidgets.QWebEngineView()
@@ -421,7 +425,7 @@ class WE_load_plotter(QWidget):
         layout.addWidget(splitter)
     # endregion
 
-    # region Defining the logic for each button
+    # region Define the logic for each button
     def select_compare_data(self):
         try:
             folder_selected_raw_data = select_directory('Please select a directory for raw data (Comparison)')
@@ -805,7 +809,7 @@ class WE_load_plotter(QWidget):
         # endregion
     # endregion
 
-    # region Defining the logic for each combobox
+    # region Define the logic for each combobox
     def update_font_settings(self):
         self.legend_font_size = int(self.legend_font_size_selector.currentText())
         self.default_font_size = int(self.default_font_size_selector.currentText())
@@ -872,7 +876,7 @@ class WE_load_plotter(QWidget):
             self.side_selector.addItems(sides)
     # endregion
 
-    # region Defining keyboard events and their logic
+    # region Define keyboard events and their logic
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_L:
             self.legend_visible = not self.legend_visible
@@ -906,61 +910,6 @@ class WE_load_plotter(QWidget):
     # endregion
 
     # region Helper methods for updating the plots
-    def create_multi_trace_figure(self, x_data, y_data_list, column_names, custom_hover, legend_position, title=None):
-        # Convert floats to numpy arrays
-        y_data_list = [np.array([y_data]) if isinstance(y_data, float) else y_data for y_data in y_data_list]
-
-        if not any(y_data.any() for y_data in y_data_list):  # Check if any y_data is empty
-            return None
-
-        fig = go.Figure()
-        for y_data, name in zip(y_data_list, column_names):
-            fig.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines', name=name, hovertemplate=custom_hover))
-
-        default_font = dict(family='Open Sans', size=self.default_font_size, color='black')
-        fig.update_layout(
-            title=title,
-            margin=dict(l=20, r=20, t=35, b=35),
-            legend=dict(
-                font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                x=legend_position['x'],
-                y=legend_position['y'],
-                xanchor=legend_position.get('xanchor', 'auto'),
-                yanchor=legend_position.get('yanchor', 'top'),
-                bgcolor='rgba(255, 255, 255, 0.5)'
-            ),
-            hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-            hovermode=self.hover_mode,
-            font=default_font,
-            showlegend=self.legend_visible
-        )
-        return fig
-
-    def populate_web_view_with_plot(self, web_view, columns, title):
-        if not columns:
-            web_view.setHtml("<html><body><p>No data available to plot here.</p></body></html>")
-            return
-
-        if self.df.columns[1] == 'FREQ':
-            x_data = self.df['FREQ']
-            custom_hover = ('%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
-        elif self.df.columns[1] == 'TIME':
-            x_data = self.df['TIME']
-            custom_hover = ('%{fullData.name}<br>Time: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
-
-        y_data_list = [self.df[col] for col in columns]
-
-        legend_position = self.get_legend_position()
-
-        fig = self.create_multi_trace_figure(x_data, y_data_list, columns, custom_hover, legend_position, title)
-
-        if fig is None:
-            web_view.setHtml("<html><body><p>No data available to plot here.</p></body></html>")
-            return
-
-        html_content = fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-        web_view.setHtml(html_content)
-
     def update_T_and_R_plots(self, t_plot, r_plot, interface=None, side=None, exclude_t2_t3_r2_r3=False):
         if not side:
             return
@@ -996,8 +945,8 @@ class WE_load_plotter(QWidget):
                and not (exclude_t2_t3_r2_r3 and should_exclude(col))
         ]
 
-        self.populate_web_view_with_plot(t_plot, t_series_columns, 'T Series')
-        self.populate_web_view_with_plot(r_plot, r_series_columns, 'R Series')
+        self.populate_web_view_with_plot(t_plot, t_series_columns, 'T Plot')
+        self.populate_web_view_with_plot(r_plot, r_series_columns, 'R Plot')
 
     def calculate_differences(self, df, df_compare, columns, is_freq_data):
         results = []
@@ -1050,16 +999,51 @@ class WE_load_plotter(QWidget):
         web_view.setHtml(
             fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
         )
+
+    def populate_web_view_with_plot(self, web_view, columns, title):
+        if not columns:
+            web_view.setHtml("<html><body><p>No data available to plot here.</p></body></html>")
+            return
+
+        if self.df.columns[1] == 'FREQ':
+            x_data = self.df['FREQ']
+            custom_hover = ('%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
+        elif self.df.columns[1] == 'TIME':
+            x_data = self.df['TIME']
+            custom_hover = ('%{fullData.name}<br>Time: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
+
+        y_data_list = [self.df[col] for col in columns]
+
+        self.create_and_style_figure(web_view, x_data, y_data_list, columns, custom_hover, title)
     # endregion
 
     # region Handle the filtering logic at each tab
     def update_plots_tab1(self):
         selected_column = self.column_selector.currentText()
         if selected_column:
-            self.populate_web_view_with_plot(self.regular_plot, [selected_column], f'{selected_column} Plot')
+            x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
+            custom_hover = ('%{fullData.name}<br>' + (
+                'Hz: ' if self.df.columns[1] == 'FREQ' else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
+
+            self.create_and_style_figure(
+                self.regular_plot,
+                x_data,
+                [self.df[selected_column]],
+                [selected_column],
+                custom_hover,
+                f'{selected_column} Plot'
+            )
+
             if self.df.columns[1] == 'FREQ':
                 phase_column = 'Phase_' + selected_column
-                self.populate_web_view_with_plot(self.phase_plot, [phase_column], f'Phase {selected_column} Plot')
+                self.create_and_style_figure(
+                    self.phase_plot,
+                    x_data,
+                    [self.df[phase_column]],
+                    [phase_column],
+                    custom_hover,
+                    f'Phase {selected_column} Plot'
+                )
 
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
@@ -1072,7 +1056,7 @@ class WE_load_plotter(QWidget):
         selected_side = self.side_filter_selector.currentText()
         exclude_t2_t3_r2_r3 = self.exclude_checkbox.isChecked()
         self.update_T_and_R_plots(self.t_series_plot_tab3, self.r_series_plot_tab3, side=selected_side,
-                                 exclude_t2_t3_r2_r3=exclude_t2_t3_r2_r3)
+                                  exclude_t2_t3_r2_r3=exclude_t2_t3_r2_r3)
         if self.df.columns[1] == 'FREQ':
             self.update_time_domain_plot()
 
@@ -1094,6 +1078,7 @@ class WE_load_plotter(QWidget):
                 custom_hover = ('%{fullData.name}<br>' + (
                     'Hz: ' if is_freq_data else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
 
+                # Regular plot
                 self.create_and_style_figure(
                     self.compare_regular_plot,
                     x_data,
@@ -1103,8 +1088,10 @@ class WE_load_plotter(QWidget):
                     f'{selected_column} Comparison'
                 )
 
+                # Calculate differences
                 results = self.calculate_differences(self.df, self.df_compare, [selected_column], is_freq_data)
 
+                # Absolute difference plot
                 self.create_and_style_figure(
                     self.compare_absolute_diff_plot,
                     x_data,
@@ -1114,6 +1101,7 @@ class WE_load_plotter(QWidget):
                     f'{selected_column} Absolute Difference'
                 )
 
+                # Relative difference plot
                 self.create_and_style_figure(
                     self.compare_percent_diff_plot,
                     x_data,
@@ -1151,13 +1139,13 @@ class WE_load_plotter(QWidget):
 
             is_freq_data = self.df.columns[1] == 'FREQ'
             x_data = self.df['FREQ'] if is_freq_data else self.df['TIME']
-            x_data_compare = self.df_compare['FREQ'] if is_freq_data else self.df_compare['TIME']
             custom_hover = '%{fullData.name}<br>' + (
                 'Hz: ' if is_freq_data else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>'
 
             results_t = self.calculate_differences(self.df, self.df_compare, t_series_columns, is_freq_data)
             results_r = self.calculate_differences(self.df, self.df_compare, r_series_columns, is_freq_data)
 
+            # T Series plot
             self.create_and_style_figure(
                 self.compare_t_series_plot,
                 x_data,
@@ -1167,6 +1155,7 @@ class WE_load_plotter(QWidget):
                 f'T Plot (Δ) - {selected_side}'
             )
 
+            # R Series plot
             self.create_and_style_figure(
                 self.compare_r_series_plot,
                 x_data,
@@ -1216,8 +1205,6 @@ class WE_load_plotter(QWidget):
         theta = np.linspace(0, 360, 361)
         x_data = np.radians(theta)
 
-        fig = go.Figure()
-
         selected_side = self.side_filter_selector.currentText()
         side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
         displayed_columns = [col for col in self.df.columns if
@@ -1225,31 +1212,26 @@ class WE_load_plotter(QWidget):
                              any(sub in col for sub in ["T1", "T2", "T3", "T2/T3", "R1", "R2", "R3", "R2/R3"]) and
                              not col.startswith('Phase_')]
 
+        y_data_list = []
         for col in displayed_columns:
             amplitude_col = col
             phase_col = 'Phase_' + col
             amplitude = self.df.loc[self.df['FREQ'] == freq, amplitude_col].values[0]
             phase = self.df.loc[self.df['FREQ'] == freq, phase_col].values[0]
             y_data = amplitude * np.cos(x_data - np.radians(phase))
-            fig.add_trace(go.Scatter(x=theta, y=y_data, mode='lines', name=col,
-                                     hoverinfo='name+x+y', hovertemplate='%{fullData.name}: %{y:.2f}<extra></extra>'))
+            y_data_list.append(y_data)
             self.current_plot_data[col] = {'theta': theta, 'y_data': y_data}
 
         plot_title = f'Time Domain Representation at {str(freq)} Hz - {selected_side}'
-        fig.update_layout(
-            title=plot_title,
-            xaxis_title='Theta (degrees)',
-            yaxis_title='Amplitude',
-            hovermode=self.hover_mode,
-            margin=dict(l=20, r=20, t=35, b=35),
-            legend=dict(
-                font=dict(family='Open Sans', size=self.legend_font_size, color='black')
-            ),
-            hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-            font=dict(family='Open Sans', size=self.default_font_size, color='black')
+        custom_hover = '%{fullData.name}: %{y:.2f}<extra></extra>'
+        self.create_and_style_figure(
+            self.time_domain_plot,
+            theta,
+            y_data_list,
+            displayed_columns,
+            custom_hover,
+            plot_title
         )
-        html_content = fig.to_html(full_html=False, include_plotlyjs='cdn')
-        self.time_domain_plot.setHtml(html_content)
 
     def update_side_selection_tab_2(self):
         selected_side = self.side_selector.currentText()
@@ -1257,7 +1239,9 @@ class WE_load_plotter(QWidget):
         if self.df.columns[1] == 'FREQ':
             self.update_time_domain_plot()
     # endregion
+# endregion
 
+# region Run the script
 if __name__ == "__main__":
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
