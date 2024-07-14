@@ -1013,7 +1013,7 @@ class WE_load_plotter(QWidget):
             if (not interface or re.match(r'^' + re.escape(interface) + r'([-\s]|$)', col))
                and any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"])
                and not col.startswith('Phase_')
-
+               and side_pattern.search(col)
                and not (exclude_t2_t3_r2_r3 and should_exclude(col))
         ]
 
@@ -1054,37 +1054,44 @@ class WE_load_plotter(QWidget):
         return results
 
     def create_and_style_figure(self, web_view, df, x_data, title):
-        y_data_list = [df[col] for col in df.columns]
-        column_names = df.columns
-        custom_hover = ('%{fullData.name}<br>' + (
-            'Hz: ' if self.df.columns[1] == 'FREQ' else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
+        try:
+            if df is None:
+                web_view.setHtml("<html><body><p>No data available to plot here.</p></body></html>")
 
-        fig = go.Figure()
-        for y_data, name in zip(y_data_list, column_names):
-            fig.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines', name=name, hovertemplate=custom_hover))
+            else:
+                y_data_list = [df[col] for col in df.columns]
+                column_names = df.columns
+                custom_hover = ('%{fullData.name}<br>' + (
+                    'Hz: ' if self.df.columns[1] == 'FREQ' else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
 
-        legend_position = self.get_legend_position()
+                fig = go.Figure()
+                for y_data, name in zip(y_data_list, column_names):
+                    fig.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines', name=name, hovertemplate=custom_hover))
 
-        fig.update_layout(
-            title=title,
-            margin=dict(l=20, r=20, t=35, b=35),
-            legend=dict(
-                font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                x=legend_position['x'],
-                y=legend_position['y'],
-                xanchor=legend_position.get('xanchor', 'auto'),
-                yanchor=legend_position.get('yanchor', 'top'),
-                bgcolor='rgba(255, 255, 255, 0.5)'
-            ),
-            hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
-            hovermode=self.hover_mode,
-            font=dict(family='Open Sans', size=self.default_font_size, color='black'),
-            showlegend=self.legend_visible
-        )
+                legend_position = self.get_legend_position()
 
-        web_view.setHtml(
-            fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-        )
+                fig.update_layout(
+                    title=title,
+                    margin=dict(l=20, r=20, t=35, b=35),
+                    legend=dict(
+                        font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                        x=legend_position['x'],
+                        y=legend_position['y'],
+                        xanchor=legend_position.get('xanchor', 'auto'),
+                        yanchor=legend_position.get('yanchor', 'top'),
+                        bgcolor='rgba(255, 255, 255, 0.5)'
+                    ),
+                    hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
+                    hovermode=self.hover_mode,
+                    font=dict(family='Open Sans', size=self.default_font_size, color='black'),
+                    showlegend=self.legend_visible
+                )
+
+                web_view.setHtml(
+                    fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+                )
+        except Exception as e:
+            QMessageBox.critical(None, 'Error', f"An error occurred while creating and styling figures: {str(e)}")
 
     def populate_web_view_with_plot(self, web_view, columns, title):
         if not columns:
@@ -1188,6 +1195,7 @@ class WE_load_plotter(QWidget):
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
         selected_side = self.side_selector.currentText()
+        self.update_T_and_R_plots(self.t_series_plot, self.r_series_plot, interface, selected_side)
         if interface:
             self.populate_side_selector_tab_2(interface)
 
@@ -1205,8 +1213,6 @@ class WE_load_plotter(QWidget):
 
         y_data_dict_r_series = {col: self.df[col] for col in r_series_columns}
         self.original_df_r_series_tab2, self.working_df_r_series_tab2 = self.create_dataframes(x_data, x_label, y_data_dict_r_series)
-
-        self.update_T_and_R_plots(self.t_series_plot, self.r_series_plot, interface, selected_side)
 
     def update_plots_tab3(self):
         selected_side = self.side_filter_selector.currentText()
