@@ -8,7 +8,7 @@ from collections import OrderedDict
 from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
 from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QLineEdit,
-                             QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox)
+                             QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox, QGroupBox)
 import plotly.graph_objects as go
 import os
 import numpy as np
@@ -184,6 +184,31 @@ class WE_load_plotter(QWidget):
     def init_ui(self):
         """Initialize the user interface."""
         tab_widget = QTabWidget(self)
+
+        tab_widget.setStyleSheet("""
+            QTabBar::tab {
+                background: #00838f;
+                color: white;
+                min-width: 120px; /* Adjust this value as needed */
+                padding: 5px;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                margin-right: 5px;
+            }
+            QTabBar::tab:selected {
+                background: #00acc1;
+                font-weight: normal; /* Remove bold */
+            }
+            QTabWidget::pane {
+                border-top: 2px solid #ccc;
+                border-left: 1px solid #ccc;
+                border-right: 1px solid #ccc;
+                border-bottom: 1px solid #ccc;
+                border-radius: 10px;
+                padding: 5px;
+            }
+        """)
+
         main_layout = QVBoxLayout(self)
 
         self.tab1 = self.create_tab("Single Data", self.setupTab1)
@@ -206,7 +231,7 @@ class WE_load_plotter(QWidget):
 
         main_layout.addWidget(tab_widget)
         self.setLayout(main_layout)
-        self.setWindowTitle("WE Load Visualizer - v0.88")
+        self.setWindowTitle("WE Load Visualizer - v0.9")
         self.showMaximized()
 
     def create_tab(self, name, setup_method):
@@ -225,23 +250,6 @@ class WE_load_plotter(QWidget):
             self.phase_plot = QtWebEngineWidgets.QWebEngineView()
             splitter.addWidget(self.phase_plot)
             splitter.setSizes([self.height() // 2, self.height() // 2])
-
-        # Checkbox for Rolling Min-Max Envelope
-        self.rolling_min_max_checkbox = QCheckBox("Show as Rolling Min-Max Envelope")
-        self.rolling_min_max_checkbox.stateChanged.connect(self.update_plots_tab1)
-        self.rolling_min_max_checkbox.setVisible(self.df.columns[1] == 'TIME')
-
-        # Checkbox for Plot as Bars
-        self.plot_as_bars_checkbox = QCheckBox("Plot as Bars")
-        self.plot_as_bars_checkbox.stateChanged.connect(self.update_plots_tab1)
-
-        # Input box for Desired Num Points
-        self.desired_num_points_label = QLabel("Number of Points Shown:")
-        self.desired_num_points_input = QLineEdit()
-        self.desired_num_points_input.setPlaceholderText("Enter an Integer Numner")
-        self.desired_num_points_input.setFixedWidth(150)
-        self.desired_num_points_input.setText("2000")  # Set initial value
-        self.desired_num_points_input.textChanged.connect(self.update_plots_tab1)
 
         self.column_selector = QComboBox()
         self.column_selector.setEditable(False)
@@ -362,6 +370,7 @@ class WE_load_plotter(QWidget):
         x_data_length = len(self.df['TIME']) if self.df.columns[1] == 'TIME' else len(self.df['FREQ'])
         if x_data_length > self.number_limit_of_data_points_shown_for_each_trace:
             self.rolling_min_max_checkbox.setChecked(True)
+            self.plot_as_bars_checkbox.setChecked(True)
 
         control_layout = QHBoxLayout()
         control_layout.addWidget(self.rolling_min_max_checkbox)
@@ -371,11 +380,32 @@ class WE_load_plotter(QWidget):
 
         layout.addLayout(control_layout)
 
+    def update_control_visibility(self):
+        is_time_data = self.df.columns[1] == 'TIME'
+        is_rolling_min_max_checked = self.rolling_min_max_checkbox.isChecked()
+
+        self.rolling_min_max_checkbox.setVisible(is_time_data)
+        self.plot_as_bars_checkbox.setVisible(is_time_data and is_rolling_min_max_checked)
+        self.desired_num_points_label.setVisible(is_time_data and is_rolling_min_max_checked)
+        self.desired_num_points_input.setVisible(is_time_data and is_rolling_min_max_checked)
+
     def setupSettingsTab(self, tab):
         layout = QVBoxLayout(tab)
 
-        self.add_common_controls(layout)
+        # Data Processing Tools Group
+        data_processing_group = QGroupBox("Data Processing Tools")
+        data_processing_layout = QVBoxLayout()
 
+        self.add_common_controls(data_processing_layout)
+
+        data_processing_group.setLayout(data_processing_layout)
+        layout.addWidget(data_processing_group)
+
+        # Graphical Settings Group
+        graphical_settings_group = QGroupBox("Graphical Settings")
+        graphical_settings_layout = QVBoxLayout()
+
+        # Legend Font Size
         legend_font_size_layout = QHBoxLayout()
         legend_font_size_label = QLabel("Legend Font Size")
         self.legend_font_size_selector = QComboBox()
@@ -384,7 +414,9 @@ class WE_load_plotter(QWidget):
         self.legend_font_size_selector.currentIndexChanged.connect(self.update_font_settings)
         legend_font_size_layout.addWidget(legend_font_size_label)
         legend_font_size_layout.addWidget(self.legend_font_size_selector)
+        graphical_settings_layout.addLayout(legend_font_size_layout)
 
+        # Default Font Size
         default_font_size_layout = QHBoxLayout()
         default_font_size_label = QLabel("Default Font Size")
         self.default_font_size_selector = QComboBox()
@@ -393,7 +425,9 @@ class WE_load_plotter(QWidget):
         self.default_font_size_selector.currentIndexChanged.connect(self.update_font_settings)
         default_font_size_layout.addWidget(default_font_size_label)
         default_font_size_layout.addWidget(self.default_font_size_selector)
+        graphical_settings_layout.addLayout(default_font_size_layout)
 
+        # Hover Font Size
         hover_font_size_layout = QHBoxLayout()
         hover_font_size_label = QLabel("Hover Font Size")
         self.hover_font_size_selector = QComboBox()
@@ -402,7 +436,9 @@ class WE_load_plotter(QWidget):
         self.hover_font_size_selector.currentIndexChanged.connect(self.update_font_settings)
         hover_font_size_layout.addWidget(hover_font_size_label)
         hover_font_size_layout.addWidget(self.hover_font_size_selector)
+        graphical_settings_layout.addLayout(hover_font_size_layout)
 
+        # Hover Mode
         hover_mode_layout = QHBoxLayout()
         hover_mode_label = QLabel("Hover Mode")
         hover_mode_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
@@ -412,15 +448,47 @@ class WE_load_plotter(QWidget):
         self.hover_mode_selector.currentIndexChanged.connect(self.update_font_settings)
         hover_mode_layout.addWidget(hover_mode_label)
         hover_mode_layout.addWidget(self.hover_mode_selector)
+        graphical_settings_layout.addLayout(hover_mode_layout)
 
-        layout.addLayout(legend_font_size_layout)
-        layout.addLayout(default_font_size_layout)
-        layout.addLayout(hover_font_size_layout)
-        layout.addLayout(hover_mode_layout)
-        tab.setLayout(layout)
+        graphical_settings_group.setLayout(graphical_settings_layout)
+        layout.addWidget(graphical_settings_group)
 
-        contact_label = QLabel("Please reach K. Emre Atay (Compressor Module: Non-Stationary Parts Team) for bug reports / feature requests.")
+        # Add a contact label at the bottom
+        contact_label = QLabel(
+            "Please reach K. Emre Atay (Compressor Module: Stationary Parts Team) for bug reports / feature requests.")
         layout.addWidget(contact_label, alignment=QtCore.Qt.AlignBottom)
+
+        # Apply stylesheet to group boxes
+        data_processing_group.setStyleSheet("""
+            QGroupBox {
+                color: #00838f;
+                background-color: #f0f0f0;
+                border: 1px solid lightgray;
+                border-radius: 5px;
+                margin-top: 1ex;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 3px;
+            }
+        """)
+        graphical_settings_group.setStyleSheet("""
+            QGroupBox {
+                color: #00838f;
+                background-color: #f0f0f0;
+                border: 1px solid lightgray;
+                border-radius: 5px;
+                margin-top: 1ex;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 3px;
+            }
+        """)
+
+        tab.setLayout(layout)
 
     def setupCompareTab(self, tab):
         splitter_main = QSplitter(QtCore.Qt.Vertical)
@@ -452,6 +520,23 @@ class WE_load_plotter(QWidget):
 
         self.compare_button = QPushButton("Select Data for Comparison")
         self.compare_button.clicked.connect(self.select_compare_data)
+        self.compare_button.setStyleSheet("""
+            QPushButton {
+                background-color: #00838f;
+                color: white;
+                border: 2px solid #006064;
+                border-radius: 5px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #00acc1;
+                border-color: #006064;
+            }
+            QPushButton:pressed {
+                background-color: #006064;
+                border-color: #004d40;
+            }
+        """)
         layout.addWidget(self.compare_button)
 
         tab.setLayout(layout)
@@ -524,6 +609,14 @@ class WE_load_plotter(QWidget):
 
             dfs = [read_pld_file(file_path) for file_path in file_path_full_data]
             df_compare = pd.concat(dfs, ignore_index=True)
+
+            # Check if the TIME or FREQ column of the compared data matches the original data
+            original_first_col = self.df.columns[1]
+            compared_first_col = df_compare.columns[1]
+            if original_first_col != compared_first_col:
+                QMessageBox.critical(None, 'Error',
+                                     f"The X data columns of original and compared data are different:\nOriginal Data: {original_first_col}\nCompared Data: {compared_first_col}")
+                return
 
             df_intf_before = read_max_pld_file(file_path_headers_data[0])
             if self.df.columns[1] == 'FREQ':
@@ -1026,8 +1119,10 @@ class WE_load_plotter(QWidget):
                and not (exclude_t2_t3_r2_r3 and should_exclude(col))
         ]
 
-        self.populate_web_view_with_plot(t_plot, t_series_columns, 'T Plot')
-        self.populate_web_view_with_plot(r_plot, r_series_columns, 'R Plot')
+        x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
+
+        self.create_and_style_figure(t_plot, self.df[t_series_columns], x_data, 'T Plot')
+        self.create_and_style_figure(r_plot, self.df[r_series_columns], x_data, 'R Plot')
 
     def calculate_differences(self, df, df_compare, columns, is_freq_data):
         results = []
@@ -1057,8 +1152,52 @@ class WE_load_plotter(QWidget):
         try:
             if df is None:
                 web_view.setHtml("<html><body><p>No data available to plot here.</p></body></html>")
+                return
+
+            legend_position = self.get_legend_position()
+
+            # Check if rolling min-max envelope should be used
+            if self.rolling_min_max_checkbox.isChecked():
+                self.plot_as_bars_checkbox.setVisible(True)
+                self.desired_num_points_label.setVisible(True)
+                self.desired_num_points_input.setVisible(True)
+                try:
+                    desired_num_points = int(self.desired_num_points_input.text())
+                except ValueError:
+                    print("Invalid input. Please enter a valid integer number.")
+                    desired_num_points = 2000
+
+                is_plot_as_bars = self.plot_as_bars_checkbox.isChecked()
+
+                fig = rolling_min_max_envelope(
+                    df,
+                    opacity=0.6,
+                    desired_num_points=desired_num_points,
+                    plot_as_bars=is_plot_as_bars,
+                    plot_title=f'Rolling Min-Max Envelope for {title}'
+                )
+
+                fig.update_layout(
+                    margin=dict(l=20, r=20, t=35, b=35),
+                    legend=dict(
+                        font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                        x=legend_position['x'],
+                        y=legend_position['y'],
+                        xanchor=legend_position.get('xanchor', 'auto'),
+                        yanchor=legend_position.get('yanchor', 'top'),
+                        bgcolor='rgba(255, 255, 255, 0.5)'
+                    ),
+                    hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
+                    hovermode=self.hover_mode,
+                    font=dict(family='Open Sans', size=self.default_font_size, color='black'),
+                    showlegend=self.legend_visible
+                )
 
             else:
+                self.plot_as_bars_checkbox.setVisible(False)
+                self.desired_num_points_label.setVisible(False)
+                self.desired_num_points_input.setVisible(False)
+
                 y_data_list = [df[col] for col in df.columns]
                 column_names = df.columns
                 custom_hover = ('%{fullData.name}<br>' + (
@@ -1067,8 +1206,6 @@ class WE_load_plotter(QWidget):
                 fig = go.Figure()
                 for y_data, name in zip(y_data_list, column_names):
                     fig.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines', name=name, hovertemplate=custom_hover))
-
-                legend_position = self.get_legend_position()
 
                 fig.update_layout(
                     title=title,
@@ -1087,9 +1224,9 @@ class WE_load_plotter(QWidget):
                     showlegend=self.legend_visible
                 )
 
-                web_view.setHtml(
-                    fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-                )
+            web_view.setHtml(
+                fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+            )
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred while creating and styling figures: {str(e)}")
 
@@ -1109,6 +1246,51 @@ class WE_load_plotter(QWidget):
         df = pd.DataFrame(y_data_dict)
 
         self.create_and_style_figure(web_view, df, x_data, title)
+
+    def plot_with_rolling_min_max_envelope(self, df, x_data, columns, web_view, plot_title, x_label):
+        if self.df.columns[1] == 'TIME' and self.rolling_min_max_checkbox.isChecked():
+            try:
+                desired_num_points = int(self.desired_num_points_input.text())
+            except ValueError:
+                print("Invalid input. Please enter a valid integer number.")
+                desired_num_points = 2000
+
+            is_plot_as_bars = self.plot_as_bars_checkbox.isChecked()
+
+            fig = rolling_min_max_envelope(
+                df[columns],
+                opacity=0.6,
+                desired_num_points=desired_num_points,
+                plot_as_bars=is_plot_as_bars,
+                plot_title=f'Rolling Min-Max Envelope for {plot_title}'
+            )
+
+            legend_position = self.get_legend_position()
+            fig.update_layout(
+                margin=dict(l=20, r=20, t=35, b=35),
+                legend=dict(
+                    font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                    x=legend_position['x'],
+                    y=legend_position['y'],
+                    xanchor=legend_position.get('xanchor', 'auto'),
+                    yanchor=legend_position.get('yanchor', 'top'),
+                    bgcolor='rgba(255, 255, 255, 0.5)'
+                ),
+                hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
+                hovermode=self.hover_mode,
+                font=dict(family='Open Sans', size=self.default_font_size, color='black'),
+                showlegend=self.legend_visible
+            )
+
+            web_view.setHtml(fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
+
+        else:
+            self.create_and_style_figure(
+                web_view,
+                df[columns],
+                x_data,
+                plot_title
+            )
 
     def update_all_transient_data_plots(self):
         self.update_plots_tab1()
@@ -1149,33 +1331,14 @@ class WE_load_plotter(QWidget):
             y_data_dict = {selected_column: self.df[selected_column]}
             self.original_df_tab1, self.working_df_tab1 = self.create_dataframes(x_data, x_label, y_data_dict)
 
-            # Add the figure as a rolling min-max envelope
-            if self.df.columns[1] == 'TIME' and self.rolling_min_max_checkbox.isChecked():
-                try:
-                    desired_num_points = int(self.desired_num_points_input.text())
-                except ValueError:
-                    print("Invalid input. Please enter a valid integer number.")
-                    desired_num_points = 2000
-
-                is_plot_as_bars = self.plot_as_bars_checkbox.isChecked()
-
-                fig = rolling_min_max_envelope(
-                    self.working_df_tab1[[selected_column]],
-                    opacity= 0.6,
-                    desired_num_points=desired_num_points,
-                    plot_as_bars=is_plot_as_bars,
-                    plot_title=f'Rolling Min-Max Envelope for {selected_column}'
-                )
-                self.regular_plot.setHtml(fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
-
-            # Add the figure as standard plotly figure
-            else:
-                self.create_and_style_figure(
-                    self.regular_plot,
-                    self.working_df_tab1,
-                    x_data,
-                    f'{selected_column} Plot'
-                )
+            self.plot_with_rolling_min_max_envelope(
+                self.working_df_tab1,
+                x_data,
+                [selected_column],
+                self.regular_plot,
+                f'{selected_column} Plot',
+                x_label
+            )
 
             if self.df.columns[1] == 'FREQ':
                 phase_column = 'Phase_' + selected_column
@@ -1196,8 +1359,6 @@ class WE_load_plotter(QWidget):
         interface = self.interface_selector.currentText()
         selected_side = self.side_selector.currentText()
         self.update_T_and_R_plots(self.t_series_plot, self.r_series_plot, interface, selected_side)
-        if interface:
-            self.populate_side_selector_tab_2(interface)
 
         # Create dataframe containers for tab2 (T and R plots)
         side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
@@ -1213,6 +1374,9 @@ class WE_load_plotter(QWidget):
 
         y_data_dict_r_series = {col: self.df[col] for col in r_series_columns}
         self.original_df_r_series_tab2, self.working_df_r_series_tab2 = self.create_dataframes(x_data, x_label, y_data_dict_r_series)
+
+        if interface:
+            self.populate_side_selector_tab_2(interface)
 
     def update_plots_tab3(self):
         selected_side = self.side_filter_selector.currentText()
@@ -1344,31 +1508,36 @@ class WE_load_plotter(QWidget):
             QMessageBox.critical(None, 'Error', f"An error occurred while updating compare part loads plots: {str(e)}")
 
     def update_plots_for_selected_side_tab_2(self, selected_side):
-        if not selected_side:
-            return
+        try:
+            if not selected_side:
+                return
 
-        interface = self.interface_selector.currentText()
-        if not interface:
-            return
+            interface = self.interface_selector.currentText()
+            if not interface:
+                return
 
-        pattern = re.compile(r'^' + re.escape(interface) + r'([-\s]|$)')
-        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
+            pattern = re.compile(r'^' + re.escape(interface) + r'([-\s]|$)')
+            side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
-        t_series_columns = [
-            col for col in self.df.columns
-            if pattern.match(col) and any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith(
-                'Phase_')
-               and side_pattern.search(col)
-        ]
-        r_series_columns = [
-            col for col in self.df.columns
-            if pattern.match(col) and any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith(
-                'Phase_')
-               and side_pattern.search(col)
-        ]
+            t_series_columns = [
+                col for col in self.df.columns
+                if pattern.match(col) and any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"]) and not col.startswith(
+                    'Phase_')
+                   and side_pattern.search(col)
+            ]
+            r_series_columns = [
+                col for col in self.df.columns
+                if pattern.match(col) and any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"]) and not col.startswith(
+                    'Phase_')
+                   and side_pattern.search(col)
+            ]
 
-        self.populate_web_view_with_plot(self.t_series_plot, t_series_columns, f'T Plot')
-        self.populate_web_view_with_plot(self.r_series_plot, r_series_columns, f'R Plot')
+            x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
+            self.create_and_style_figure(self.t_series_plot, self.df[t_series_columns], x_data, 'T Plot')
+            self.create_and_style_figure(self.r_series_plot, self.df[r_series_columns], x_data, 'R Plot')
+
+        except Exception as e:
+            QMessageBox.critical(None, 'Error', f"An error occurred white updating tab2 plots: {str(e)}")
 
     def update_time_domain_plot(self):
         try:
