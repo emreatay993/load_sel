@@ -7,7 +7,7 @@ from time import sleep
 from collections import OrderedDict
 from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
-from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget,
+from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QLineEdit,
                              QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox)
 import plotly.graph_objects as go
 import os
@@ -15,6 +15,7 @@ import numpy as np
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
 import traceback
 import shutil
+from endaq.plot import rolling_min_max_envelope
 # endregion
 
 # region Select and read WE raw data
@@ -152,6 +153,34 @@ class WE_load_plotter(QWidget):
         self.hover_font_size = 15
         self.hover_mode = 'closest'
 
+        # DataFrames for plots
+        self.original_df_tab1 = None
+        self.working_df_tab1 = None
+        self.original_df_phase_tab1 = None
+        self.working_df_phase_tab1 = None
+        self.original_df_t_series_tab2 = None
+        self.working_df_t_series_tab2 = None
+        self.original_df_r_series_tab2 = None
+        self.working_df_r_series_tab2 = None
+        self.original_df_t_series_tab3 = None
+        self.working_df_t_series_tab3 = None
+        self.original_df_r_series_tab3 = None
+        self.working_df_r_series_tab3 = None
+        self.original_df_time_domain_tab4 = None
+        self.working_df_time_domain_tab4 = None
+        self.original_df_compare_tab = None
+        self.working_df_compare_tab = None
+        self.original_df_absolute_diff_tab = None
+        self.working_df_absolute_diff_tab = None
+        self.original_df_relative_diff_tab = None
+        self.working_df_relative_diff_tab = None
+        self.original_df_compare_t_series_tab = None
+        self.working_df_compare_t_series_tab = None
+        self.original_df_compare_r_series_tab = None
+        self.working_df_compare_r_series_tab = None
+
+        self.number_limit_of_data_points_shown_for_each_trace = 10000
+
     def init_ui(self):
         """Initialize the user interface."""
         tab_widget = QTabWidget(self)
@@ -197,6 +226,23 @@ class WE_load_plotter(QWidget):
             splitter.addWidget(self.phase_plot)
             splitter.setSizes([self.height() // 2, self.height() // 2])
 
+        # Checkbox for Rolling Min-Max Envelope
+        self.rolling_min_max_checkbox = QCheckBox("Show as Rolling Min-Max Envelope")
+        self.rolling_min_max_checkbox.stateChanged.connect(self.update_plots_tab1)
+        self.rolling_min_max_checkbox.setVisible(self.df.columns[1] == 'TIME')
+
+        # Checkbox for Plot as Bars
+        self.plot_as_bars_checkbox = QCheckBox("Plot as Bars")
+        self.plot_as_bars_checkbox.stateChanged.connect(self.update_plots_tab1)
+
+        # Input box for Desired Num Points
+        self.desired_num_points_label = QLabel("Number of Points Shown:")
+        self.desired_num_points_input = QLineEdit()
+        self.desired_num_points_input.setPlaceholderText("Enter an Integer Numner")
+        self.desired_num_points_input.setFixedWidth(150)
+        self.desired_num_points_input.setText("2000")  # Set initial value
+        self.desired_num_points_input.textChanged.connect(self.update_plots_tab1)
+
         self.column_selector = QComboBox()
         self.column_selector.setEditable(False)
         regular_columns = [col for col in self.df.columns if
@@ -204,8 +250,11 @@ class WE_load_plotter(QWidget):
         self.column_selector.addItems(regular_columns)
         self.column_selector.currentIndexChanged.connect(self.update_plots_tab1)
 
+        selector_layout = QHBoxLayout()
+        selector_layout.addWidget(self.column_selector)
+
         layout = QVBoxLayout(tab)
-        layout.addWidget(self.column_selector)
+        layout.addLayout(selector_layout)
         layout.addWidget(splitter)
 
     def setupTab2(self, tab):
@@ -292,8 +341,40 @@ class WE_load_plotter(QWidget):
         layout.addLayout(interval_selector_layout)
         tab.setLayout(layout)
 
+    def add_common_controls(self, layout):
+        # Checkbox for Rolling Min-Max Envelope
+        self.rolling_min_max_checkbox = QCheckBox("Show as Rolling Min-Max Envelope")
+        self.rolling_min_max_checkbox.stateChanged.connect(self.update_all_transient_data_plots)
+
+        # Checkbox for Plot as Bars
+        self.plot_as_bars_checkbox = QCheckBox("Plot as Bars")
+        self.plot_as_bars_checkbox.stateChanged.connect(self.update_all_transient_data_plots)
+
+        # Input box for Desired Num Points
+        self.desired_num_points_label = QLabel("Number of Points Shown:")
+        self.desired_num_points_input = QLineEdit()
+        self.desired_num_points_input.setPlaceholderText("Enter an Integer Number")
+        self.desired_num_points_input.setFixedWidth(150)
+        self.desired_num_points_input.setText("2000")  # Set initial value
+        self.desired_num_points_input.textChanged.connect(self.update_all_transient_data_plots)
+
+        # Enable the checkbox by default if the x data length is more than a certain number of data points
+        x_data_length = len(self.df['TIME']) if self.df.columns[1] == 'TIME' else len(self.df['FREQ'])
+        if x_data_length > self.number_limit_of_data_points_shown_for_each_trace:
+            self.rolling_min_max_checkbox.setChecked(True)
+
+        control_layout = QHBoxLayout()
+        control_layout.addWidget(self.rolling_min_max_checkbox)
+        control_layout.addWidget(self.plot_as_bars_checkbox)
+        control_layout.addWidget(self.desired_num_points_label)
+        control_layout.addWidget(self.desired_num_points_input)
+
+        layout.addLayout(control_layout)
+
     def setupSettingsTab(self, tab):
         layout = QVBoxLayout(tab)
+
+        self.add_common_controls(layout)
 
         legend_font_size_layout = QHBoxLayout()
         legend_font_size_label = QLabel("Legend Font Size")
@@ -1015,24 +1096,75 @@ class WE_load_plotter(QWidget):
         y_data_list = [self.df[col] for col in columns]
 
         self.create_and_style_figure(web_view, x_data, y_data_list, columns, custom_hover, title)
+
+    def update_all_transient_data_plots(self):
+        self.update_plots_tab1()
+        self.update_plots_tab2()
+        self.update_plots_tab3()
+        self.update_compare_plots()
+        self.update_compare_part_loads_plots()
     # endregion
 
-    # region Handle the filtering logic at each tab
+    # region Helper methods for creating and modifying the dataframes for plots
+    def create_dataframes(self, x_data, x_label, y_data_dict):
+        try:
+            # Ensure x_data and y_data_dict have the same length
+            if len(x_data) == len(list(y_data_dict.values())[0]):
+                y_data_dict[x_label] = x_data
+                original_df = pd.DataFrame(y_data_dict)
+                original_df.set_index(x_label, inplace=True)
+                working_df = original_df.copy()
+                return original_df, working_df
+            else:
+                print("Length mismatch between x_data and y_data_dict values")
+                return None, None
+        except Exception as e:
+            print(f"Error in create_dataframes: {str(e)}")
+            return None, None
+    # endregion
+
+    # region Handle the filtering and plotting logic at each tab
     def update_plots_tab1(self):
         selected_column = self.column_selector.currentText()
         if selected_column:
             x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
+            x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
             custom_hover = ('%{fullData.name}<br>' + (
                 'Hz: ' if self.df.columns[1] == 'FREQ' else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
 
-            self.create_and_style_figure(
-                self.regular_plot,
-                x_data,
-                [self.df[selected_column]],
-                [selected_column],
-                custom_hover,
-                f'{selected_column} Plot'
-            )
+            # Creating dataframe container for tab1 (magnitude)
+            y_data_dict = {selected_column: self.df[selected_column]}
+            self.original_df_tab1, self.working_df_tab1 = self.create_dataframes(x_data, x_label, y_data_dict)
+
+            # Add the figure as a rolling min-max envelope
+            if self.df.columns[1] == 'TIME' and self.rolling_min_max_checkbox.isChecked():
+                try:
+                    desired_num_points = int(self.desired_num_points_input.text())
+                except ValueError:
+                    print("Invalid input. Please enter a valid integer number.")
+                    desired_num_points = 2000
+
+                is_plot_as_bars = self.plot_as_bars_checkbox.isChecked()
+
+                fig = rolling_min_max_envelope(
+                    self.working_df_tab1[[selected_column]],
+                    opacity= 0.6,
+                    desired_num_points=desired_num_points,
+                    plot_as_bars=is_plot_as_bars,
+                    plot_title=f'Rolling Min-Max Envelope for {selected_column}'
+                )
+                self.regular_plot.setHtml(fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
+
+            # Add the figure as standard plotly figure
+            else:
+                self.create_and_style_figure(
+                    self.regular_plot,
+                    x_data,
+                    [self.df[selected_column]],
+                    [selected_column],
+                    custom_hover,
+                    f'{selected_column} Plot'
+                )
 
             if self.df.columns[1] == 'FREQ':
                 phase_column = 'Phase_' + selected_column
@@ -1045,12 +1177,32 @@ class WE_load_plotter(QWidget):
                     f'Phase {selected_column} Plot'
                 )
 
+                # Creating dataframe container for tab1 (phase)
+                y_data_dict = {phase_column: self.df[phase_column]}
+                self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label, y_data_dict)
+
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
         selected_side = self.side_selector.currentText()
-        self.update_T_and_R_plots(self.t_series_plot, self.r_series_plot, interface, selected_side)
         if interface:
             self.populate_side_selector_tab_2(interface)
+
+        # Create dataframe containers for tab2 (T and R plots)
+        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
+        t_series_columns = [col for col in self.df.columns if
+                            'T' in col and side_pattern.search(col)]
+        r_series_columns = [col for col in self.df.columns if
+                            'R' in col and side_pattern.search(col)]
+        x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
+        x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
+
+        y_data_dict_t_series = {col: self.df[col] for col in t_series_columns}
+        self.original_df_t_series_tab2, self.working_df_t_series_tab2 = self.create_dataframes(x_data, x_label, y_data_dict_t_series)
+
+        y_data_dict_r_series = {col: self.df[col] for col in r_series_columns}
+        self.original_df_r_series_tab2, self.working_df_r_series_tab2 = self.create_dataframes(x_data, x_label, y_data_dict_r_series)
+
+        self.update_T_and_R_plots(self.t_series_plot, self.r_series_plot, interface, selected_side)
 
     def update_plots_tab3(self):
         selected_side = self.side_filter_selector.currentText()
@@ -1059,6 +1211,21 @@ class WE_load_plotter(QWidget):
                                   exclude_t2_t3_r2_r3=exclude_t2_t3_r2_r3)
         if self.df.columns[1] == 'FREQ':
             self.update_time_domain_plot()
+
+        # Create dataframe containers for tab3 (T and R plots)
+        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
+        t_series_columns = [col for col in self.df.columns if
+                            'T' in col and side_pattern.search(col)]
+        r_series_columns = [col for col in self.df.columns if
+                            'R' in col and side_pattern.search(col)]
+        x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
+        x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
+
+        y_data_dict_t_series = {col: self.df[col] for col in t_series_columns}
+        self.original_df_t_series_tab3, self.working_df_t_series_tab3 = self.create_dataframes(x_data, x_label, y_data_dict_t_series)
+
+        y_data_dict_r_series = {col: self.df[col] for col in r_series_columns}
+        self.original_df_r_series_tab3, self.working_df_r_series_tab3 = self.create_dataframes(x_data, x_label, y_data_dict_r_series)
 
     def update_hover_mode(self):
         hover_mode = self.hover_mode_selector.currentText()
@@ -1074,6 +1241,7 @@ class WE_load_plotter(QWidget):
             if selected_column and self.df_compare is not None:
                 is_freq_data = self.df.columns[1] == 'FREQ'
                 x_data = self.df['FREQ'] if is_freq_data else self.df['TIME']
+                x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
                 x_data_compare = self.df_compare['FREQ'] if is_freq_data else self.df_compare['TIME']
                 custom_hover = ('%{fullData.name}<br>' + (
                     'Hz: ' if is_freq_data else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
@@ -1088,6 +1256,14 @@ class WE_load_plotter(QWidget):
                     f'{selected_column} Comparison'
                 )
 
+                # Create dataframe container for CompareTab (regular plot)
+                y_data_dict = {
+                    f'Original {selected_column}': self.df[selected_column],
+                    f'Compare {selected_column}': self.df_compare[selected_column]
+                }
+                self.original_df_compare_tab, self.working_df_compare_tab = self.create_dataframes(x_data, x_label, y_data_dict)
+
+
                 # Calculate differences
                 results = self.calculate_differences(self.df, self.df_compare, [selected_column], is_freq_data)
 
@@ -1101,6 +1277,10 @@ class WE_load_plotter(QWidget):
                     f'{selected_column} Absolute Difference'
                 )
 
+                # Create dataframe container for CompareTab (relative difference plot)
+                y_data_dict = {f'Absolute Δ {selected_column}': results[0][1]}
+                self.original_df_absolute_diff_tab, self.working_df_absolute_diff_tab = self.create_dataframes(x_data, x_label, y_data_dict)
+
                 # Relative difference plot
                 self.create_and_style_figure(
                     self.compare_percent_diff_plot,
@@ -1110,6 +1290,11 @@ class WE_load_plotter(QWidget):
                     custom_hover,
                     f'{selected_column} Relative Difference'
                 )
+
+                # Create dataframe container for CompareTab (percent difference plot)
+                y_data_dict = {f'Relative Δ {selected_column} (%)': 100 * results[0][1] / self.df[selected_column]}
+                self.original_df_relative_diff_tab, self.working_df_relative_diff_tab = self.create_dataframes(x_data, x_label, y_data_dict)
+
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred while updating compare plots: {str(e)}")
 
@@ -1139,6 +1324,7 @@ class WE_load_plotter(QWidget):
 
             is_freq_data = self.df.columns[1] == 'FREQ'
             x_data = self.df['FREQ'] if is_freq_data else self.df['TIME']
+            x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
             custom_hover = '%{fullData.name}<br>' + (
                 'Hz: ' if is_freq_data else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>'
 
@@ -1155,6 +1341,10 @@ class WE_load_plotter(QWidget):
                 f'T Plot (Δ) - {selected_side}'
             )
 
+            # Create dataframe container for ComparePartLoadsTab (T Plot)
+            y_data_dict_t_series = {f'Δ {col}': magnitude_diff for col, magnitude_diff in results_t}
+            self.original_df_compare_t_series_tab, self.working_df_compare_t_series_tab = self.create_dataframes(x_data, x_label, y_data_dict_t_series)
+
             # R Series plot
             self.create_and_style_figure(
                 self.compare_r_series_plot,
@@ -1164,6 +1354,11 @@ class WE_load_plotter(QWidget):
                 custom_hover,
                 f'R Plot (Δ) - {selected_side}'
             )
+
+            # Create dataframe container for ComparePartLoadsTab (R Plot)
+            y_data_dict_r_series = {f'Δ {col}': magnitude_diff for col, magnitude_diff in results_r}
+            self.original_df_compare_r_series_tab, self.working_df_compare_r_series_tab = self.create_dataframes(x_data, x_label, y_data_dict_r_series)
+
         except KeyError as e:
             QMessageBox.critical(None, 'Error', f"KeyError: {str(e)}")
         except Exception as e:
@@ -1232,6 +1427,10 @@ class WE_load_plotter(QWidget):
             custom_hover,
             plot_title
         )
+
+        # Create dataframe container for tab4 (time representation plots)
+        y_data_dict = {col: self.current_plot_data[col]['y_data'] for col in displayed_columns}
+        self.original_df_time_domain_tab4, self.working_df_time_domain_tab4 = self.create_dataframes(theta, 'Theta [deg]', y_data_dict)
 
     def update_side_selection_tab_2(self):
         selected_side = self.side_selector.currentText()
