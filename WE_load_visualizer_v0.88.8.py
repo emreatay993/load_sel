@@ -1013,7 +1013,7 @@ class WE_load_plotter(QWidget):
             if (not interface or re.match(r'^' + re.escape(interface) + r'([-\s]|$)', col))
                and any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"])
                and not col.startswith('Phase_')
-               and side_pattern.search(col)
+
                and not (exclude_t2_t3_r2_r3 and should_exclude(col))
         ]
 
@@ -1053,7 +1053,12 @@ class WE_load_plotter(QWidget):
 
         return results
 
-    def create_and_style_figure(self, web_view, x_data, y_data_list, column_names, custom_hover, title):
+    def create_and_style_figure(self, web_view, df, x_data, title):
+        y_data_list = [df[col] for col in df.columns]
+        column_names = df.columns
+        custom_hover = ('%{fullData.name}<br>' + (
+            'Hz: ' if self.df.columns[1] == 'FREQ' else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
+
         fig = go.Figure()
         for y_data, name in zip(y_data_list, column_names):
             fig.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines', name=name, hovertemplate=custom_hover))
@@ -1093,9 +1098,10 @@ class WE_load_plotter(QWidget):
             x_data = self.df['TIME']
             custom_hover = ('%{fullData.name}<br>Time: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
 
-        y_data_list = [self.df[col] for col in columns]
+        y_data_dict = {col: self.df[col] for col in columns}
+        df = pd.DataFrame(y_data_dict)
 
-        self.create_and_style_figure(web_view, x_data, y_data_list, columns, custom_hover, title)
+        self.create_and_style_figure(web_view, df, x_data, title)
 
     def update_all_transient_data_plots(self):
         self.update_plots_tab1()
@@ -1159,21 +1165,19 @@ class WE_load_plotter(QWidget):
             else:
                 self.create_and_style_figure(
                     self.regular_plot,
+                    self.working_df_tab1,
                     x_data,
-                    [self.df[selected_column]],
-                    [selected_column],
-                    custom_hover,
                     f'{selected_column} Plot'
                 )
 
             if self.df.columns[1] == 'FREQ':
                 phase_column = 'Phase_' + selected_column
+                y_data_dict = {phase_column: self.df[phase_column]}
+                self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label, y_data_dict)
                 self.create_and_style_figure(
                     self.phase_plot,
+                    self.working_df_phase_tab1,
                     x_data,
-                    [self.df[phase_column]],
-                    [phase_column],
-                    custom_hover,
                     f'Phase {selected_column} Plot'
                 )
 
@@ -1227,14 +1231,6 @@ class WE_load_plotter(QWidget):
         y_data_dict_r_series = {col: self.df[col] for col in r_series_columns}
         self.original_df_r_series_tab3, self.working_df_r_series_tab3 = self.create_dataframes(x_data, x_label, y_data_dict_r_series)
 
-    def update_hover_mode(self):
-        hover_mode = self.hover_mode_selector.currentText()
-        self.update_plots_tab1()
-        self.update_plots_tab2()
-        self.update_plots_tab3()
-        self.update_compare_plots()
-        self.update_compare_part_loads_plots()
-
     def update_compare_plots(self):
         try:
             selected_column = self.compare_column_selector.currentText()
@@ -1247,54 +1243,40 @@ class WE_load_plotter(QWidget):
                     'Hz: ' if is_freq_data else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
 
                 # Regular plot
-                self.create_and_style_figure(
-                    self.compare_regular_plot,
-                    x_data,
-                    [self.df[selected_column], self.df_compare[selected_column]],
-                    [f'Original {selected_column}', f'Compare {selected_column}'],
-                    custom_hover,
-                    f'{selected_column} Comparison'
-                )
-
-                # Create dataframe container for CompareTab (regular plot)
                 y_data_dict = {
                     f'Original {selected_column}': self.df[selected_column],
                     f'Compare {selected_column}': self.df_compare[selected_column]
                 }
                 self.original_df_compare_tab, self.working_df_compare_tab = self.create_dataframes(x_data, x_label, y_data_dict)
-
+                self.create_and_style_figure(
+                    self.compare_regular_plot,
+                    self.working_df_compare_tab,
+                    x_data,
+                    f'{selected_column} Comparison'
+                )
 
                 # Calculate differences
                 results = self.calculate_differences(self.df, self.df_compare, [selected_column], is_freq_data)
 
                 # Absolute difference plot
+                y_data_dict = {f'Absolute Δ {selected_column}': results[0][1]}
+                self.original_df_absolute_diff_tab, self.working_df_absolute_diff_tab = self.create_dataframes(x_data, x_label, y_data_dict)
                 self.create_and_style_figure(
                     self.compare_absolute_diff_plot,
+                    self.working_df_absolute_diff_tab,
                     x_data,
-                    [magnitude_diff for _, magnitude_diff in results],
-                    [f'Absolute Δ {col}' for col, _ in results],
-                    custom_hover,
                     f'{selected_column} Absolute Difference'
                 )
 
-                # Create dataframe container for CompareTab (relative difference plot)
-                y_data_dict = {f'Absolute Δ {selected_column}': results[0][1]}
-                self.original_df_absolute_diff_tab, self.working_df_absolute_diff_tab = self.create_dataframes(x_data, x_label, y_data_dict)
-
                 # Relative difference plot
-                self.create_and_style_figure(
-                    self.compare_percent_diff_plot,
-                    x_data,
-                    [100 * magnitude_diff / self.df[col] for col, magnitude_diff in results],
-                    [f'Relative Δ {col} (%)' for col, _ in results],
-                    custom_hover,
-                    f'{selected_column} Relative Difference'
-                )
-
-                # Create dataframe container for CompareTab (percent difference plot)
                 y_data_dict = {f'Relative Δ {selected_column} (%)': 100 * results[0][1] / self.df[selected_column]}
                 self.original_df_relative_diff_tab, self.working_df_relative_diff_tab = self.create_dataframes(x_data, x_label, y_data_dict)
-
+                self.create_and_style_figure(
+                    self.compare_percent_diff_plot,
+                    self.working_df_relative_diff_tab,
+                    x_data,
+                    f'{selected_column} Relative Difference'
+                )
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred while updating compare plots: {str(e)}")
 
@@ -1332,33 +1314,24 @@ class WE_load_plotter(QWidget):
             results_r = self.calculate_differences(self.df, self.df_compare, r_series_columns, is_freq_data)
 
             # T Series plot
+            y_data_dict_t_series = {f'Δ {col}': magnitude_diff for col, magnitude_diff in results_t}
+            self.original_df_compare_t_series_tab, self.working_df_compare_t_series_tab = self.create_dataframes(x_data, x_label, y_data_dict_t_series)
             self.create_and_style_figure(
                 self.compare_t_series_plot,
+                self.working_df_compare_t_series_tab,
                 x_data,
-                [magnitude_diff for _, magnitude_diff in results_t],
-                [f'Δ {col}' for col, _ in results_t],
-                custom_hover,
                 f'T Plot (Δ) - {selected_side}'
             )
 
-            # Create dataframe container for ComparePartLoadsTab (T Plot)
-            y_data_dict_t_series = {f'Δ {col}': magnitude_diff for col, magnitude_diff in results_t}
-            self.original_df_compare_t_series_tab, self.working_df_compare_t_series_tab = self.create_dataframes(x_data, x_label, y_data_dict_t_series)
-
             # R Series plot
-            self.create_and_style_figure(
-                self.compare_r_series_plot,
-                x_data,
-                [magnitude_diff for _, magnitude_diff in results_r],
-                [f'Δ {col}' for col, _ in results_r],
-                custom_hover,
-                f'R Plot (Δ) - {selected_side}'
-            )
-
-            # Create dataframe container for ComparePartLoadsTab (R Plot)
             y_data_dict_r_series = {f'Δ {col}': magnitude_diff for col, magnitude_diff in results_r}
             self.original_df_compare_r_series_tab, self.working_df_compare_r_series_tab = self.create_dataframes(x_data, x_label, y_data_dict_r_series)
-
+            self.create_and_style_figure(
+                self.compare_r_series_plot,
+                self.working_df_compare_r_series_tab,
+                x_data,
+                f'R Plot (Δ) - {selected_side}'
+            )
         except KeyError as e:
             QMessageBox.critical(None, 'Error', f"KeyError: {str(e)}")
         except Exception as e:
@@ -1419,18 +1392,14 @@ class WE_load_plotter(QWidget):
 
         plot_title = f'Time Domain Representation at {str(freq)} Hz - {selected_side}'
         custom_hover = '%{fullData.name}: %{y:.2f}<extra></extra>'
-        self.create_and_style_figure(
-            self.time_domain_plot,
-            theta,
-            y_data_list,
-            displayed_columns,
-            custom_hover,
-            plot_title
-        )
-
-        # Create dataframe container for tab4 (time representation plots)
         y_data_dict = {col: self.current_plot_data[col]['y_data'] for col in displayed_columns}
         self.original_df_time_domain_tab4, self.working_df_time_domain_tab4 = self.create_dataframes(theta, 'Theta [deg]', y_data_dict)
+        self.create_and_style_figure(
+            self.time_domain_plot,
+            self.working_df_time_domain_tab4,
+            theta,
+            plot_title
+        )
 
     def update_side_selection_tab_2(self):
         selected_side = self.side_selector.currentText()
