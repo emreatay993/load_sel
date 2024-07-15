@@ -16,6 +16,13 @@ from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
 import traceback
 import shutil
 from endaq.plot import rolling_min_max_envelope
+from endaq.plot import spectrum_over_time
+from endaq.calc.fft import rolling_fft
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import tempfile
+import plotly.io as pio
 # endregion
 
 # region Select and read WE raw data
@@ -136,10 +143,10 @@ class WE_load_plotter(QWidget):
 
     # region Initialize main window & tabs
     def init_variables(self):
-        """Initialize instance variables."""
+
         self.legend_visible = True
         self.legend_positions = ['default', 'top left', 'top right', 'bottom right', 'bottom left']
-        self.current_legend_position = 0
+        self.current_legend_position = 1
         self.df = pd.read_csv('full_data.csv')
         self.df_compare = None
         self.result_df_full_part_load = None
@@ -147,6 +154,11 @@ class WE_load_plotter(QWidget):
         self.current_plot_data = {}
         self.app_ansys = None
         self.mechanical = None
+
+        # Calculate sample rate
+        if 'TIME' in self.df.columns:
+            time_diffs = self.df['TIME'].diff().dropna()
+            self.sample_rate = 1 / time_diffs.mean()
 
         self.default_font_size = 12
         self.legend_font_size = 10
@@ -182,7 +194,6 @@ class WE_load_plotter(QWidget):
         self.number_limit_of_data_points_shown_for_each_trace = 10000
 
     def init_ui(self):
-        """Initialize the user interface."""
         tab_widget = QTabWidget(self)
 
         tab_widget.setStyleSheet("""
@@ -235,7 +246,6 @@ class WE_load_plotter(QWidget):
         self.showMaximized()
 
     def create_tab(self, name, setup_method):
-        """Create a tab with the specified setup method."""
         tab = QWidget()
         setup_method(tab)
         return tab
@@ -243,13 +253,13 @@ class WE_load_plotter(QWidget):
 
     # region Initialize widgets & layouts inside each tab of the main window
     def setupTab1(self, tab):
-        splitter = QSplitter(QtCore.Qt.Vertical)
+        self.splitter_tab1 = QSplitter(QtCore.Qt.Vertical)
         self.regular_plot = QtWebEngineWidgets.QWebEngineView()
-        splitter.addWidget(self.regular_plot)
+        self.splitter_tab1.addWidget(self.regular_plot)
         if self.df.columns[1] == 'FREQ':
             self.phase_plot = QtWebEngineWidgets.QWebEngineView()
-            splitter.addWidget(self.phase_plot)
-            splitter.setSizes([self.height() // 2, self.height() // 2])
+            self.splitter_tab1.addWidget(self.phase_plot)
+            self.splitter_tab1.setSizes([self.height() // 2, self.height() // 2])
 
         self.column_selector = QComboBox()
         self.column_selector.setEditable(False)
@@ -258,12 +268,39 @@ class WE_load_plotter(QWidget):
         self.column_selector.addItems(regular_columns)
         self.column_selector.currentIndexChanged.connect(self.update_plots_tab1)
 
+        if self.df.columns[1] == 'TIME':
+            self.column_selector.currentIndexChanged.connect(self.update_spectrum_plot)
+
+        self.spectrum_checkbox = QCheckBox("Show Spectrum Plot")
+        self.spectrum_checkbox.stateChanged.connect(self.toggle_spectrum_plot)
+        self.spectrum_checkbox.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+
+        self.plot_type_selector = QComboBox()
+        self.plot_type_selector.setEditable(False)
+        self.plot_type_selector.addItems(['Heatmap', 'Surface', 'Waterfall', 'Animation', 'Peak', 'Lines'])
+        self.plot_type_selector.setVisible(False)
+        self.plot_type_selector.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self.plot_type_selector.currentIndexChanged.connect(self.update_spectrum_plot)
+
+        self.specgram_checkbox = QCheckBox("Show Spectrum in Full Scale Plot")
+        self.specgram_checkbox.stateChanged.connect(self.toggle_spectrum_plot)
+
         selector_layout = QHBoxLayout()
         selector_layout.addWidget(self.column_selector)
 
+        if self.df.columns[1] == 'TIME':
+            selector_layout.addWidget(self.spectrum_checkbox)
+            selector_layout.addWidget(self.plot_type_selector)
+            selector_layout.addWidget(self.specgram_checkbox)
+
         layout = QVBoxLayout(tab)
         layout.addLayout(selector_layout)
-        layout.addWidget(splitter)
+        layout.addWidget(self.splitter_tab1)
+
+        self.spectrum_plot = QtWebEngineWidgets.QWebEngineView()
+        self.splitter_tab1.addWidget(self.spectrum_plot)
+        self.spectrum_plot.setVisible(False)  # Hide initially
+        self.spectrum_plot.setVisible(False)
 
     def setupTab2(self, tab):
         layout = QVBoxLayout(tab)
@@ -388,6 +425,43 @@ class WE_load_plotter(QWidget):
         self.plot_as_bars_checkbox.setVisible(is_time_data and is_rolling_min_max_checked)
         self.desired_num_points_label.setVisible(is_time_data and is_rolling_min_max_checked)
         self.desired_num_points_input.setVisible(is_time_data and is_rolling_min_max_checked)
+
+    def toggle_spectrum_plot(self, state):
+        try:
+            show_spectrum = self.spectrum_checkbox.isChecked()
+            show_specgram = self.specgram_checkbox.isChecked()
+
+            if show_spectrum:
+                self.specgram_checkbox.setChecked(False)
+                self.specgram_checkbox.setDisabled(True)
+                self.plot_type_selector.setVisible(True)  # Show the plot type selector
+            else:
+                self.specgram_checkbox.setDisabled(False)
+                self.plot_type_selector.setVisible(False)  # Hide the plot type selector
+
+            if show_specgram:
+                self.spectrum_checkbox.setChecked(False)
+                self.spectrum_checkbox.setDisabled(True)
+            else:
+                self.spectrum_checkbox.setDisabled(False)
+
+            if show_spectrum or show_specgram:
+                self.spectrum_plot.setVisible(True)
+                if self.df.columns[1] == 'FREQ':
+                    self.splitter_tab1.setSizes([self.height() // 3, self.height() // 3, self.height() // 3])
+                else:
+                    self.splitter_tab1.setSizes([self.height() // 2, self.height() // 2])
+                self.spectrum_plot.setHtml("<html><body></body></html>")
+                self.update_spectrum_plot()
+            else:
+                self.spectrum_plot.setVisible(False)
+                if self.df.columns[1] == 'FREQ':
+                    self.splitter_tab1.setSizes([self.height() // 2, self.height() // 2])
+                else:
+                    self.splitter_tab1.setSizes([self.height()])  # Only one plot visible
+
+        except Exception as e:
+            QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
     def setupSettingsTab(self, tab):
         layout = QVBoxLayout(tab)
@@ -1190,7 +1264,8 @@ class WE_load_plotter(QWidget):
                     hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
                     hovermode=self.hover_mode,
                     font=dict(family='Open Sans', size=self.default_font_size, color='black'),
-                    showlegend=self.legend_visible
+                    showlegend=self.legend_visible,
+                    yaxis_title="Data"
                 )
 
             else:
@@ -1221,7 +1296,8 @@ class WE_load_plotter(QWidget):
                     hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
                     hovermode=self.hover_mode,
                     font=dict(family='Open Sans', size=self.default_font_size, color='black'),
-                    showlegend=self.legend_visible
+                    showlegend=self.legend_visible,
+                    yaxis_title="Data"
                 )
 
             web_view.setHtml(
@@ -1279,7 +1355,8 @@ class WE_load_plotter(QWidget):
                 hoverlabel=dict(bgcolor='rgba(255, 255, 255, 0.8)', font_size=self.hover_font_size),
                 hovermode=self.hover_mode,
                 font=dict(family='Open Sans', size=self.default_font_size, color='black'),
-                showlegend=self.legend_visible
+                showlegend=self.legend_visible,
+                yaxis_title="Data"
             )
 
             web_view.setHtml(fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
@@ -1298,6 +1375,64 @@ class WE_load_plotter(QWidget):
         self.update_plots_tab3()
         self.update_compare_plots()
         self.update_compare_part_loads_plots()
+
+    def update_spectrum_plot(self):
+        if self.working_df_tab1 is not None:
+            value_col = self.column_selector.currentText()
+            plot_type = self.plot_type_selector.currentText()
+            if value_col:
+                try:
+                    # Remove the previous canvas if it exists
+                    if hasattr(self, 'spectrum_canvas') and self.spectrum_canvas is not None:
+                        self.spectrum_plot.layout().removeWidget(self.spectrum_canvas)
+                        self.spectrum_canvas.deleteLater()
+                        self.spectrum_canvas = None
+
+                    if self.specgram_checkbox.isChecked():
+                        y_data = self.working_df_tab1[value_col].values
+
+                        # Create a Matplotlib figure and axis
+                        fig, ax = plt.subplots()
+
+                        # Generate the spectrogram
+                        Pxx, freqs, bins, im = ax.specgram(y_data, NFFT=1200, Fs=self.sample_rate, noverlap=512,
+                                                           cmap='viridis')
+
+                        # Set plot titles and labels
+                        ax.set_title(f'Spectrogram of {value_col}')
+                        ax.set_xlabel('Time [s]')
+                        ax.set_ylabel('Frequency [Hz]')
+
+                        # Synchronize width
+                        plotly_graph_width = self.regular_plot.size().width()
+                        fig.set_size_inches(1.05 * plotly_graph_width / fig.dpi, fig.get_figheight())
+                        fig.subplots_adjust(left=0.055, right=0.975, top=0.9, bottom=0.1)
+
+                        # Create a FigureCanvas and add it to the spectrum_plot layout
+                        self.spectrum_canvas = FigureCanvas(fig)
+                        layout = self.spectrum_plot.layout()
+                        if layout is None:
+                            layout = QVBoxLayout(self.spectrum_plot)
+                        layout.addWidget(self.spectrum_canvas)
+
+                        # Draw the canvas
+                        self.spectrum_canvas.draw()
+
+                        plt.close(fig)  # Close the figure after drawing to save memory
+                    else:
+                        fft_df = rolling_fft(self.working_df_tab1[[value_col]], num_slices=400, add_resultant=True)
+                        heatmap = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=None, var_to_process=value_col)
+
+                        heatmap.update_layout(
+                            margin=dict(l=20, r=20, t=35, b=35),
+                            font=dict(family='Open Sans', size=self.default_font_size, color='black')
+                        )
+
+                        with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as tmp_file:
+                            pio.write_html(heatmap, file=tmp_file.name, include_plotlyjs='cdn', auto_open=False)
+                            self.spectrum_plot.setUrl(QtCore.QUrl.fromLocalFile(tmp_file.name))
+                except Exception as e:
+                    QMessageBox.critical(None, 'Error', f"An error occurred while creating the spectrum plot: {str(e)}")
     # endregion
 
     # region Helper methods for creating and modifying the dataframes for plots
