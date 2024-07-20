@@ -1,4 +1,5 @@
 # region Import libraries
+print("Importing libraries...")
 import sys
 import csv
 import pandas as pd
@@ -23,6 +24,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import tempfile
 import plotly.io as pio
+print("Done.")
 # endregion
 
 # region Select and read WE raw data
@@ -78,6 +80,24 @@ def read_pld_file(file_path):
                 data_cells = [float(re.sub('[^0-9.e-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
             processed_data.append(data_cells)
     return pd.DataFrame(processed_data, columns=headers)
+
+def read_pld_file(file_path):
+  df = pd.read_csv(file_path, sep='|', low_memory=False)
+  df.drop(df.index[0], inplace=True)
+  df.columns = df.columns.str.strip()
+
+  def is_undesirable_row(row):
+    return all(cell.strip() == '_' or cell.strip() == '-' for cell in row)
+
+  n_rows_to_check = 5
+  
+  # Identify rows to drop in the first few rows
+  rows_to_drop = df.head(n_rows_to_check).apply(is_undesirable_row, axis=1)
+  
+  # Drop the identified rows from the first few rows
+  df = df.drop(df.head(n_rows_to_check).index[rows_to_drop])
+  
+  return df
 
 # region Run the reader and parse the data
 def main():
