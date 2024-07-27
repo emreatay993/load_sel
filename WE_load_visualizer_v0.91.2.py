@@ -71,39 +71,10 @@ def insert_phase_columns(df):
 
 
 def read_pld_file(file_path):
-    with open(file_path, 'r') as file:
-        lines = file.readlines()
-        headers = [h.strip() for h in lines[0].strip().split('|')[1:-1]]
-        processed_data = []
-        for line in lines[2:]:
-            line = line.strip()
-            if not line.startswith('|'):
-                line = '|' + line
-            if not line.endswith('|'):
-                line = line + '|'
-            try:
-                data_cells = [float(re.sub('[^0-9.E-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
-            except:
-                data_cells = [float(re.sub('[^0-9.e-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
-            processed_data.append(data_cells)
-    return pd.DataFrame(processed_data, columns=headers)
-
-
-def read_pld_file(file_path):
     df = pd.read_csv(file_path, sep='|', low_memory=False)
     df.drop(df.index[0], inplace=True)
     df.columns = df.columns.str.strip()
-
-    def is_undesirable_row(row):
-        return all(cell.strip() == '_' or cell.strip() == '-' for cell in row)
-
-    n_rows_to_check = 5
-
-    # Identify rows to drop in the first few rows
-    rows_to_drop = df.head(n_rows_to_check).apply(is_undesirable_row, axis=1)
-
-    # Drop the identified rows from the first few rows
-    df = df.drop(df.head(n_rows_to_check).index[rows_to_drop])
+    df.drop(df.columns[df.columns.str.contains('unnamed', case=False)], axis = 1, inplace = True)
 
     return df
 
@@ -132,11 +103,11 @@ def main():
         df = pd.concat(dfs, ignore_index=True)
 
         df_intf_before = read_max_pld_file(file_path_headers_data[0])
-        if df.columns[1] == 'FREQ':
+        if 'FREQ' in df.columns:
             df_intf = insert_phase_columns(df_intf_before)
             df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
             new_columns = ['NO'] + ['FREQ'] + df_intf_labels.iloc[0].tolist()
-        elif df.columns[1] == 'TIME':
+        elif 'TIME' in df.columns:
             df_intf = df_intf_before
             df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
             new_columns = ['NO'] + ['TIME'] + df_intf_labels.iloc[0].tolist()
@@ -258,7 +229,7 @@ class WE_load_plotter(QWidget):
         self.tab1 = self.create_tab("Single Data", self.setupTab1)
         self.tab2 = self.create_tab("Interface Data", self.setupTab2)
         self.tab3 = self.create_tab("Part Loads", self.setupTab3)
-        if self.df.columns[1] == 'FREQ':
+        if 'FREQ' in self.df.columns:
             self.tab4 = self.create_tab("Time Domain Representation", self.setupTab4)
         compare_tab = self.create_tab("Compare Data", self.setupCompareTab)
         compare_part_loads_tab = self.create_tab("Compare Data (Part Loads)", self.setupComparePartLoadsTab)
@@ -267,7 +238,7 @@ class WE_load_plotter(QWidget):
         tab_widget.addTab(self.tab1, "Single Data")
         tab_widget.addTab(self.tab2, "Interface Data")
         tab_widget.addTab(self.tab3, "Part Loads")
-        if self.df.columns[1] == 'FREQ':
+        if 'FREQ' in self.df.columns:
             tab_widget.addTab(self.tab4, "Time Domain Representation")
         tab_widget.addTab(compare_tab, "Compare Data")
         tab_widget.addTab(compare_part_loads_tab, "Compare Data (Part Loads)")
@@ -275,7 +246,7 @@ class WE_load_plotter(QWidget):
 
         main_layout.addWidget(tab_widget)
         self.setLayout(main_layout)
-        self.setWindowTitle("WE Load Visualizer - v0.9")
+        self.setWindowTitle("WE Load Visualizer - v0.91")
         self.showMaximized()
 
     def create_tab(self, name, setup_method):
@@ -290,7 +261,7 @@ class WE_load_plotter(QWidget):
         self.splitter_tab1 = QSplitter(QtCore.Qt.Vertical)
         self.regular_plot = QtWebEngineWidgets.QWebEngineView()
         self.splitter_tab1.addWidget(self.regular_plot)
-        if self.df.columns[1] == 'FREQ':
+        if 'FREQ' in self.df.columns:
             self.phase_plot = QtWebEngineWidgets.QWebEngineView()
             self.splitter_tab1.addWidget(self.phase_plot)
             self.splitter_tab1.setSizes([self.height() // 2, self.height() // 2])
@@ -302,7 +273,7 @@ class WE_load_plotter(QWidget):
         self.column_selector.addItems(regular_columns)
         self.column_selector.currentIndexChanged.connect(self.update_plots_tab1)
 
-        if self.df.columns[1] == 'TIME':
+        if 'TIME' in self.df.columns:
             self.column_selector.currentIndexChanged.connect(self.update_spectrum_plot)
 
         self.spectrum_checkbox = QCheckBox("Show Spectrum Plot")
@@ -322,7 +293,7 @@ class WE_load_plotter(QWidget):
         selector_layout = QHBoxLayout()
         selector_layout.addWidget(self.column_selector)
 
-        if self.df.columns[1] == 'TIME':
+        if 'TIME' in self.df.columns:
             selector_layout.addWidget(self.spectrum_checkbox)
             selector_layout.addWidget(self.plot_type_selector)
             selector_layout.addWidget(self.specgram_checkbox)
@@ -364,23 +335,23 @@ class WE_load_plotter(QWidget):
 
         self.data_point_selector_tab3 = QComboBox()
         self.data_point_selector_tab3.setEditable(True)
-        if self.df.columns[1] == 'FREQ':
+        if 'FREQ' in self.df.columns:
             self.data_point_selector_tab3.addItem("Select a frequency [Hz] to extract the raw data")
             self.data_point_selector_tab3.addItems([str(freq_point) for freq_point in sorted(self.df['FREQ'].unique())])
-        if self.df.columns[1] == 'TIME':
+        if 'TIME' in self.df.columns:
             self.data_point_selector_tab3.addItem("Select a time point [sec] to extract the raw data")
             self.data_point_selector_tab3.addItems([str(time_point) for time_point in sorted(self.df['TIME'].unique())])
         data_point_selector_tab3_layout = QHBoxLayout()
         data_point_selector_tab3_layout.addWidget(self.data_point_selector_tab3)
 
-        if self.df.columns[1] == 'FREQ':
+        if 'FREQ' in self.df.columns:
             self.extract_data_button = QPushButton("Extract Data for Selected Frequency")
             self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part")
             self.extract_data_button.clicked.connect(self.extract_data_point)
             data_point_selector_tab3_layout.addWidget(self.extract_data_button)
             self.extract_all_data_button.clicked.connect(self.extract_all_data_points)
             data_point_selector_tab3_layout.addWidget(self.extract_all_data_button)
-        if self.df.columns[1] == 'TIME':
+        if 'TIME' in self.df.columns:
             self.extract_data_button = QPushButton("Extract Data for Selected Time")
 
         layout.addLayout(data_point_selector_tab3_layout)
@@ -438,7 +409,7 @@ class WE_load_plotter(QWidget):
         self.desired_num_points_input.textChanged.connect(self.update_all_transient_data_plots)
 
         # Enable the checkbox by default if the x data length is more than a certain number of data points
-        x_data_length = len(self.df['TIME']) if self.df.columns[1] == 'TIME' else len(self.df['FREQ'])
+        x_data_length = len(self.df['TIME']) if 'TIME' in self.df.columns else len(self.df['FREQ'])
         if x_data_length > self.number_limit_of_data_points_shown_for_each_trace:
             self.rolling_min_max_checkbox.setChecked(True)
             self.plot_as_bars_checkbox.setChecked(True)
@@ -452,7 +423,7 @@ class WE_load_plotter(QWidget):
         layout.addLayout(control_layout)
 
     def update_control_visibility(self):
-        is_time_data = self.df.columns[1] == 'TIME'
+        is_time_data = 'TIME' in self.df.columns
         is_rolling_min_max_checked = self.rolling_min_max_checkbox.isChecked()
 
         self.rolling_min_max_checkbox.setVisible(is_time_data)
@@ -481,7 +452,7 @@ class WE_load_plotter(QWidget):
 
             if show_spectrum or show_specgram:
                 self.spectrum_plot.setVisible(True)
-                if self.df.columns[1] == 'FREQ':
+                if 'FREQ' in self.df.columns:
                     self.splitter_tab1.setSizes([self.height() // 3, self.height() // 3, self.height() // 3])
                 else:
                     self.splitter_tab1.setSizes([self.height() // 2, self.height() // 2])
@@ -489,7 +460,7 @@ class WE_load_plotter(QWidget):
                 self.update_spectrum_plot()
             else:
                 self.spectrum_plot.setVisible(False)
-                if self.df.columns[1] == 'FREQ':
+                if 'FREQ' in self.df.columns:
                     self.splitter_tab1.setSizes([self.height() // 2, self.height() // 2])
                 else:
                     self.splitter_tab1.setSizes([self.height()])  # Only one plot visible
@@ -729,11 +700,11 @@ class WE_load_plotter(QWidget):
                 return
 
             df_intf_before = read_max_pld_file(file_path_headers_data[0])
-            if self.df.columns[1] == 'FREQ':
+            if 'FREQ' in self.df.columns:
                 df_intf = insert_phase_columns(df_intf_before)
                 df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
                 new_columns = ['NO'] + ['FREQ'] + df_intf_labels.iloc[0].tolist()
-            elif self.df.columns[1] == 'TIME':
+            elif 'TIME' in self.df.columns:
                 df_intf = df_intf_before
                 df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
                 new_columns = ['NO'] + ['TIME'] + df_intf_labels.iloc[0].tolist()
@@ -1102,7 +1073,7 @@ class WE_load_plotter(QWidget):
         self.update_plots_tab1()
         self.update_plots_tab2()
         self.update_plots_tab3()
-        if self.df.columns[1] == 'FREQ':
+        if 'FREQ' in self.df.columns:
             self.update_time_domain_plot()
         self.update_compare_plots()
         self.update_compare_part_loads_plots()
@@ -1168,7 +1139,7 @@ class WE_load_plotter(QWidget):
             self.update_plots_tab1()
             self.update_plots_tab2()
             self.update_plots_tab3()
-            if self.df.columns[1] == 'FREQ':
+            if 'FREQ' in self.df.columns:
                 self.update_time_domain_plot()
             self.update_compare_plots()
             self.update_compare_part_loads_plots()
@@ -1177,7 +1148,7 @@ class WE_load_plotter(QWidget):
             self.update_plots_tab1()
             self.update_plots_tab2()
             self.update_plots_tab3()
-            if self.df.columns[1] == 'FREQ':
+            if 'FREQ' in self.df.columns:
                 self.update_time_domain_plot()
             self.update_compare_plots()
             self.update_compare_part_loads_plots()
@@ -1231,7 +1202,7 @@ class WE_load_plotter(QWidget):
                and not (exclude_t2_t3_r2_r3 and should_exclude(col))
         ]
 
-        x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
+        x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
 
         self.create_and_style_figure(t_plot, self.df[t_series_columns], x_data, 'T Plot')
         self.create_and_style_figure(r_plot, self.df[r_series_columns], x_data, 'R Plot')
@@ -1326,7 +1297,7 @@ class WE_load_plotter(QWidget):
                 y_data_list = [df[col] for col in df.columns]
                 column_names = df.columns
                 custom_hover = ('%{fullData.name}<br>' + (
-                    'Hz: ' if self.df.columns[1] == 'FREQ' else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
+                    'Hz: ' if 'FREQ' in self.df.columns else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
 
                 fig = go.Figure()
                 for y_data, name in zip(y_data_list, column_names):
@@ -1361,10 +1332,10 @@ class WE_load_plotter(QWidget):
             web_view.setHtml("<html><body><p>No data available to plot here.</p></body></html>")
             return
 
-        if self.df.columns[1] == 'FREQ':
+        if 'FREQ' in self.df.columns:
             x_data = self.df['FREQ']
             custom_hover = ('%{fullData.name}<br>Hz: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
-        elif self.df.columns[1] == 'TIME':
+        elif 'TIME' in self.df.columns:
             x_data = self.df['TIME']
             custom_hover = ('%{fullData.name}<br>Time: %{x:.3f}<br>Value: %{y:.3f}<extra></extra>')
 
@@ -1374,7 +1345,7 @@ class WE_load_plotter(QWidget):
         self.create_and_style_figure(web_view, df, x_data, title)
 
     def plot_with_rolling_min_max_envelope(self, df, x_data, columns, web_view, plot_title, x_label):
-        if self.df.columns[1] == 'TIME' and self.rolling_min_max_checkbox.isChecked():
+        if 'TIME' in self.df.columns and self.rolling_min_max_checkbox.isChecked():
             try:
                 desired_num_points = int(self.desired_num_points_input.text())
             except ValueError:
@@ -1510,10 +1481,10 @@ class WE_load_plotter(QWidget):
     def update_plots_tab1(self):
         selected_column = self.column_selector.currentText()
         if selected_column:
-            x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
-            x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
+            x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
+            x_label = 'Freq [Hz]' if 'FREQ' in self.df.columns else 'Time [s]'
             custom_hover = ('%{fullData.name}<br>' + (
-                'Hz: ' if self.df.columns[1] == 'FREQ' else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
+                'Hz: ' if 'FREQ' in self.df.columns else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
 
             # Creating dataframe container for tab1 (magnitude)
             y_data_dict = {selected_column: self.df[selected_column]}
@@ -1528,7 +1499,7 @@ class WE_load_plotter(QWidget):
                 x_label
             )
 
-            if self.df.columns[1] == 'FREQ':
+            if 'FREQ' in self.df.columns:
                 phase_column = 'Phase_' + selected_column
                 y_data_dict = {phase_column: self.df[phase_column]}
                 self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
@@ -1556,8 +1527,8 @@ class WE_load_plotter(QWidget):
                             'T' in col and side_pattern.search(col)]
         r_series_columns = [col for col in self.df.columns if
                             'R' in col and side_pattern.search(col)]
-        x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
-        x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
+        x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
+        x_label = 'Freq [Hz]' if 'FREQ' in self.df.columns else 'Time [s]'
 
         y_data_dict_t_series = {col: self.df[col] for col in t_series_columns}
         self.original_df_t_series_tab2, self.working_df_t_series_tab2 = self.create_dataframes(x_data, x_label,
@@ -1575,7 +1546,7 @@ class WE_load_plotter(QWidget):
         exclude_t2_t3_r2_r3 = self.exclude_checkbox.isChecked()
         self.update_T_and_R_plots(self.t_series_plot_tab3, self.r_series_plot_tab3, side=selected_side,
                                   exclude_t2_t3_r2_r3=exclude_t2_t3_r2_r3)
-        if self.df.columns[1] == 'FREQ':
+        if 'FREQ' in self.df.columns:
             self.update_time_domain_plot()
 
         # Create dataframe containers for tab3 (T and R plots)
@@ -1584,8 +1555,8 @@ class WE_load_plotter(QWidget):
                             'T' in col and side_pattern.search(col)]
         r_series_columns = [col for col in self.df.columns if
                             'R' in col and side_pattern.search(col)]
-        x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
-        x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
+        x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
+        x_label = 'Freq [Hz]' if 'FREQ' in self.df.columns else 'Time [s]'
 
         y_data_dict_t_series = {col: self.df[col] for col in t_series_columns}
         self.original_df_t_series_tab3, self.working_df_t_series_tab3 = self.create_dataframes(x_data, x_label,
@@ -1599,9 +1570,9 @@ class WE_load_plotter(QWidget):
         try:
             selected_column = self.compare_column_selector.currentText()
             if selected_column and self.df_compare is not None:
-                is_freq_data = self.df.columns[1] == 'FREQ'
+                is_freq_data = 'FREQ' in self.df.columns
                 x_data = self.df['FREQ'] if is_freq_data else self.df['TIME']
-                x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
+                x_label = 'Freq [Hz]' if 'FREQ' in self.df.columns else 'Time [s]'
                 x_data_compare = self.df_compare['FREQ'] if is_freq_data else self.df_compare['TIME']
                 custom_hover = ('%{fullData.name}<br>' + (
                     'Hz: ' if is_freq_data else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
@@ -1673,9 +1644,9 @@ class WE_load_plotter(QWidget):
                 QMessageBox.warning(self, "Warning", "No matching columns found for the selected part side.")
                 return
 
-            is_freq_data = self.df.columns[1] == 'FREQ'
+            is_freq_data = 'FREQ' in self.df.columns
             x_data = self.df['FREQ'] if is_freq_data else self.df['TIME']
-            x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
+            x_label = 'Freq [Hz]' if 'FREQ' in self.df.columns else 'Time [s]'
             custom_hover = '%{fullData.name}<br>' + (
                 'Hz: ' if is_freq_data else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>'
 
@@ -1735,7 +1706,7 @@ class WE_load_plotter(QWidget):
                    and side_pattern.search(col)
             ]
 
-            x_data = self.df['FREQ'] if self.df.columns[1] == 'FREQ' else self.df['TIME']
+            x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
             self.create_and_style_figure(self.t_series_plot, self.df[t_series_columns], x_data, 'T Plot')
             self.create_and_style_figure(self.r_series_plot, self.df[r_series_columns], x_data, 'R Plot')
 
@@ -1784,7 +1755,7 @@ class WE_load_plotter(QWidget):
     def update_side_selection_tab_2(self):
         selected_side = self.side_selector.currentText()
         self.update_plots_for_selected_side_tab_2(selected_side)
-        if self.df.columns[1] == 'FREQ':
+        if 'FREQ' in self.df.columns:
             self.update_time_domain_plot()
     # endregion
 
