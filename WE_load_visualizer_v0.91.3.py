@@ -69,8 +69,37 @@ def insert_phase_columns(df):
     new_df = pd.concat(transformed_columns, axis=1)
     return new_df
 
+# LEGACY CODE - Delete if program runs read_pld_file successfully
+# def read_pld_file(file_path):
+#     with open(file_path, 'r') as file:
+#         lines = file.readlines()
+#         headers = [h.strip() for h in lines[0].strip().split('|')[1:-1]]
+#         processed_data = []
+#         for line in lines[2:]:
+#             line = line.strip()
+#             if not line.startswith('|'):
+#                 line = '|' + line
+#             if not line.endswith('|'):
+#                 line = line + '|'
+#             try:
+#                 data_cells = [float(re.sub('[^0-9.E-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
+#             except:
+#                 data_cells = [float(re.sub('[^0-9.e-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
+#             processed_data.append(data_cells)
+#     return pd.DataFrame(processed_data, columns=headers)
+
 
 def read_pld_file(file_path):
+    with open(file_path, 'r') as file:
+        lines = file.readlines()
+        processed_data = []
+        for line in lines[2:]:
+            line = line.strip()
+            if not line.startswith('|'):
+                line = '|' + line
+            if not line.endswith('|'):
+                line = line + '|'
+    
     df = pd.read_csv(file_path, sep='|', low_memory=False)
     df.drop(df.index[0], inplace=True)
     df.columns = df.columns.str.strip()
@@ -246,7 +275,7 @@ class WE_load_plotter(QWidget):
 
         main_layout.addWidget(tab_widget)
         self.setLayout(main_layout)
-        self.setWindowTitle("WE Load Visualizer - v0.91")
+        self.setWindowTitle("WE Load Visualizer - v0.9")
         self.showMaximized()
 
     def create_tab(self, name, setup_method):
