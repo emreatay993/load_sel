@@ -24,7 +24,10 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import tempfile
 import plotly.io as pio
+
 print("Done.")
+
+
 # endregion
 
 # region Select and read WE raw data
@@ -35,8 +38,10 @@ def select_directory(title):
         return None
     return folder
 
+
 def get_file_path(folder, file_suffix):
     return [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(file_suffix)]
+
 
 def read_max_pld_file(file_path):
     data = []
@@ -50,6 +55,7 @@ def read_max_pld_file(file_path):
     df = pd.DataFrame(data[1:])
     return df.T
 
+
 def insert_phase_columns(df):
     transformed_columns = []
     for i in range(len(df.columns)):
@@ -62,6 +68,7 @@ def insert_phase_columns(df):
         transformed_columns.append(pd.DataFrame({phase_index: phase_col}))
     new_df = pd.concat(transformed_columns, axis=1)
     return new_df
+
 
 def read_pld_file(file_path):
     with open(file_path, 'r') as file:
@@ -81,23 +88,25 @@ def read_pld_file(file_path):
             processed_data.append(data_cells)
     return pd.DataFrame(processed_data, columns=headers)
 
+
 def read_pld_file(file_path):
-  df = pd.read_csv(file_path, sep='|', low_memory=False)
-  df.drop(df.index[0], inplace=True)
-  df.columns = df.columns.str.strip()
+    df = pd.read_csv(file_path, sep='|', low_memory=False)
+    df.drop(df.index[0], inplace=True)
+    df.columns = df.columns.str.strip()
 
-  def is_undesirable_row(row):
-    return all(cell.strip() == '_' or cell.strip() == '-' for cell in row)
+    def is_undesirable_row(row):
+        return all(cell.strip() == '_' or cell.strip() == '-' for cell in row)
 
-  n_rows_to_check = 5
-  
-  # Identify rows to drop in the first few rows
-  rows_to_drop = df.head(n_rows_to_check).apply(is_undesirable_row, axis=1)
-  
-  # Drop the identified rows from the first few rows
-  df = df.drop(df.head(n_rows_to_check).index[rows_to_drop])
-  
-  return df
+    n_rows_to_check = 5
+
+    # Identify rows to drop in the first few rows
+    rows_to_drop = df.head(n_rows_to_check).apply(is_undesirable_row, axis=1)
+
+    # Drop the identified rows from the first few rows
+    df = df.drop(df.head(n_rows_to_check).index[rows_to_drop])
+
+    return df
+
 
 # region Run the reader and parse the data
 def main():
@@ -147,11 +156,15 @@ def main():
     except Exception as e:
         QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
         sys.exit()
+
+
 # endregion
 
 if __name__ == "__main__":
     data = main()
     data.to_csv("full_data.csv", index=False)
+
+
 # endregion
 
 # region Main GUI
@@ -269,6 +282,7 @@ class WE_load_plotter(QWidget):
         tab = QWidget()
         setup_method(tab)
         return tab
+
     # endregion
 
     # region Initialize widgets & layouts inside each tab of the main window
@@ -672,6 +686,7 @@ class WE_load_plotter(QWidget):
         splitter.addWidget(self.compare_r_series_plot)
         splitter.setSizes([self.height() // 2, self.height() // 2])
         layout.addWidget(splitter)
+
     # endregion
 
     # region Setting up the canvas of each plot area of each tab
@@ -683,6 +698,7 @@ class WE_load_plotter(QWidget):
         splitter.addWidget(self.r_series_plot)
         splitter.setSizes([self.height() // 2, self.height() // 2])
         layout.addWidget(splitter)
+
     # endregion
 
     # region Define the logic for each button
@@ -924,7 +940,8 @@ class WE_load_plotter(QWidget):
         # Harmonic analysis setup
         analysis_HR = Model.AddHarmonicResponseAnalysis()
         analysis_settings_HR = analysis_HR.AnalysisSettings
-        analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyMax").InternalValue = self.result_df_full_part_load['FREQ'].max()
+        analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyMax").InternalValue = \
+        self.result_df_full_part_load['FREQ'].max()
         analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyIntervals").InternalValue = 1
         analysis_settings_HR.PropertyByName("HarmonicSolutionMethod").InternalValue = 1
 
@@ -980,12 +997,12 @@ class WE_load_plotter(QWidget):
             list_of_angle_mz_values = []
 
             # Create lists of quantities (for T1, T2, T3)
-            for fx, fy, fz, angle_fx, angle_fy, angle_fz  in zip(interface_dicts_full[interface_name]["T1"],
-                                                                 interface_dicts_full[interface_name]["T2"],
-                                                                 interface_dicts_full[interface_name]["T3"],
-                                                                 interface_dicts_full[interface_name]["Phase_T1"],
-                                                                 interface_dicts_full[interface_name]["Phase_T2"],
-                                                                 interface_dicts_full[interface_name]["Phase_T3"]):
+            for fx, fy, fz, angle_fx, angle_fy, angle_fz in zip(interface_dicts_full[interface_name]["T1"],
+                                                                interface_dicts_full[interface_name]["T2"],
+                                                                interface_dicts_full[interface_name]["T3"],
+                                                                interface_dicts_full[interface_name]["Phase_T1"],
+                                                                interface_dicts_full[interface_name]["Phase_T2"],
+                                                                interface_dicts_full[interface_name]["Phase_T3"]):
                 list_of_fx_values.append(Quantity(fx, "N"))
                 list_of_fy_values.append(Quantity(fy, "N"))
                 list_of_fz_values.append(Quantity(fz, "N"))
@@ -994,12 +1011,12 @@ class WE_load_plotter(QWidget):
                 list_of_angle_fz_values.append(Quantity(angle_fz, "deg"))
 
             # Create lists of quantities (for R1, R2, R3)
-            for mx, my, mz, angle_mx, angle_my, angle_mz  in zip(interface_dicts_full[interface_name]["R1"],
-                                                                 interface_dicts_full[interface_name]["R2"],
-                                                                 interface_dicts_full[interface_name]["R3"],
-                                                                 interface_dicts_full[interface_name]["Phase_R1"],
-                                                                 interface_dicts_full[interface_name]["Phase_R2"],
-                                                                 interface_dicts_full[interface_name]["Phase_R3"]):
+            for mx, my, mz, angle_mx, angle_my, angle_mz in zip(interface_dicts_full[interface_name]["R1"],
+                                                                interface_dicts_full[interface_name]["R2"],
+                                                                interface_dicts_full[interface_name]["R3"],
+                                                                interface_dicts_full[interface_name]["Phase_R1"],
+                                                                interface_dicts_full[interface_name]["Phase_R2"],
+                                                                interface_dicts_full[interface_name]["Phase_R3"]):
                 list_of_mx_values.append(Quantity(mx, "N mm"))
                 list_of_my_values.append(Quantity(my, "N mm"))
                 list_of_mz_values.append(Quantity(mz, "N mm"))
@@ -1046,7 +1063,7 @@ class WE_load_plotter(QWidget):
             if are_all_zeroes(interface_dicts_full[interface_name]["R1"],
                               interface_dicts_full[interface_name]["R2"],
                               interface_dicts_full[interface_name]["R3"]):
-                moment.Delete()    #    Delete moment object if no R1, R2, R3 components are all zero, making moment undefined
+                moment.Delete()  # Delete moment object if no R1, R2, R3 components are all zero, making moment undefined
 
         app_ansys.save(os.path.join(os.getcwd(), "WE_Loading_Template.mechdat"))
 
@@ -1062,8 +1079,6 @@ class WE_load_plotter(QWidget):
         except Exception as e:
             print(f"An error occurred while trying to delete the directory {dir_path}: {e}")
 
-
-
         app_ansys.print_tree(DataModel.Project.Model)
 
         QMessageBox.information(self, "Extraction Complete",
@@ -1075,6 +1090,7 @@ class WE_load_plotter(QWidget):
 
         app_ansys.close()
         # endregion
+
     # endregion
 
     # region Define the logic for each combobox
@@ -1142,6 +1158,7 @@ class WE_load_plotter(QWidget):
         self.side_selector.clear()
         if sides:
             self.side_selector.addItems(sides)
+
     # endregion
 
     # region Define keyboard events and their logic
@@ -1175,6 +1192,7 @@ class WE_load_plotter(QWidget):
         }
         return positions.get(self.legend_positions[self.current_legend_position],
                              {'x': 1.02, 'y': 1, 'xanchor': 'left', 'yanchor': 'top'})
+
     # endregion
 
     # region Helper methods for updating the plots
@@ -1220,25 +1238,37 @@ class WE_load_plotter(QWidget):
 
     def calculate_differences(self, df, df_compare, columns, is_freq_data):
         results = []
+        missing_keys = []
         for col in columns:
-            magnitude1 = df[col]
-            magnitude2 = df_compare[col]
-            phase_col = f'Phase_{col}'
+            try:
+                magnitude1 = df[col]
+                magnitude2 = df_compare[col]
+                phase_col = f'Phase_{col}'
 
-            if is_freq_data and all(col in df.columns for col in [col, phase_col]) and all(
-                    col in df_compare.columns for col in [col, phase_col]):
-                phase1 = df[phase_col]
-                phase2 = df_compare[phase_col]
+                if is_freq_data and all(col in df.columns for col in [col, phase_col]) and all(
+                        col in df_compare.columns for col in [col, phase_col]):
+                    phase1 = df[phase_col]
+                    phase2 = df_compare[phase_col]
 
-                complex1 = magnitude1 * np.exp(1j * phase1)
-                complex2 = magnitude2 * np.exp(1j * phase2)
+                    complex1 = magnitude1 * np.exp(1j * phase1)
+                    complex2 = magnitude2 * np.exp(1j * phase2)
 
-                complex_diff = complex1 - complex2
-                magnitude_diff = np.abs(complex_diff)
-            else:
-                magnitude_diff = magnitude1 - magnitude2
+                    complex_diff = complex1 - complex2
+                    magnitude_diff = np.abs(complex_diff)
+                else:
+                    magnitude_diff = magnitude1 - magnitude2
 
-            results.append((col, magnitude_diff))
+                results.append((col, magnitude_diff))
+            except KeyError as e:
+                missing_keys.append(str(e))
+
+        if missing_keys:
+            QMessageBox.critical(
+                None,
+                'Key Error',
+                f"The following keys were not found in at least one of the datasets: {', '.join(missing_keys)}. "
+                f"The program will show the rest of the common traces."
+            )
 
         return results
 
@@ -1441,7 +1471,8 @@ class WE_load_plotter(QWidget):
                         plt.close(fig)  # Close the figure after drawing to save memory
                     else:
                         fft_df = rolling_fft(self.working_df_tab1[[value_col]], num_slices=400, add_resultant=True)
-                        heatmap = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=None, var_to_process=value_col)
+                        heatmap = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=None,
+                                                     var_to_process=value_col)
 
                         heatmap.update_layout(
                             margin=dict(l=20, r=20, t=35, b=35),
@@ -1453,6 +1484,7 @@ class WE_load_plotter(QWidget):
                             self.spectrum_plot.setUrl(QtCore.QUrl.fromLocalFile(tmp_file.name))
                 except Exception as e:
                     QMessageBox.critical(None, 'Error', f"An error occurred while creating the spectrum plot: {str(e)}")
+
     # endregion
 
     # region Helper methods for creating and modifying the dataframes for plots
@@ -1471,6 +1503,7 @@ class WE_load_plotter(QWidget):
         except Exception as e:
             print(f"Error in create_dataframes: {str(e)}")
             return None, None
+
     # endregion
 
     # region Handle the filtering and plotting logic at each tab
@@ -1498,7 +1531,8 @@ class WE_load_plotter(QWidget):
             if self.df.columns[1] == 'FREQ':
                 phase_column = 'Phase_' + selected_column
                 y_data_dict = {phase_column: self.df[phase_column]}
-                self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label, y_data_dict)
+                self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
+                                                                                                 y_data_dict)
                 self.create_and_style_figure(
                     self.phase_plot,
                     self.working_df_phase_tab1,
@@ -1508,7 +1542,8 @@ class WE_load_plotter(QWidget):
 
                 # Creating dataframe container for tab1 (phase)
                 y_data_dict = {phase_column: self.df[phase_column]}
-                self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label, y_data_dict)
+                self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
+                                                                                                 y_data_dict)
 
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
@@ -1525,10 +1560,12 @@ class WE_load_plotter(QWidget):
         x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
 
         y_data_dict_t_series = {col: self.df[col] for col in t_series_columns}
-        self.original_df_t_series_tab2, self.working_df_t_series_tab2 = self.create_dataframes(x_data, x_label, y_data_dict_t_series)
+        self.original_df_t_series_tab2, self.working_df_t_series_tab2 = self.create_dataframes(x_data, x_label,
+                                                                                               y_data_dict_t_series)
 
         y_data_dict_r_series = {col: self.df[col] for col in r_series_columns}
-        self.original_df_r_series_tab2, self.working_df_r_series_tab2 = self.create_dataframes(x_data, x_label, y_data_dict_r_series)
+        self.original_df_r_series_tab2, self.working_df_r_series_tab2 = self.create_dataframes(x_data, x_label,
+                                                                                               y_data_dict_r_series)
 
         if interface:
             self.populate_side_selector_tab_2(interface)
@@ -1551,10 +1588,12 @@ class WE_load_plotter(QWidget):
         x_label = 'Freq [Hz]' if self.df.columns[1] == 'FREQ' else 'Time [s]'
 
         y_data_dict_t_series = {col: self.df[col] for col in t_series_columns}
-        self.original_df_t_series_tab3, self.working_df_t_series_tab3 = self.create_dataframes(x_data, x_label, y_data_dict_t_series)
+        self.original_df_t_series_tab3, self.working_df_t_series_tab3 = self.create_dataframes(x_data, x_label,
+                                                                                               y_data_dict_t_series)
 
         y_data_dict_r_series = {col: self.df[col] for col in r_series_columns}
-        self.original_df_r_series_tab3, self.working_df_r_series_tab3 = self.create_dataframes(x_data, x_label, y_data_dict_r_series)
+        self.original_df_r_series_tab3, self.working_df_r_series_tab3 = self.create_dataframes(x_data, x_label,
+                                                                                               y_data_dict_r_series)
 
     def update_compare_plots(self):
         try:
@@ -1572,7 +1611,8 @@ class WE_load_plotter(QWidget):
                     f'Original {selected_column}': self.df[selected_column],
                     f'Compare {selected_column}': self.df_compare[selected_column]
                 }
-                self.original_df_compare_tab, self.working_df_compare_tab = self.create_dataframes(x_data, x_label, y_data_dict)
+                self.original_df_compare_tab, self.working_df_compare_tab = self.create_dataframes(x_data, x_label,
+                                                                                                   y_data_dict)
                 self.create_and_style_figure(
                     self.compare_regular_plot,
                     self.working_df_compare_tab,
@@ -1585,7 +1625,9 @@ class WE_load_plotter(QWidget):
 
                 # Absolute difference plot
                 y_data_dict = {f'Absolute Δ {selected_column}': results[0][1]}
-                self.original_df_absolute_diff_tab, self.working_df_absolute_diff_tab = self.create_dataframes(x_data, x_label, y_data_dict)
+                self.original_df_absolute_diff_tab, self.working_df_absolute_diff_tab = self.create_dataframes(x_data,
+                                                                                                               x_label,
+                                                                                                               y_data_dict)
                 self.create_and_style_figure(
                     self.compare_absolute_diff_plot,
                     self.working_df_absolute_diff_tab,
@@ -1595,7 +1637,9 @@ class WE_load_plotter(QWidget):
 
                 # Relative difference plot
                 y_data_dict = {f'Relative Δ {selected_column} (%)': 100 * results[0][1] / self.df[selected_column]}
-                self.original_df_relative_diff_tab, self.working_df_relative_diff_tab = self.create_dataframes(x_data, x_label, y_data_dict)
+                self.original_df_relative_diff_tab, self.working_df_relative_diff_tab = self.create_dataframes(x_data,
+                                                                                                               x_label,
+                                                                                                               y_data_dict)
                 self.create_and_style_figure(
                     self.compare_percent_diff_plot,
                     self.working_df_relative_diff_tab,
@@ -1640,7 +1684,9 @@ class WE_load_plotter(QWidget):
 
             # T Series plot
             y_data_dict_t_series = {f'Δ {col}': magnitude_diff for col, magnitude_diff in results_t}
-            self.original_df_compare_t_series_tab, self.working_df_compare_t_series_tab = self.create_dataframes(x_data, x_label, y_data_dict_t_series)
+            self.original_df_compare_t_series_tab, self.working_df_compare_t_series_tab = self.create_dataframes(x_data,
+                                                                                                                 x_label,
+                                                                                                                 y_data_dict_t_series)
             self.create_and_style_figure(
                 self.compare_t_series_plot,
                 self.working_df_compare_t_series_tab,
@@ -1650,7 +1696,9 @@ class WE_load_plotter(QWidget):
 
             # R Series plot
             y_data_dict_r_series = {f'Δ {col}': magnitude_diff for col, magnitude_diff in results_r}
-            self.original_df_compare_r_series_tab, self.working_df_compare_r_series_tab = self.create_dataframes(x_data, x_label, y_data_dict_r_series)
+            self.original_df_compare_r_series_tab, self.working_df_compare_r_series_tab = self.create_dataframes(x_data,
+                                                                                                                 x_label,
+                                                                                                                 y_data_dict_r_series)
             self.create_and_style_figure(
                 self.compare_r_series_plot,
                 self.working_df_compare_r_series_tab,
@@ -1723,7 +1771,9 @@ class WE_load_plotter(QWidget):
         plot_title = f'Time Domain Representation at {str(freq)} Hz - {selected_side}'
         custom_hover = '%{fullData.name}: %{y:.2f}<extra></extra>'
         y_data_dict = {col: self.current_plot_data[col]['y_data'] for col in displayed_columns}
-        self.original_df_time_domain_tab4, self.working_df_time_domain_tab4 = self.create_dataframes(theta, 'Theta [deg]', y_data_dict)
+        self.original_df_time_domain_tab4, self.working_df_time_domain_tab4 = self.create_dataframes(theta,
+                                                                                                     'Theta [deg]',
+                                                                                                     y_data_dict)
         self.create_and_style_figure(
             self.time_domain_plot,
             self.working_df_time_domain_tab4,
@@ -1737,6 +1787,8 @@ class WE_load_plotter(QWidget):
         if self.df.columns[1] == 'FREQ':
             self.update_time_domain_plot()
     # endregion
+
+
 # endregion
 
 # region Run the script
