@@ -90,16 +90,26 @@ def insert_phase_columns(df):
 
 
 def read_pld_file(file_path):
+    # Read and process the file
     with open(file_path, 'r') as file:
         lines = file.readlines()
         processed_data = []
-        for line in lines[2:]:
+        for line in lines[0:]:
             line = line.strip()
             if not line.startswith('|'):
                 line = '|' + line
             if not line.endswith('|'):
                 line = line + '|'
-    
+            processed_data.append(line)
+
+    # Rewrite the modified file
+    with open(file_path, 'w') as file:
+        for line in processed_data:
+            file.write(line + '\n')  # Write processed lines
+
+    print(f"{file_path} has been rewritten to add any missing pipe column separator '|'. "
+          f"The program will now read the input PLD file(s) inside the folder of the specified dynamic event.")
+
     df = pd.read_csv(file_path, sep='|', low_memory=False)
     df.drop(df.index[0], inplace=True)
     df.columns = df.columns.str.strip()
