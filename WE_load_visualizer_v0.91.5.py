@@ -1436,7 +1436,6 @@ class WE_load_plotter(QWidget):
         self.update_compare_plots()
         self.update_compare_part_loads_plots()
 
-
     def update_spectrum_plot(self):
         if self.working_df_tab1 is not None:
             value_col = self.column_selector.currentText()
@@ -1448,59 +1447,65 @@ class WE_load_plotter(QWidget):
                         self.spectrum_plot.layout().removeWidget(self.spectrum_canvas)
                         self.spectrum_canvas.deleteLater()
                         self.spectrum_canvas = None
-    
+
                     y_data = self.working_df_tab1[value_col].values
-    
+
                     # Handle non-uniform time data by interpolating to a uniform grid
-                    time_data = self.working_df_tab1['TIME'].values
-                    time_diffs = np.diff(time_data)
-                    delta_t_min = np.min(time_diffs)
-                    uniform_time = np.arange(time_data.min(), time_data.max(), delta_t_min)
-                    y_data = np.interp(uniform_time, time_data, y_data)
-                    fs = 1 / delta_t_min  # Recalculate sample rate for the uniform grid
-    
+                    if isinstance(self.working_df_tab1.index, pd.DatetimeIndex) or isinstance(
+                            self.working_df_tab1.index, pd.Index):
+                        time_data = self.working_df_tab1.index.values
+                        time_diffs = np.diff(time_data)
+                        delta_t_min = np.min(time_diffs)
+                        uniform_time = np.arange(time_data.min(), time_data.max(), delta_t_min)
+                        y_data = np.interp(uniform_time, time_data, y_data)
+                        fs = 1 / delta_t_min  # Recalculate sample rate for the uniform grid
+                    else:
+                        fs = self.sample_rate
+
                     # Dynamically set nperseg as a fraction of the data length
                     nperseg = max(len(y_data) // 8, 128)  # Use at least 128 data points per segment
                     noverlap = min(nperseg // 2, len(y_data) // 4)  # Ensure noverlap is less than nperseg
-    
+
                     if self.specgram_checkbox.isChecked():
                         # Create a Matplotlib figure and axis
                         fig, ax = plt.subplots()
-    
+
                         # Generate the spectrogram
-                        Pxx, freqs, bins, im = ax.specgram(y_data, NFFT=nperseg, Fs=fs, noverlap=noverlap, cmap='viridis')
-    
+                        Pxx, freqs, bins, im = ax.specgram(y_data, NFFT=nperseg, Fs=fs, noverlap=noverlap,
+                                                           cmap='viridis')
+
                         # Set plot titles and labels
                         ax.set_title(f'Spectrogram of {value_col}')
                         ax.set_xlabel('Time [s]')
                         ax.set_ylabel('Frequency [Hz]')
-    
+
                         # Synchronize width
                         plotly_graph_width = self.regular_plot.size().width()
                         fig.set_size_inches(1.05 * plotly_graph_width / fig.dpi, fig.get_figheight())
                         fig.subplots_adjust(left=0.055, right=0.975, top=0.9, bottom=0.1)
-    
+
                         # Create a FigureCanvas and add it to the spectrum_plot layout
                         self.spectrum_canvas = FigureCanvas(fig)
                         layout = self.spectrum_plot.layout()
                         if layout is None:
                             layout = QVBoxLayout(self.spectrum_plot)
                         layout.addWidget(self.spectrum_canvas)
-    
+
                         # Draw the canvas
                         self.spectrum_canvas.draw()
-    
+
                         plt.close(fig)  # Close the figure after drawing to save memory
                     else:
                         # Apply FFT on the uniform time grid data
                         fft_df = rolling_fft(pd.DataFrame({value_col: y_data}), num_slices=400, add_resultant=True)
-                        heatmap = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=None, var_to_process=value_col)
-    
+                        heatmap = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=None,
+                                                     var_to_process=value_col)
+
                         heatmap.update_layout(
                             margin=dict(l=20, r=20, t=35, b=35),
                             font=dict(family='Open Sans', size=self.default_font_size, color='black')
                         )
-    
+
                         with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as tmp_file:
                             pio.write_html(heatmap, file=tmp_file.name, include_plotlyjs='cdn', auto_open=False)
                             self.spectrum_plot.setUrl(QtCore.QUrl.fromLocalFile(tmp_file.name))
