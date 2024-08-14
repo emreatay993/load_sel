@@ -1497,7 +1497,7 @@ class WE_load_plotter(QWidget):
                         plt.close(fig)  # Close the figure after drawing to save memory
                     else:
                         # Apply FFT on the uniform time grid data
-                        fft_df = rolling_fft(pd.DataFrame({value_col: y_data}), num_slices=400, add_resultant=True)
+                        fft_df = rolling_fft(self.working_df_tab1[[value_col]], num_slices=400, add_resultant=True)
                         heatmap = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=None,
                                                      var_to_process=value_col)
 
