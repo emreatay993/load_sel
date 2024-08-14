@@ -1436,7 +1436,7 @@ class WE_load_plotter(QWidget):
         self.update_compare_plots()
         self.update_compare_part_loads_plots()
 
-    def update_spectrum_plot(self):
+   def update_spectrum_plot(self):
     if self.working_df_tab1 is not None:
         value_col = self.column_selector.currentText()
         plot_type = self.plot_type_selector.currentText()
@@ -1505,8 +1505,6 @@ class WE_load_plotter(QWidget):
                         self.spectrum_plot.setUrl(QtCore.QUrl.fromLocalFile(tmp_file.name))
             except Exception as e:
                 QMessageBox.critical(None, 'Error', f"An error occurred while creating the spectrum plot: {str(e)}")
-
-
     # endregion
 
     # region Helper methods for creating and modifying the dataframes for plots
