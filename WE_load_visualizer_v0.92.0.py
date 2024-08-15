@@ -8,7 +8,7 @@ from time import sleep
 from collections import OrderedDict
 from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
-from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QLineEdit,
+from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QLineEdit, QSpinBox,
                              QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox, QGroupBox)
 import plotly.graph_objects as go
 import os
@@ -24,6 +24,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import tempfile
 import plotly.io as pio
+from scipy.signal import butter, filtfilt
 
 print("Done.")
 
@@ -329,6 +330,25 @@ class WE_load_plotter(QWidget):
         self.specgram_checkbox = QCheckBox("Show Spectrum in Full Scale Plot")
         self.specgram_checkbox.stateChanged.connect(self.toggle_spectrum_plot)
 
+        if 'TIME' in self.df.columns:
+            self.filter_checkbox = QCheckBox("Apply Low-Pass Filter")
+            self.filter_checkbox.stateChanged.connect(self.toggle_filter_options)
+
+            self.cutoff_frequency_label = QLabel("Cutoff Freq [Hz]:")
+            self.cutoff_frequency_input = QLineEdit()  # Added line
+            self.cutoff_frequency_input.setPlaceholderText("Cutoff Frequency [Hz]")
+            self.cutoff_frequency_label.setVisible(False)
+            self.cutoff_frequency_input.setVisible(False)
+            self.cutoff_frequency_input.textChanged.connect(self.update_plots_tab1)
+
+            self.filter_order_label = QLabel("Order:")
+            self.filter_order_input = QSpinBox()
+            self.filter_order_input.setRange(1, 10)
+            self.filter_order_input.setValue(2)
+            self.filter_order_label.setVisible(False)
+            self.filter_order_input.setVisible(False)
+            self.filter_order_input.valueChanged.connect(self.update_plots_tab1)
+
         selector_layout = QHBoxLayout()
         selector_layout.addWidget(self.column_selector)
 
@@ -337,14 +357,29 @@ class WE_load_plotter(QWidget):
             selector_layout.addWidget(self.plot_type_selector)
             selector_layout.addWidget(self.specgram_checkbox)
 
+            selector_layout.addWidget(self.filter_checkbox)
+            selector_layout.addWidget(self.cutoff_frequency_label)
+            selector_layout.addWidget(self.cutoff_frequency_input)
+            selector_layout.addWidget(self.filter_order_label)
+            selector_layout.addWidget(self.filter_order_input)
+
         layout = QVBoxLayout(tab)
         layout.addLayout(selector_layout)
         layout.addWidget(self.splitter_tab1)
 
         self.spectrum_plot = QtWebEngineWidgets.QWebEngineView()
         self.splitter_tab1.addWidget(self.spectrum_plot)
-        self.spectrum_plot.setVisible(False)  # Hide initially
         self.spectrum_plot.setVisible(False)
+        self.spectrum_plot.setVisible(False)
+
+    def toggle_filter_options(self):
+        # Show or hide filter options and labels based on checkbox state
+        filter_enabled = self.filter_checkbox.isChecked()
+        self.cutoff_frequency_input.setVisible(filter_enabled)
+        self.cutoff_frequency_label.setVisible(filter_enabled)
+        self.filter_order_input.setVisible(filter_enabled)
+        self.filter_order_label.setVisible(filter_enabled)
+        self.update_plots_tab1()
 
     def setupTab2(self, tab):
         layout = QVBoxLayout(tab)
@@ -1511,6 +1546,22 @@ class WE_load_plotter(QWidget):
                             self.spectrum_plot.setUrl(QtCore.QUrl.fromLocalFile(tmp_file.name))
                 except Exception as e:
                     QMessageBox.critical(None, 'Error', f"An error occurred while creating the spectrum plot: {str(e)}")
+
+    def apply_butterworth_filter(self, data):
+        try:
+            cutoff = float(self.cutoff_frequency_input.text())
+            order = self.filter_order_input.value()
+            fs = self.sample_rate  # Sampling frequency
+
+            nyquist = 0.5 * fs
+            normal_cutoff = cutoff / nyquist
+
+            # Get the filter coefficients
+            b, a = butter(order, normal_cutoff, btype='low', analog=False)
+            y = filtfilt(b, a, data)
+            return y
+        except ValueError:
+            return data  # Return unfiltered data if there's an issue
     # endregion
 
     # region Helper methods for creating and modifying the dataframes for plots
@@ -1533,6 +1584,44 @@ class WE_load_plotter(QWidget):
     # endregion
 
     # region Handle the filtering and plotting logic at each tab
+    # def update_plots_tab1(self):
+    #     selected_column = self.column_selector.currentText()
+    #     if selected_column:
+    #         x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
+    #         x_label = 'Freq [Hz]' if 'FREQ' in self.df.columns else 'Time [s]'
+    #         custom_hover = ('%{fullData.name}<br>' + (
+    #             'Hz: ' if 'FREQ' in self.df.columns else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
+    #
+    #         # Creating dataframe container for tab1 (magnitude)
+    #         y_data_dict = {selected_column: self.df[selected_column]}
+    #         self.original_df_tab1, self.working_df_tab1 = self.create_dataframes(x_data, x_label, y_data_dict)
+    #
+    #         self.plot_with_rolling_min_max_envelope(
+    #             self.working_df_tab1,
+    #             x_data,
+    #             [selected_column],
+    #             self.regular_plot,
+    #             f'{selected_column} Plot',
+    #             x_label
+    #         )
+    #
+    #         if 'FREQ' in self.df.columns:
+    #             phase_column = 'Phase_' + selected_column
+    #             y_data_dict = {phase_column: self.df[phase_column]}
+    #             self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
+    #                                                                                              y_data_dict)
+    #             self.create_and_style_figure(
+    #                 self.phase_plot,
+    #                 self.working_df_phase_tab1,
+    #                 x_data,
+    #                 f'Phase {selected_column} Plot'
+    #             )
+    #
+    #             # Creating dataframe container for tab1 (phase)
+    #             y_data_dict = {phase_column: self.df[phase_column]}
+    #             self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
+    #                                                                                              y_data_dict)
+
     def update_plots_tab1(self):
         selected_column = self.column_selector.currentText()
         if selected_column:
@@ -1545,6 +1634,12 @@ class WE_load_plotter(QWidget):
             y_data_dict = {selected_column: self.df[selected_column]}
             self.original_df_tab1, self.working_df_tab1 = self.create_dataframes(x_data, x_label, y_data_dict)
 
+            # Apply Butterworth filter if enabled and TIME is in the columns
+            if 'TIME' in self.df.columns and self.filter_checkbox.isChecked():
+                filtered_y_data = self.apply_butterworth_filter(self.working_df_tab1[selected_column])
+                self.working_df_tab1[selected_column] = filtered_y_data
+
+            # Plot with rolling min-max envelope
             self.plot_with_rolling_min_max_envelope(
                 self.working_df_tab1,
                 x_data,
@@ -1554,11 +1649,13 @@ class WE_load_plotter(QWidget):
                 x_label
             )
 
+            # Handle phase plot if 'FREQ' is in the columns
             if 'FREQ' in self.df.columns:
                 phase_column = 'Phase_' + selected_column
                 y_data_dict = {phase_column: self.df[phase_column]}
                 self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
                                                                                                  y_data_dict)
+
                 self.create_and_style_figure(
                     self.phase_plot,
                     self.working_df_phase_tab1,
