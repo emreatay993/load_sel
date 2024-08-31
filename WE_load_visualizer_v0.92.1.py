@@ -10,6 +10,7 @@ from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
 from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QLineEdit, QSpinBox,
                              QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox, QGroupBox)
+from PyQt5.QtGui import QFont
 import plotly.graph_objects as go
 import os
 import numpy as np
@@ -286,7 +287,7 @@ class WE_load_plotter(QWidget):
 
         main_layout.addWidget(tab_widget)
         self.setLayout(main_layout)
-        self.setWindowTitle("WE Load Visualizer - v0.9")
+        self.setWindowTitle("WE Load Visualizer - v0.92")
         self.showMaximized()
 
     def create_tab(self, name, setup_method):
@@ -297,6 +298,8 @@ class WE_load_plotter(QWidget):
     # endregion
 
     # region Initialize widgets & layouts inside each tab of the main window
+
+    # "Single Data" tab
     def setupTab1(self, tab):
         self.splitter_tab1 = QSplitter(QtCore.Qt.Vertical)
         self.regular_plot = QtWebEngineWidgets.QWebEngineView()
@@ -372,8 +375,8 @@ class WE_load_plotter(QWidget):
         self.spectrum_plot.setVisible(False)
         self.spectrum_plot.setVisible(False)
 
+    # Show or hide low-pass filter options and labels based on the state of low-pass filter checkbox
     def toggle_filter_options(self):
-        # Show or hide filter options and labels based on checkbox state
         filter_enabled = self.filter_checkbox.isChecked()
         self.cutoff_frequency_input.setVisible(filter_enabled)
         self.cutoff_frequency_label.setVisible(filter_enabled)
@@ -381,12 +384,14 @@ class WE_load_plotter(QWidget):
         self.filter_order_label.setVisible(filter_enabled)
         self.update_plots_tab1()
 
+    # "Interface Data" tab
     def setupTab2(self, tab):
         layout = QVBoxLayout(tab)
         self.setupInterfaceSelector(layout)
         self.setupSideSelectionTab2(layout)
         self.setupPlots(layout)
 
+    # "Part Loads" tab
     def setupTab3(self, tab):
         layout = QVBoxLayout(tab)
         upper_layout = QHBoxLayout()
@@ -409,27 +414,36 @@ class WE_load_plotter(QWidget):
 
         self.data_point_selector_tab3 = QComboBox()
         self.data_point_selector_tab3.setEditable(True)
+
+        # Change the content and label of the combobox based on whether the input data is in time or frequency domain
         if 'FREQ' in self.df.columns:
             self.data_point_selector_tab3.addItem("Select a frequency [Hz] to extract the raw data")
             self.data_point_selector_tab3.addItems([str(freq_point) for freq_point in sorted(self.df['FREQ'].unique())])
         if 'TIME' in self.df.columns:
-            self.data_point_selector_tab3.addItem("Select a time point [sec] to extract the raw data")
+            self.data_point_selector_tab3.addItem("Select a time point [sec] from the list to extract the raw data in the frequency domain")
             self.data_point_selector_tab3.addItems([str(time_point) for time_point in sorted(self.df['TIME'].unique())])
+
+        # Make the placeholder text in the combobox non-selectable
+        index = self.data_point_selector_tab3.count() - 1
+        self.data_point_selector_tab3.setItemData(index, 0, QtCore.Qt.UserRole - 1)
         data_point_selector_tab3_layout = QHBoxLayout()
         data_point_selector_tab3_layout.addWidget(self.data_point_selector_tab3)
 
+        # Display the buttons designed specifically for time or frequency domain based data
         if 'FREQ' in self.df.columns:
             self.extract_data_button = QPushButton("Extract Data for Selected Frequency")
             self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part")
-            self.extract_data_button.clicked.connect(self.extract_data_point)
+            self.extract_data_button.clicked.connect(self.extract_single_frequency_data_point)
             data_point_selector_tab3_layout.addWidget(self.extract_data_button)
             self.extract_all_data_button.clicked.connect(self.extract_all_data_points)
             data_point_selector_tab3_layout.addWidget(self.extract_all_data_button)
         if 'TIME' in self.df.columns:
             self.extract_data_button = QPushButton("Extract Data for Selected Time")
+            data_point_selector_tab3_layout.addWidget(self.extract_data_button)
 
         layout.addLayout(data_point_selector_tab3_layout)
 
+    # "Time Domain Representation" tab (active only if input data is in frequency domain)
     def setupTab4(self, tab):
         layout = QVBoxLayout(tab)
 
@@ -459,12 +473,13 @@ class WE_load_plotter(QWidget):
         interval_selector_layout.addWidget(self.interval_selector)
 
         self.extract_button = QPushButton("Extract Data at Each Interval as CSV file")
-        self.extract_button.clicked.connect(self.extract_time_data)
+        self.extract_button.clicked.connect(self.extract_time_representation_data)
         interval_selector_layout.addWidget(self.extract_button)
 
         layout.addLayout(interval_selector_layout)
         tab.setLayout(layout)
 
+    # Add controls common to all tabs
     def add_common_controls(self, layout):
         # Checkbox for Rolling Min-Max Envelope
         self.rolling_min_max_checkbox = QCheckBox("Show as Rolling Min-Max Envelope")
@@ -496,6 +511,7 @@ class WE_load_plotter(QWidget):
 
         layout.addLayout(control_layout)
 
+    # Set the visibility of settings based on input data type (time or frequency domain)
     def update_control_visibility(self):
         is_time_data = 'TIME' in self.df.columns
         is_rolling_min_max_checked = self.rolling_min_max_checkbox.isChecked()
@@ -707,6 +723,15 @@ class WE_load_plotter(QWidget):
         layout.addLayout(upper_layout)
         self.setupComparePartLoadsPlots(layout)
 
+    def setupComparePartLoadsPlots(self, layout):
+        splitter = QSplitter(QtCore.Qt.Vertical)
+        self.compare_t_series_plot = QtWebEngineWidgets.QWebEngineView()
+        self.compare_r_series_plot = QtWebEngineWidgets.QWebEngineView()
+        splitter.addWidget(self.compare_t_series_plot)
+        splitter.addWidget(self.compare_r_series_plot)
+        splitter.setSizes([self.height() // 2, self.height() // 2])
+        layout.addWidget(splitter)
+
     def setupSideFilterSelector(self, layout):
         side_filter_layout = QHBoxLayout()
         self.side_filter_selector = QComboBox()
@@ -722,15 +747,6 @@ class WE_load_plotter(QWidget):
         self.populate_side_filter_selector()
         self.side_filter_selector_for_compare.currentIndexChanged.connect(self.update_compare_part_loads_plots)
         layout.addWidget(self.side_filter_selector_for_compare)
-
-    def setupComparePartLoadsPlots(self, layout):
-        splitter = QSplitter(QtCore.Qt.Vertical)
-        self.compare_t_series_plot = QtWebEngineWidgets.QWebEngineView()
-        self.compare_r_series_plot = QtWebEngineWidgets.QWebEngineView()
-        splitter.addWidget(self.compare_t_series_plot)
-        splitter.addWidget(self.compare_r_series_plot)
-        splitter.setSizes([self.height() // 2, self.height() // 2])
-        layout.addWidget(splitter)
 
     # endregion
 
@@ -808,7 +824,7 @@ class WE_load_plotter(QWidget):
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
-    def extract_time_data(self):
+    def extract_time_representation_data(self):
         try:
             interval = int(self.interval_selector.currentText())
             num_points = 360 // interval + 1
@@ -844,7 +860,7 @@ class WE_load_plotter(QWidget):
                 nmm_data[col] = nmm_data[col].astype(float) * 1000
         nmm_data.to_csv("extracted_time_data_values_in_Nmm_units.csv", index=False)
 
-    def extract_data_point(self):
+    def extract_single_frequency_data_point(self):
         selected_frequency_tab3 = self.data_point_selector_tab3.currentText()
         selected_side = self.side_filter_selector.currentText()
 
@@ -1241,45 +1257,83 @@ class WE_load_plotter(QWidget):
     # endregion
 
     # region Helper methods for updating the plots
+    def get_x_axis_data_and_label(self):
+        if 'TIME' in self.df.columns:
+            return self.df['TIME'], 'Time [s]'
+        elif 'FREQ' in self.df.columns:
+            return self.df['FREQ'], 'Freq [Hz]'
+        else:
+            raise ValueError("Neither 'TIME' nor 'FREQ' columns found in the DataFrame.")
+
     def update_T_and_R_plots(self, t_plot, r_plot, interface=None, side=None, exclude_t2_t3_r2_r3=False):
         if not side:
             return
 
         side_pattern = re.compile(rf'\b{re.escape(side)}\b')
 
-        def should_exclude(col):
+        # Filtering function to whether exclude T2/T3 or R2/R3 data from plots
+        def should_exclude_resultant_components(col):
             if re.search(r'\bT2\b', col) and not re.search(r'T2/T3', col):
+                print(f"Excluding column {col} due to T2 exclusion rule.")
                 return True
             if re.search(r'\bT3\b', col) and not re.search(r'T2/T3', col):
+                print(f"Excluding column {col} due to T3 exclusion rule.")
                 return True
             if re.search(r'\bR2\b', col) and not re.search(r'R2/R3', col):
+                print(f"Excluding column {col} due to R2 exclusion rule.")
                 return True
             if re.search(r'\bR3\b', col) and not re.search(r'R2/R3', col):
+                print(f"Excluding column {col} due to R3 exclusion rule.")
                 return True
             return False
 
-        t_series_columns = [
-            col for col in self.df.columns
-            if (not interface or re.match(r'^' + re.escape(interface) + r'([-\s]|$)', col))
-               and any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"])
-               and not col.startswith('Phase_')
-               and side_pattern.search(col)
-               and not (exclude_t2_t3_r2_r3 and should_exclude(col))
-        ]
+        # Lists to hold filtered columns
+        t_series_columns = []
+        r_series_columns = []
 
-        r_series_columns = [
-            col for col in self.df.columns
-            if (not interface or re.match(r'^' + re.escape(interface) + r'([-\s]|$)', col))
-               and any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"])
-               and not col.startswith('Phase_')
-               and side_pattern.search(col)
-               and not (exclude_t2_t3_r2_r3 and should_exclude(col))
-        ]
+        # Loop through columns
+        for col in self.df.columns:
 
-        x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
+            # Check individual conditions
+            check_1 = not interface or re.match(r'^' + re.escape(interface) + r'([-\s]|$)', col)
+            """Find whether column name starts with the specified interface (e.g. "I1"), 
+            followed by either a hyphen (-), a whitespace (\s), or the end of the string ($)"""
 
-        self.create_and_style_figure(t_plot, self.df[t_series_columns], x_data, 'T Plot')
-        self.create_and_style_figure(r_plot, self.df[r_series_columns], x_data, 'R Plot')
+            check_2_force = any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"])
+            """If any of the substrings ("T1", "T2", "T3", "T2/T3") is found in the column name (col), 
+            the expression will evaluate to True."""
+
+            check_2_moment = any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"])
+            """If any of the substrings ("R1", "R2", "R3", "R2/R3") is found in the column name (col), 
+            the expression will evaluate to True."""
+
+            check_3 = not col.startswith('Phase_')
+            "Filters out columns that starts with 'Phase_1' prefix"
+
+            check_4 = side_pattern.search(col) is not None
+            """Filter columns relevant to a selected part side"""
+
+            check_5 = not (exclude_t2_t3_r2_r3 and should_exclude_resultant_components(col))
+            """If exclude_t2_t3_r2_r3 flag is raised, 
+            resultant components are filtered out based using a search pattern for exclusion"""
+
+            # Append to the T-series or R-series columns based on checks
+            if check_1 and check_2_force and check_3 and check_4 and check_5:
+                t_series_columns.append(col)
+
+            if check_1 and check_2_moment and check_3 and check_4 and check_5:
+                r_series_columns.append(col)
+
+        # Debugging: Print filtered columns
+        print(f"Filtered T series columns: {t_series_columns}")
+        print(f"Filtered R series columns: {r_series_columns}")
+
+        # Use helper function to get x_data
+        x_data, x_label = self.get_x_axis_data_and_label()
+
+        # Create actual plots
+        self.create_and_style_figure(t_plot, self.df[t_series_columns], x_data, 'Force Components')
+        self.create_and_style_figure(r_plot, self.df[r_series_columns], x_data, 'Moment Components')
 
     def calculate_differences(self, df, df_compare, columns, is_freq_data):
         results = []
@@ -1322,6 +1376,9 @@ class WE_load_plotter(QWidget):
             if df is None:
                 web_view.setHtml("<html><body><p>No data available to plot here.</p></body></html>")
                 return
+
+            # Set the x_data as the index of the DataFrame
+            df.index = x_data
 
             legend_position = self.get_legend_position()
 
@@ -1583,45 +1640,7 @@ class WE_load_plotter(QWidget):
 
     # endregion
 
-    # region Handle the filtering and plotting logic at each tab
-    # def update_plots_tab1(self):
-    #     selected_column = self.column_selector.currentText()
-    #     if selected_column:
-    #         x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
-    #         x_label = 'Freq [Hz]' if 'FREQ' in self.df.columns else 'Time [s]'
-    #         custom_hover = ('%{fullData.name}<br>' + (
-    #             'Hz: ' if 'FREQ' in self.df.columns else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
-    #
-    #         # Creating dataframe container for tab1 (magnitude)
-    #         y_data_dict = {selected_column: self.df[selected_column]}
-    #         self.original_df_tab1, self.working_df_tab1 = self.create_dataframes(x_data, x_label, y_data_dict)
-    #
-    #         self.plot_with_rolling_min_max_envelope(
-    #             self.working_df_tab1,
-    #             x_data,
-    #             [selected_column],
-    #             self.regular_plot,
-    #             f'{selected_column} Plot',
-    #             x_label
-    #         )
-    #
-    #         if 'FREQ' in self.df.columns:
-    #             phase_column = 'Phase_' + selected_column
-    #             y_data_dict = {phase_column: self.df[phase_column]}
-    #             self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
-    #                                                                                              y_data_dict)
-    #             self.create_and_style_figure(
-    #                 self.phase_plot,
-    #                 self.working_df_phase_tab1,
-    #                 x_data,
-    #                 f'Phase {selected_column} Plot'
-    #             )
-    #
-    #             # Creating dataframe container for tab1 (phase)
-    #             y_data_dict = {phase_column: self.df[phase_column]}
-    #             self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
-    #                                                                                              y_data_dict)
-
+    # region Main methods for updating the plots after a selection is made
     def update_plots_tab1(self):
         selected_column = self.column_selector.currentText()
         if selected_column:
@@ -1670,17 +1689,24 @@ class WE_load_plotter(QWidget):
 
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
+        if interface:
+            self.populate_side_selector_tab_2(interface)
         selected_side = self.side_selector.currentText()
         self.update_T_and_R_plots(self.t_series_plot, self.r_series_plot, interface, selected_side)
 
         # Create dataframe containers for tab2 (T and R plots)
         side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
-        t_series_columns = [col for col in self.df.columns if
-                            'T' in col and side_pattern.search(col)]
-        r_series_columns = [col for col in self.df.columns if
-                            'R' in col and side_pattern.search(col)]
-        x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
-        x_label = 'Freq [Hz]' if 'FREQ' in self.df.columns else 'Time [s]'
+
+        t_series_columns = [col for col in self.df.columns
+                            if any(sub in col for sub in ['T1', 'T2', 'T3', 'T2/T3'])
+                            and side_pattern.search(col)]
+
+        r_series_columns = [col for col in self.df.columns
+                                      if any(sub in col for sub in ['R1', 'R2', 'R3', 'R2/R3'])
+                                      and side_pattern.search(col)]
+
+        # Use helper function to get x_data and x_label
+        x_data, x_label = self.get_x_axis_data_and_label()
 
         y_data_dict_t_series = {col: self.df[col] for col in t_series_columns}
         self.original_df_t_series_tab2, self.working_df_t_series_tab2 = self.create_dataframes(x_data, x_label,
@@ -1690,11 +1716,9 @@ class WE_load_plotter(QWidget):
         self.original_df_r_series_tab2, self.working_df_r_series_tab2 = self.create_dataframes(x_data, x_label,
                                                                                                y_data_dict_r_series)
 
-        if interface:
-            self.populate_side_selector_tab_2(interface)
-
     def update_plots_tab3(self):
         selected_side = self.side_filter_selector.currentText()
+
         exclude_t2_t3_r2_r3 = self.exclude_checkbox.isChecked()
         self.update_T_and_R_plots(self.t_series_plot_tab3, self.r_series_plot_tab3, side=selected_side,
                                   exclude_t2_t3_r2_r3=exclude_t2_t3_r2_r3)
@@ -1703,12 +1727,17 @@ class WE_load_plotter(QWidget):
 
         # Create dataframe containers for tab3 (T and R plots)
         side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
-        t_series_columns = [col for col in self.df.columns if
-                            'T' in col and side_pattern.search(col)]
-        r_series_columns = [col for col in self.df.columns if
-                            'R' in col and side_pattern.search(col)]
-        x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
-        x_label = 'Freq [Hz]' if 'FREQ' in self.df.columns else 'Time [s]'
+
+        t_series_columns = [col for col in self.df.columns
+                            if any(sub in col for sub in ['T1', 'T2', 'T3', 'T2/T3'])
+                            and side_pattern.search(col)]
+
+        r_series_columns = [col for col in self.df.columns
+                                      if any(sub in col for sub in ['R1', 'R2', 'R3', 'R2/R3'])
+                                      and side_pattern.search(col)]
+
+        # Use helper function to get x_data and x_label
+        x_data, x_label = self.get_x_axis_data_and_label()
 
         y_data_dict_t_series = {col: self.df[col] for col in t_series_columns}
         self.original_df_t_series_tab3, self.working_df_t_series_tab3 = self.create_dataframes(x_data, x_label,
@@ -1835,6 +1864,7 @@ class WE_load_plotter(QWidget):
 
     def update_plots_for_selected_side_tab_2(self, selected_side):
         try:
+            # If a side or interface is not selected yet, don't do anything
             if not selected_side:
                 return
 
