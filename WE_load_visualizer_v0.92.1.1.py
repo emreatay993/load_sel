@@ -32,7 +32,9 @@ print("Done.")
 
 # endregion
 
-# region Select and read WE raw data
+# region Read input file
+#######################################
+# region Set up functions to be used for reading raw input
 def select_directory(title):
     folder = QFileDialog.getExistingDirectory(None, title)
     if not folder:
@@ -40,10 +42,8 @@ def select_directory(title):
         return None
     return folder
 
-
 def get_file_path(folder, file_suffix):
     return [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(file_suffix)]
-
 
 def read_max_pld_file(file_path):
     data = []
@@ -56,7 +56,6 @@ def read_max_pld_file(file_path):
                     data.append([cleaned_row[0], cleaned_row[1]])
     df = pd.DataFrame(data[1:])
     return df.T
-
 
 def insert_phase_columns(df):
     transformed_columns = []
@@ -90,7 +89,6 @@ def insert_phase_columns(df):
 #             processed_data.append(data_cells)
 #     return pd.DataFrame(processed_data, columns=headers)
 
-
 def read_pld_file(file_path):
     # Read and process the file
     with open(file_path, 'r') as file:
@@ -118,9 +116,11 @@ def read_pld_file(file_path):
     df.drop(df.columns[df.columns.str.contains('unnamed', case=False)], axis = 1, inplace = True)
 
     return df
+# endregion
 
-
-# region Run the reader and parse the data
+# region Run the input file reader and parse the data
+#######################
+# region Define the main routine of the input file reader
 def main():
     try:
         app = QApplication.instance()
@@ -168,25 +168,29 @@ def main():
     except Exception as e:
         QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
         sys.exit()
-
-
 # endregion
 
+# region Run the file reader
 if __name__ == "__main__":
     data = main()
+
+    # Write the raw data with correct headers inside the solution directory
     data.to_csv("full_data.csv", index=False)
-
-
+# endregion
+#######################
+# endregion
+#######################################
 # endregion
 
-# region Main GUI
+# region Set up the main GUI and its functions
 class WE_load_plotter(QWidget):
+#######################################
+    # region Initialize main window & tabs
     def __init__(self, parent=None):
         super(WE_load_plotter, self).__init__(parent)
         self.init_variables()
         self.init_ui()
 
-    # region Initialize main window & tabs
     def init_variables(self):
 
         self.legend_visible = True
@@ -294,7 +298,6 @@ class WE_load_plotter(QWidget):
         tab = QWidget()
         setup_method(tab)
         return tab
-
     # endregion
 
     # region Initialize widgets & layouts inside each tab of the main window
@@ -435,7 +438,7 @@ class WE_load_plotter(QWidget):
             self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part")
             self.extract_data_button.clicked.connect(self.extract_single_frequency_data_point)
             data_point_selector_tab3_layout.addWidget(self.extract_data_button)
-            self.extract_all_data_button.clicked.connect(self.extract_all_data_points)
+            self.extract_all_data_button.clicked.connect(self.extract_all_data_points_in_frequency_domain)
             data_point_selector_tab3_layout.addWidget(self.extract_all_data_button)
         if 'TIME' in self.df.columns:
             self.extract_data_button = QPushButton("Extract Data for Selected Time")
@@ -747,7 +750,6 @@ class WE_load_plotter(QWidget):
         self.populate_side_filter_selector()
         self.side_filter_selector_for_compare.currentIndexChanged.connect(self.update_compare_part_loads_plots)
         layout.addWidget(self.side_filter_selector_for_compare)
-
     # endregion
 
     # region Setting up the canvas of each plot area of each tab
@@ -759,10 +761,9 @@ class WE_load_plotter(QWidget):
         splitter.addWidget(self.r_series_plot)
         splitter.setSizes([self.height() // 2, self.height() // 2])
         layout.addWidget(splitter)
-
     # endregion
 
-    # region Define the logic for each button
+    # region Define the logics to be executed behind each button
     def select_compare_data(self):
         try:
             folder_selected_raw_data = select_directory('Please select a directory for raw data (Comparison)')
@@ -897,13 +898,17 @@ class WE_load_plotter(QWidget):
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
-    def extract_all_data_points(self):
+    def extract_all_data_points_in_frequency_domain(self):
+        # region Handle the case where no valid selection of part loads is not yet made and displayed on screen.
         selected_side = self.side_filter_selector.currentText()
         if not selected_side:
             QMessageBox.information(self, "Selection Required", "Please select a valid side.")
             return
+        # endregion
 
+        # Otherwise,
         try:
+            # region Extract the raw data to be used as inputs for interfaces in case user wants to take a look at them
             side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
             columns = ['FREQ']
             columns += [col for col in self.df.columns
@@ -926,15 +931,17 @@ class WE_load_plotter(QWidget):
 
             QMessageBox.information(self, "Extraction Complete",
                                     f"Data has been extracted and converted. \n\nOriginal data is saved to: \n\n{original_file_path}. \n\nConverted data is saved to: \n\n{converted_file_path}.")
+            # endregion
 
             self.create_ansys_mechanical_input_template_harmonic()
 
         except Exception as e:
             traceback_info = traceback.format_exc()
             print(traceback_info)
-            QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
+            QMessageBox.critical(None, 'Error', f"An error occurred during the execution of this button: {str(e)}")
 
     def create_ansys_mechanical_input_template_harmonic(self):
+        ############################################################################
         # region Collect interface names to be used as input loads for the selected part
 
         # List of all possible keys for load components and phase angles
@@ -1157,7 +1164,7 @@ class WE_load_plotter(QWidget):
 
         QMessageBox.information(self, "Extraction Complete",
                                 f'WE_Loading_Template.mechdat file is created successfully in: \n\n "{os.getcwd()}." \n\n '
-                                f'Please close the program first if you need to re-run this button.')
+                                f'Please restart the whole program first if you need to re-run this button.')
 
         # Open up the folder of the output file
         os.startfile(os.getcwd())
@@ -1165,6 +1172,10 @@ class WE_load_plotter(QWidget):
 
         app_ansys.close()
         # endregion
+        ############################################################################
+
+
+    # endregion
 
     # region Define the logic for each combobox
     def update_font_settings(self):
@@ -1231,10 +1242,9 @@ class WE_load_plotter(QWidget):
         self.side_selector.clear()
         if sides:
             self.side_selector.addItems(sides)
-
     # endregion
 
-    # region Define keyboard events and their logic
+    # region Define custom keyboard events and their logic
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_L:
             self.legend_visible = not self.legend_visible
@@ -1265,7 +1275,6 @@ class WE_load_plotter(QWidget):
         }
         return positions.get(self.legend_positions[self.current_legend_position],
                              {'x': 1.02, 'y': 1, 'xanchor': 'left', 'yanchor': 'top'})
-
     # endregion
 
     # region Helper methods for updating the plots
@@ -1952,10 +1961,10 @@ class WE_load_plotter(QWidget):
         if 'FREQ' in self.df.columns:
             self.update_time_domain_plot()
     # endregion
-
+#######################################
 # endregion
 
-# region Run the script
+# region Run the main script
 if __name__ == "__main__":
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
