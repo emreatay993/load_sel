@@ -927,15 +927,16 @@ class WE_load_plotter(QWidget):
             QMessageBox.information(self, "Extraction Complete",
                                     f"Data has been extracted and converted. \n\nOriginal data is saved to: \n\n{original_file_path}. \n\nConverted data is saved to: \n\n{converted_file_path}.")
 
-            self.create_ansys_mechanical_input_template()
+            self.create_ansys_mechanical_input_template_harmonic()
 
         except Exception as e:
             traceback_info = traceback.format_exc()
             print(traceback_info)
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
-    def create_ansys_mechanical_input_template(self):
-        # region Determine the interface data to be used as input loads for the selected part
+    def create_ansys_mechanical_input_template_harmonic(self):
+        # region Collect interface names to be used as input loads for the selected part
+
         # List of all possible keys for load components and phase angles
         all_keys = ["T1", "T2", "T3", "R1", "R2", "R3", "Phase_T1", "Phase_T2", "Phase_T3", "Phase_R1", "Phase_R2",
                     "Phase_R3"]
@@ -972,22 +973,29 @@ class WE_load_plotter(QWidget):
         interface_dicts_full = {interface: create_full_interface_dict(self.result_df_full_part_load, cols) for
                                 interface, cols in
                                 full_interfaces.items()}
+
+        # List of interfaces for the selected part
+        list_of_part_interface_names = list(interface_dicts_full.keys())
         # endregion
 
-        # region Create an ANSYS Mechanical template
+        # region Import libraries
         print("Importing ansys-mechanical-core library...")
         import ansys.api.mechanical
         import ansys.mechanical.core
         from ansys.mechanical.core import global_variables
         from ansys.mechanical.core import App
         print("Imported.")
+        # endregion
 
+        # region Initialization of ANSYS Mechanical App
         print("Starting Ansys Mechanical...")
         app_ansys = App(private_appdata=False)
         print("Running the scripts...")
         globals().update(global_variables(app_ansys))
         print("Updating the global variables...")
+        # endregion
 
+        # region Initialize the list of frequency points extracted
         # Create a separate list for FREQ
         list_of_all_frequencies = self.result_df_full_part_load["FREQ"].tolist()
 
@@ -995,26 +1003,22 @@ class WE_load_plotter(QWidget):
         list_of_all_frequencies_as_quantity = []
         for frequency_value in list_of_all_frequencies:
             list_of_all_frequencies_as_quantity.append(Quantity(frequency_value, "Hz"))
+        # endregion
 
-        print("Creating the analysis model...")
-
-        # Harmonic analysis setup
+        # region Create tree objects in Mechanical for harmonic analysis and initialize analysis settings
+        print("Creating the harmonic analysis environment...")
         analysis_HR = Model.AddHarmonicResponseAnalysis()
         analysis_settings_HR = analysis_HR.AnalysisSettings
         analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyMax").InternalValue = \
         self.result_df_full_part_load['FREQ'].max()
         analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyIntervals").InternalValue = 1
         analysis_settings_HR.PropertyByName("HarmonicSolutionMethod").InternalValue = 1
+        # endregion
 
-        # List of interfaces for the selected part
-        list_of_part_interface_names = list(interface_dicts_full.keys())
-
-        # Check whether input lists are all zero for a set of lists
-        def are_all_zeroes(*lists):
-            return all(all(x == 0 for x in lst) for lst in lists)
-
+        # region Create load objects and their dependent objects for each interface
         for interface_name in list_of_part_interface_names:
 
+            # region Create dependent objects (coordinate systems and remote points)
             # Add a reference coordinate system for each interface
             CS_interface = Model.CoordinateSystems.AddCoordinateSystem()
             CS_interface.Name = "CS_" + interface_name
@@ -1023,14 +1027,15 @@ class WE_load_plotter(QWidget):
             RP_interface = Model.AddRemotePoint()
             RP_interface.Name = "RP_" + interface_name
             RP_interface.CoordinateSystem = CS_interface
+            # endregion
 
             print(f"Creating force & moment objects for {interface_name}...")
 
-            # Create remote forces at each interface
+            # region Create remote force objects at each interface
             remote_force = analysis_HR.AddRemoteForce()
             remote_force.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
             remote_force.Name = "RF_" + interface_name
-            remote_force.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote point
+            remote_force.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to a remote point
             remote_force.Location = RP_interface
 
             # Create moments at each interface
@@ -1039,10 +1044,10 @@ class WE_load_plotter(QWidget):
             moment.Name = "RM_" + interface_name
             moment.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote point
             moment.Location = RP_interface
+            # endregion
 
-            # region Define loads and their phase angles
-
-            # Initialize lists of data to be used as tabular input
+            # region Define the numerical values of loads and their phase angles
+            # Initialize the lists of values
             list_of_fx_values = []
             list_of_fy_values = []
             list_of_fz_values = []
@@ -1084,11 +1089,11 @@ class WE_load_plotter(QWidget):
                 list_of_angle_mx_values.append(Quantity(angle_mx, "deg"))
                 list_of_angle_my_values.append(Quantity(angle_my, "deg"))
                 list_of_angle_mz_values.append(Quantity(angle_mz, "deg"))
-
-            print()
+            # endregion
 
             print(f"Populating the input tabular data for {interface_name}...")
 
+            # region Populate load objects with numerical values obtained from each relevant interface
             # Define remote force frequencies
             remote_force.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
             remote_force.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
@@ -1120,12 +1125,20 @@ class WE_load_plotter(QWidget):
             moment.XPhaseAngle.Output.DiscreteValues = list_of_angle_mx_values
             moment.YPhaseAngle.Output.DiscreteValues = list_of_angle_my_values
             moment.ZPhaseAngle.Output.DiscreteValues = list_of_angle_mz_values
+            # endregion
+
+            # region Delete moment object if no R1, R2, R3 components are all zero, making moment undefined
+            # Check whether input lists are all zero for a set of lists
+            def are_all_zeroes(*lists):
+                return all(all(x == 0 for x in lst) for lst in lists)
 
             if are_all_zeroes(interface_dicts_full[interface_name]["R1"],
                               interface_dicts_full[interface_name]["R2"],
                               interface_dicts_full[interface_name]["R3"]):
-                moment.Delete()  # Delete moment object if no R1, R2, R3 components are all zero, making moment undefined
+                moment.Delete()
+            # endregion
 
+        # region Save the analysis template in the solution directory
         app_ansys.save(os.path.join(os.getcwd(), "WE_Loading_Template.mechdat"))
 
         # Remove the folder which locks the .mechdat file created (so that it can be overwritten)
@@ -1148,11 +1161,10 @@ class WE_load_plotter(QWidget):
 
         # Open up the folder of the output file
         os.startfile(os.getcwd())
+        # endregion
 
         app_ansys.close()
         # endregion
-
-    # endregion
 
     # region Define the logic for each combobox
     def update_font_settings(self):
@@ -1940,7 +1952,6 @@ class WE_load_plotter(QWidget):
         if 'FREQ' in self.df.columns:
             self.update_time_domain_plot()
     # endregion
-
 
 # endregion
 
