@@ -1,255 +1,193 @@
 import numpy as np
 import psutil
-import time
-import os
-import shutil  # For disk space checking
-import gc  # For garbage collection
+import gc
+from numba import njit
 
-# Global variables
+# Global flag to control disk writing
+WRITE_TO_DISK = False  # Set to False to compute fatigue damage directly
 DTYPE = np.float32
 
+# Memory management: get total and available memory
+total_memory = psutil.virtual_memory().total / (1024 ** 3)
+available_memory = psutil.virtual_memory().available * 0.8 / (1024 ** 3)  # Use only 80% of available RAM
 
-# Global functions
-def calculate_memory_usage(matrix_shape, dtype=DTYPE):
+print(f"Total system RAM: {total_memory :.2f} GB")
+print(f"Available system RAM: {available_memory :.2f} GB")
+
+
+def get_chunk_size(num_nodes, num_time_points, num_modes, element_size=8):
+    """Calculate the optimal chunk size for processing based on available memory."""
+    available_memory = psutil.virtual_memory().available * 0.8  # Use only 80% of available RAM
+
+    # Calculate memory needed for intermediate stress matrices (6 stress matrices + von Mises matrix)
+    memory_per_node = (7 * num_time_points * element_size) + (num_time_points * element_size)
+
+    # Calculate number of nodes that can fit within the available memory
+    max_nodes_per_iteration = available_memory // memory_per_node
+    return max(1, int(max_nodes_per_iteration))  # Ensure at least one node per chunk
+
+@njit
+def compute_von_mises(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
+    """Compute von Mises stress in a single-line vectorized manner to minimize memory usage."""
+    sigma_vm = np.sqrt(
+        0.5 * ((actual_sx - actual_sy) ** 2 + (actual_sy - actual_sz) ** 2 + (actual_sz - actual_sx) ** 2) +
+        6 * (actual_sxy ** 2 + actual_syz ** 2 + actual_sxz ** 2)
+    )
+    return sigma_vm
+
+
+@njit
+def vectorized_rainflow(series):
+    """Perform optimized rainflow counting on a stress-time series using the three-point method with Numba."""
+    n = len(series)
+
+    # Calculate the differences and sign changes
+    diff = np.diff(series)
+    sign_change = np.diff(np.sign(diff))
+
+    # Peaks and valleys are where sign changes occur
+    peaks_indices_temp = np.where(sign_change != 0)[0] + 1
+    peaks_indices = np.empty(len(peaks_indices_temp) + 2, dtype=np.int64)
+    peaks_indices[0] = 0
+    peaks_indices[1:-1] = peaks_indices_temp
+    peaks_indices[-1] = n - 1
+
+    peaks_and_valleys = series[peaks_indices]
+
+    # Initialize fixed-size arrays for stack, ranges, and counts
+    max_cycles = len(peaks_and_valleys)  # Maximum possible number of cycles
+    stack = np.empty(max_cycles, dtype=np.float64)
+    ranges = np.empty(max_cycles, dtype=np.float64)
+    counts = np.empty(max_cycles, dtype=np.float64)
+
+    stack_size = 0
+    range_count = 0
+
+    # Use a loop to find cycles
+    for i in range(len(peaks_and_valleys)):
+        stack[stack_size] = peaks_and_valleys[i]
+        stack_size += 1
+
+        while stack_size >= 3:
+            S0, S1, S2 = stack[stack_size - 3], stack[stack_size - 2], stack[stack_size - 1]
+            R1 = abs(S1 - S0)
+            R2 = abs(S2 - S1)
+
+            if R1 >= R2:
+                # Count half cycle
+                ranges[range_count] = R2
+                counts[range_count] = 0.5
+                range_count += 1
+
+                # Remove the middle point (shift elements)
+                stack[stack_size - 2] = stack[stack_size - 1]
+                stack_size -= 1
+            else:
+                break
+
+    # Handle remaining half-cycles
+    for i in range(stack_size - 1):
+        R = abs(stack[i + 1] - stack[i])
+        ranges[range_count] = R
+        counts[range_count] = 0.5
+        range_count += 1
+
+    return ranges[:range_count], counts[:range_count]
+
+@njit
+def vectorized_calculate_damage(stress_ranges, counts, A, m):
     """
-    Calculate the memory usage for a matrix given its shape and data type.
-
-    Parameters:
-    - matrix_shape (tuple): Shape of the matrix (rows, columns).
-    - dtype (data-type): Data type of the matrix elements (default: np.float32).
-
-    Returns:
-    - memory_usage (float): Memory usage in MB.
+    Calculate the total damage using the S-N curve parameters.
     """
-    element_size = np.dtype(dtype).itemsize  # Size of each element in bytes
-    total_elements = matrix_shape[0] * matrix_shape[1]
-    total_bytes = total_elements * element_size
-    return total_bytes / (1024 ** 2)  # Convert bytes to MB
+    # Add epsilon to avoid division by zero
+    epsilon = 1e-10
+    Nf = A / ((stress_ranges + epsilon) ** m)  # Basquin's equation
+    damage = np.sum(counts / Nf)
+    return damage
 
+@njit
+def estimate_ram_required_per_iteration(chunk_size, num_time_points, num_modes):
+    """Estimate the total RAM required per iteration to compute von Mises stress."""
+    # Memory required for each actual stress matrix (actual_sx, actual_sy, etc.)
+    size_per_stress_matrix = chunk_size * num_time_points * 4  # float32 takes 4 bytes
+    # Total memory for all six stress matrices
+    total_stress_memory = 6 * size_per_stress_matrix
+    # Memory required for intermediate von Mises stress result
+    vm_memory = chunk_size * num_time_points * 4
 
-def check_available_memory(required_memory):
-    """
-    Check if the available memory is sufficient to perform an operation.
+    total_memory_required = total_stress_memory + vm_memory
+    return total_memory_required / (1024**3)  # Convert to GB
 
-    Parameters:
-    - required_memory (float): The memory required in MB.
+@njit
+def estimate_ram_required_per_iteration(chunk_size, num_time_points):
+    """Estimate the total RAM required per iteration to compute von Mises stress."""
+    # Memory required for each actual stress matrix (actual_sx, actual_sy, etc.)
+    size_per_stress_matrix = chunk_size * num_time_points * 4  # float32 takes 4 bytes
+    # Total memory for all six stress matrices
+    total_stress_memory = 7 * size_per_stress_matrix
 
-    Returns:
-    - bool: True if there is sufficient memory, False otherwise.
-    """
-    available_memory = psutil.virtual_memory().available / (1024 ** 2)  # Available memory in MB
-    print(f"Available memory: {available_memory:.2f} MB")
+    return total_stress_memory / (1024**3)  # Convert to GB
 
-    return available_memory > required_memory
+def process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord):
+    """Process stress results to compute von Mises stresses or fatigue damage."""
+    # Determine matrix shapes
+    num_nodes, num_modes = modal_sx.shape
+    num_time_points = modal_coord.shape[1]
 
-def check_available_disk_space(required_space, directory='.'):
-    """
-    Check if there is enough available disk space in the given directory.
+    # Calculate optimal chunk size
+    chunk_size = get_chunk_size(num_nodes, num_time_points, num_modes)
+    num_iterations = (num_nodes + chunk_size - 1) // chunk_size  # Calculate the total number of iterations
 
-    Parameters:
-    - required_space (float): The disk space required in MB.
-    - directory (str): The directory path where the file will be saved.
+    print(f"Estimated number of iterations to avoid memory overflow: {num_iterations}")
 
-    Returns:
-    - bool: True if there is sufficient disk space, False otherwise.
-    """
-    total, used, free = shutil.disk_usage(directory)
-    available_disk_space = free / (1024 ** 2)  # Convert bytes to MB
-    print(f"Available disk space in '{os.path.abspath(directory)}': {available_disk_space:.2f} MB")
+    # Calculate and display memory requirements per iteration
+    memory_required_per_iteration = estimate_ram_required_per_iteration(chunk_size, num_time_points)
+    print(f"Estimated RAM required per iteration: {memory_required_per_iteration:.2f} GB")
 
-    return available_disk_space > required_space
+    # Initialize memmap file if writing to disk
+    if WRITE_TO_DISK:
+        vm_memmap = np.memmap('von_mises_stresses.dat', dtype='float32', mode='w+', shape=(num_nodes, num_time_points))
 
+    for start_idx in range(0, num_nodes, chunk_size):
+        end_idx = min(start_idx + chunk_size, num_nodes)
 
-def generate_and_save_matrices(A_shape, B_shape, dtype=DTYPE):
-    """
-    Generate random matrices A and B, and save them to memory-mapped files.
+        # Perform matrix multiplications for the chunk
+        actual_sx = np.dot(modal_sx[start_idx:end_idx, :], modal_coord)
+        actual_sy = np.dot(modal_sy[start_idx:end_idx, :], modal_coord)
+        actual_sz = np.dot(modal_sz[start_idx:end_idx, :], modal_coord)
+        actual_sxy = np.dot(modal_sxy[start_idx:end_idx, :], modal_coord)
+        actual_syz = np.dot(modal_syz[start_idx:end_idx, :], modal_coord)
+        actual_sxz = np.dot(modal_sxz[start_idx:end_idx, :], modal_coord)
 
-    Parameters:
-    - A_shape (tuple): Shape of matrix A.
-    - B_shape (tuple): Shape of matrix B.
-    - dtype (data-type): Data type of the matrix elements.
+        # Compute von Mises stresses
+        sigma_vm = compute_von_mises(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz)
 
-    Returns:
-    - A_memmap_filename (str): Filename for memory-mapped file of matrix A.
-    - B_memmap_filename (str): Filename for memory-mapped file of matrix B.
-    """
-    # Filenames for memory-mapped files
-    A_memmap_filename = 'matrix_A_memmap.npy'
-    B_memmap_filename = 'matrix_B_memmap.npy'
+        if WRITE_TO_DISK:
+            # Write to disk
+            vm_memmap[start_idx:end_idx, :] = sigma_vm
+        else:
+            # Compute fatigue damage directly for each node
+            for node_idx in range(sigma_vm.shape[0]):
+                ranges, counts = vectorized_rainflow(sigma_vm[node_idx, :])
+                damage = vectorized_calculate_damage(ranges, counts, A=1.0, m=3.0)  # Example S-N curve parameters
+                print(f"Node {start_idx + node_idx} damage: {damage:.4f}")
 
-    print("Generating matrices A and B...")
+        # Inform user of memory status after each iteration
+        current_available_memory = psutil.virtual_memory().available * 0.8
+        print(f"Iteration completed for nodes {start_idx} to {end_idx}. Available RAM: {current_available_memory / (1024**3):.2f} GB")
 
-    # Generate matrices in memory
-    A = np.random.rand(*A_shape).astype(dtype)
-    B = np.random.rand(*B_shape).astype(dtype)
+    if WRITE_TO_DISK:
+        # Flush memory-mapped data to disk
+        vm_memmap.flush()
+        del vm_memmap
 
-    # Create memory-mapped files
-    A_memmap = np.lib.format.open_memmap(
-        A_memmap_filename, mode='w+', dtype=dtype, shape=A_shape)
-    B_memmap = np.lib.format.open_memmap(
-        B_memmap_filename, mode='w+', dtype=dtype, shape=B_shape)
+# Example usage
+modal_sx = np.random.randn(20000, 40).astype(DTYPE)
+modal_sy = np.random.randn(20000, 40).astype(DTYPE)
+modal_sz = np.random.randn(20000, 40).astype(DTYPE)
+modal_sxy = np.random.randn(20000, 40).astype(DTYPE)
+modal_syz = np.random.randn(20000, 40).astype(DTYPE)
+modal_sxz = np.random.randn(20000, 40).astype(DTYPE)
+modal_coord = np.random.randn(40, 100000).astype(DTYPE)
 
-    print("Saving matrices A and B to memory-mapped files...")
-
-    # Save matrices to memory-mapped files
-    A_memmap[:] = A
-    B_memmap[:] = B
-
-    # Flush changes to disk
-    A_memmap.flush()
-    B_memmap.flush()
-
-    # Free the memory-mapped objects
-    del A, B, A_memmap, B_memmap
-    gc.collect()
-
-    print("Matrices A and B have been saved to memory-mapped files.")
-
-    return A_memmap_filename, B_memmap_filename
-
-
-def perform_chunked_multiplication_over_A(A_memmap_filename, B_memmap_filename, chunk_size, dtype=DTYPE):
-    """
-    Perform matrix multiplication by chunking over A (rows of A).
-
-    Parameters:
-    - A_memmap_filename (str): Filename for memory-mapped file of matrix A.
-    - B_memmap_filename (str): Filename for memory-mapped file of matrix B.
-    - chunk_size (int): Number of rows to process at a time.
-    - dtype (data-type): Data type of the matrix elements.
-    """
-    # Load the memory-mapped files for matrices A and B
-    A = np.load(A_memmap_filename, mmap_mode='r')
-    B = np.load(B_memmap_filename, mmap_mode='r')
-
-    A_shape = A.shape
-    B_shape = B.shape
-
-    # Adjust chunk_size if it's larger than A_shape[0]
-    if chunk_size > A_shape[0]:
-        print(f"Specified chunk_size ({chunk_size}) is larger than the number of rows in matrix A ({A_shape[0]}).")
-        chunk_size = A_shape[0]
-        print(f"Chunk size adjusted to {chunk_size}.\n")
-
-    # Estimate RAM usage for chunked solution over A
-    memory_A_chunk = calculate_memory_usage((chunk_size, A_shape[1]), dtype)
-    memory_B_full = calculate_memory_usage(B_shape, dtype)
-    memory_result_chunk = calculate_memory_usage((chunk_size, B_shape[1]), dtype)
-    total_estimated_ram_chunking_A = memory_A_chunk + memory_B_full + memory_result_chunk
-
-    print(f"Estimated maximum RAM required for solution with chunking over A: {total_estimated_ram_chunking_A:.2f} MB\n")
-
-    # Check if the operation can be done with chunking over A
-    if check_available_memory(total_estimated_ram_chunking_A):
-        print("Sufficient memory available for chunked multiplication over A.")
-
-        # Create a memory-mapped file to save the results in chunks
-        result_filename = 'matrix_multiplication_result.npy'
-        result_shape = (A_shape[0], B_shape[1])
-
-        total_chunks = (A_shape[0] + chunk_size - 1) // chunk_size
-        total_start_time = time.time()
-
-        # Multiply in chunks over A and save to the memory-mapped file
-        for chunk_index, i in enumerate(range(0, A_shape[0], chunk_size), start=1):
-            chunk_start_time = time.time()
-            end_i = min(i + chunk_size, A_shape[0])
-            A_chunk = A[i:end_i, :]
-
-            # Re-read the result memmap file at the start of each chunk
-            result_memmap = np.lib.format.open_memmap(
-                result_filename, mode='r+', dtype=dtype, shape=result_shape)
-
-            # Multiply A_chunk with B
-            result_chunk = np.dot(A_chunk, B)
-
-            # Write the result chunk to the memory-mapped file
-            result_memmap[i:end_i, :] = result_chunk
-            result_memmap.flush()  # Flush changes to disk
-
-            # Delete the memmap object to free memory
-            del result_memmap
-            del A_chunk, result_chunk
-            gc.collect()
-
-            # Monitor memory usage and progress
-            process = psutil.Process(os.getpid())
-            memory_usage = process.memory_info().rss / (1024 ** 2)
-            chunk_end_time = time.time()
-            chunk_time = chunk_end_time - chunk_start_time
-            elapsed_time = chunk_end_time - total_start_time
-            estimated_total_time = (elapsed_time / chunk_index) * total_chunks
-            remaining_time = estimated_total_time - elapsed_time
-
-            print(f"Chunk {chunk_index}/{total_chunks} completed in {chunk_time:.2f} seconds.")
-            print(f"Current memory usage: {memory_usage:.2f} MB")
-            print(f"Estimated time remaining: {remaining_time / 60:.2f} minutes\n")
-
-        total_end_time = time.time()
-        total_elapsed_time = total_end_time - total_start_time
-        print(f"Matrix multiplication over A completed in {total_elapsed_time / 60:.2f} minutes.")
-        print(f"Results saved to disk at '{os.path.abspath(result_filename)}'.")
-        print(f"Final result file size: {os.path.getsize(result_filename) / (1024 ** 2):.2f} MB")
-    else:
-        print("Insufficient memory for chunked multiplication over A. Operation cannot proceed.")
-
-
-
-def perform_multiplication(A_shape, B_shape, chunk_size, dtype=DTYPE):
-    """
-    Perform matrix multiplication, attempting full multiplication or chunking over A.
-
-    Parameters:
-    - A_shape (tuple): Shape of matrix A.
-    - B_shape (tuple): Shape of matrix B.
-    - chunk_size (int): Chunk size for rows (A).
-    - dtype (data-type): Data type of the matrix elements.
-    """
-    # Check disk space
-    required_disk_space = calculate_memory_usage((A_shape[0], B_shape[1]), dtype)
-    print(f"Estimated disk space required for the result file: {required_disk_space:.2f} MB\n")
-
-    if not check_available_disk_space(required_disk_space):
-        print("Operation aborted due to insufficient disk space.")
-        return
-
-    # Generate matrices A and B and save them to memory-mapped files
-    A_memmap_filename, B_memmap_filename = generate_and_save_matrices(A_shape, B_shape, dtype)
-
-    # Load matrices as memory-mapped files
-    A_memmap = np.load(A_memmap_filename, mmap_mode='r')
-    B_memmap = np.load(B_memmap_filename, mmap_mode='r')
-
-    # Estimate total memory required for full multiplication
-    total_estimated_ram_no_chunking = calculate_memory_usage(A_shape, dtype) + calculate_memory_usage(B_shape, dtype) + calculate_memory_usage((A_shape[0], B_shape[1]), dtype)
-
-    print(f"Estimated RAM required for full multiplication: {total_estimated_ram_no_chunking:.2f} MB\n")
-
-    # Attempt full multiplication if memory is sufficient
-    if check_available_memory(total_estimated_ram_no_chunking):
-        try:
-            print("Sufficient memory available for full multiplication. Attempting full matrix multiplication...")
-            start_time = time.time()
-
-            # Perform full multiplication
-            result_full = np.dot(A_memmap, B_memmap)
-            end_time = time.time()
-            total_time = end_time - start_time
-
-            print(f"Full matrix multiplication completed successfully in {total_time:.2f} seconds.")
-            return  # Exit if the full multiplication was successful
-        except MemoryError:
-            print("\nMemoryError encountered during full matrix multiplication.")
-            print("Not enough memory to perform full matrix multiplication.")
-
-    # If full multiplication is not possible, attempt chunked multiplication
-    print("\nAttempting chunked multiplication over A...")
-    perform_chunked_multiplication_over_A(A_memmap_filename, B_memmap_filename, chunk_size, dtype)
-
-
-if __name__ == "__main__":
-    A_shape = (5000, 40)  # Shape of matrix A
-    B_shape = (40, 1000000)  # Shape of matrix B
-    chunk_size = 1000  # Chunk size for rows of A
-
-    perform_multiplication(A_shape, B_shape, chunk_size)
+process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord)
