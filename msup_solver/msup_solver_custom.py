@@ -41,7 +41,7 @@ def get_chunk_size(num_nodes, num_time_points, num_modes, element_size=ELEMENT_S
     return max(1, int(max_nodes_per_iteration))  # Ensure at least one node per chunk
 
 if not CUDA_ENABLED:
-    @njit
+    @njit(parallel=True)
     def compute_von_mises(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
         """Compute von Mises stress in a single-line vectorized manner to minimize memory usage."""
         sigma_vm = np.sqrt(
@@ -57,7 +57,7 @@ if CUDA_ENABLED:
             0.5 * ((actual_sx - actual_sy) ** 2 + (actual_sy - actual_sz) ** 2 + (actual_sz - actual_sx) ** 2) +
             6 * (actual_sxy ** 2 + actual_syz ** 2 + actual_sxz ** 2)
         )
-        return sigma_vm
+        return cupy.asnumpy(sigma_vm)
 
 
 '''
@@ -121,8 +121,8 @@ def vectorized_rainflow(series):
 
 
 def vectorized_rainflow(series):
-    series=cupy.asnumpy(series)
-    rf = rainflow(cyclecount.findap(series, tol=1e-6), use_pandas=False)
+    #rf = rainflow(cyclecount.findap(series, tol=1e-6), use_pandas=False)
+    rf = rainflow(series, use_pandas=False)
     return rf[:,0], rf[:,2]
 
 @njit
