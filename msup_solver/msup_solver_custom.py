@@ -215,13 +215,13 @@ def process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, m
         del vm_memmap
 
 # Modal Inputs
-modal_sx = np.random.randn(20000, 40).astype(DTYPE)
-modal_sy = np.random.randn(20000, 40).astype(DTYPE)
-modal_sz = np.random.randn(20000, 40).astype(DTYPE)
-modal_sxy = np.random.randn(20000, 40).astype(DTYPE)
-modal_syz = np.random.randn(20000, 40).astype(DTYPE)
-modal_sxz = np.random.randn(20000, 40).astype(DTYPE)
-modal_coord = np.random.randn(40, 100000).astype(DTYPE)
+modal_sx = np.random.randn(300000, 40).astype(DTYPE)
+modal_sy = np.random.randn(300000, 40).astype(DTYPE)
+modal_sz = np.random.randn(300000, 40).astype(DTYPE)
+modal_sxy = np.random.randn(300000, 40).astype(DTYPE)
+modal_syz = np.random.randn(300000, 40).astype(DTYPE)
+modal_sxz = np.random.randn(300000, 40).astype(DTYPE)
+modal_coord = np.random.randn(40, 1000000).astype(DTYPE)
 
 if CUDA_ENABLED:
     # Convert Modal Inputs into CuPy arrays
