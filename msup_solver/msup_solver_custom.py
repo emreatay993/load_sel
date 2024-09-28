@@ -1,3 +1,4 @@
+# region Import libraries
 import cupy
 import numpy as np
 import psutil
@@ -7,7 +8,9 @@ from pyyeti.cyclecount import rainflow
 from pyyeti import cyclecount
 import time
 import cupy as cp
+# endregion
 
+# region Define global variables
 # Enable CuPy if CUDA is installed
 CUDA_ENABLED = True
 
@@ -20,14 +23,14 @@ DTYPE = np.float32
 ELEMENT_SIZE = np.dtype(DTYPE).itemsize
 
 RAM_PERCENT = 0.5
+# endregion
 
-# Memory management: get total and available memory
+# region Memory management: get total and available memory
 total_memory = psutil.virtual_memory().total / (1024 ** 3)
 available_memory = psutil.virtual_memory().available * RAM_PERCENT / (1024 ** 3)  # Use only 80% of available RAM
 
 print(f"Total system RAM: {total_memory :.2f} GB")
 print(f"Available system RAM: {available_memory :.2f} GB")
-
 
 def get_chunk_size(num_nodes, num_time_points, num_modes, element_size=ELEMENT_SIZE):
     """Calculate the optimal chunk size for processing based on available memory."""
@@ -40,6 +43,18 @@ def get_chunk_size(num_nodes, num_time_points, num_modes, element_size=ELEMENT_S
     max_nodes_per_iteration = available_memory // memory_per_node
     return max(1, int(max_nodes_per_iteration))  # Ensure at least one node per chunk
 
+@njit
+def estimate_ram_required_per_iteration(chunk_size, num_time_points):
+    """Estimate the total RAM required per iteration to compute von Mises stress."""
+    # Memory required for each actual stress matrix (actual_sx, actual_sy, etc.)
+    size_per_stress_matrix = chunk_size * num_time_points * ELEMENT_SIZE
+    # Total memory for all six stress matrices
+    total_stress_memory = 7 * size_per_stress_matrix
+
+    return total_stress_memory / (1024**3)  # Convert to GB
+# endregion
+
+# region Compute Von Mises stresses
 if not CUDA_ENABLED:
     @njit(parallel=True)
     def compute_von_mises(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
@@ -58,7 +73,7 @@ if CUDA_ENABLED:
             6 * (actual_sxy ** 2 + actual_syz ** 2 + actual_sxz ** 2)
         )
         return cupy.asnumpy(sigma_vm)
-
+# endregion
 
 '''
 def vectorized_rainflow(series):
@@ -119,7 +134,7 @@ def vectorized_rainflow(series):
     return ranges[:range_count], counts[:range_count]
 '''
 
-
+# region Calculate damage
 def vectorized_rainflow(series):
     #rf = rainflow(cyclecount.findap(series, tol=1e-6), use_pandas=False)
     rf = rainflow(series, use_pandas=False)
@@ -135,17 +150,7 @@ def vectorized_calculate_damage(stress_ranges, counts, A, m):
     Nf = A / ((stress_ranges + epsilon) ** m)  # Basquin's equation
     damage = np.sum(counts / Nf)
     return damage
-
-@njit
-def estimate_ram_required_per_iteration(chunk_size, num_time_points):
-    """Estimate the total RAM required per iteration to compute von Mises stress."""
-    # Memory required for each actual stress matrix (actual_sx, actual_sy, etc.)
-    size_per_stress_matrix = chunk_size * num_time_points * ELEMENT_SIZE
-    # Total memory for all six stress matrices
-    total_stress_memory = 7 * size_per_stress_matrix
-
-    return total_stress_memory / (1024**3)  # Convert to GB
-
+# endregion
 
 def process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord):
     """Process stress results to compute von Mises stresses or fatigue damage."""
@@ -214,14 +219,14 @@ def process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, m
         vm_memmap.flush()
         del vm_memmap
 
-# Modal Inputs
-modal_sx = np.random.randn(300000, 40).astype(DTYPE)
-modal_sy = np.random.randn(300000, 40).astype(DTYPE)
-modal_sz = np.random.randn(300000, 40).astype(DTYPE)
-modal_sxy = np.random.randn(300000, 40).astype(DTYPE)
-modal_syz = np.random.randn(300000, 40).astype(DTYPE)
-modal_sxz = np.random.randn(300000, 40).astype(DTYPE)
-modal_coord = np.random.randn(40, 1000000).astype(DTYPE)
+# region Define modal inputs
+modal_sx = np.random.randn(30000, 40).astype(DTYPE)
+modal_sy = np.random.randn(30000, 40).astype(DTYPE)
+modal_sz = np.random.randn(30000, 40).astype(DTYPE)
+modal_sxy = np.random.randn(30000, 40).astype(DTYPE)
+modal_syz = np.random.randn(30000, 40).astype(DTYPE)
+modal_sxz = np.random.randn(30000, 40).astype(DTYPE)
+modal_coord = np.random.randn(40, 100000).astype(DTYPE)
 
 if CUDA_ENABLED:
     # Convert Modal Inputs into CuPy arrays
@@ -234,8 +239,10 @@ if CUDA_ENABLED:
     modal_coord = cp.asarray(modal_coord)
 # endregion
 
+# region Main routine
 start_time = time.time()
 process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord)
 endtime_main_calc = time.time() - start_time
 
 print("Main calculation routine completed in: " + str(endtime_main_calc) + " seconds")
+# endregion
