@@ -940,9 +940,35 @@ class WE_load_plotter(QWidget):
             print(traceback_info)
             QMessageBox.critical(None, 'Error', f"An error occurred during the execution of this button: {str(e)}")
 
+    def create_APDL_table(self, result_df, table_name="my_table"):
+        col_index_name = result_df.columns.name
+        num_rows, num_cols = result_df.shape
+        apdl_lines = []
+
+        # DIM command
+        apdl_lines.append("\n\n\n" +f"! Create load table {table_name}\n")
+        apdl_lines.append(
+            f"*DIM,{table_name},TABLE,{num_rows},{num_cols},1,FREQ\n\n")
+
+        # Add row index values
+        apdl_lines.append(f"! {table_name}, FREQ Values\n")
+        for i, row_index_value in enumerate(result_df.index, start=1):
+            apdl_lines.append(f"*SET,{table_name}({i},0,1),{row_index_value}\n")
+        apdl_lines.append(f"\n")
+
+        # Add table values
+        apdl_lines.append(f"! {table_name} Data Values\n")
+        for i, row_index in enumerate(result_df.index, start=1):
+            for j, col_index in enumerate(result_df.columns, start=1):
+                data_value = result_df.loc[row_index, col_index]
+                if pd.notna(data_value):  # Only write non-NaN values
+                    apdl_lines.append(f"*SET,{table_name}({i},{j},1),{data_value}\n")
+
+        return apdl_lines
+
     def create_ansys_mechanical_input_template_harmonic(self):
         ############################################################################
-        # region Collect interface names to be used as input loads for the selected part
+        # region Collect interface names and metadata to be used as input loads for the selected part
 
         # List of all possible keys for load components and phase angles
         all_keys = ["T1", "T2", "T3", "R1", "R2", "R3", "Phase_T1", "Phase_T2", "Phase_T3", "Phase_R1", "Phase_R2",
@@ -1012,6 +1038,11 @@ class WE_load_plotter(QWidget):
             list_of_all_frequencies_as_quantity.append(Quantity(frequency_value, "Hz"))
         # endregion
 
+        # region Create a static analysis environment template for pre-stressed solution
+        print("Creating the static analysis environment...")
+        analysis_static = Model.AddStaticStructuralAnalysis()
+        # endregion
+
         # region Create tree objects in Mechanical for harmonic analysis and initialize analysis settings
         print("Creating the harmonic analysis environment...")
         analysis_HR = Model.AddHarmonicResponseAnalysis()
@@ -1020,9 +1051,13 @@ class WE_load_plotter(QWidget):
         self.result_df_full_part_load['FREQ'].max()
         analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyIntervals").InternalValue = 1
         analysis_settings_HR.PropertyByName("HarmonicSolutionMethod").InternalValue = 1
+
+        analysis_settings_HR_IC = DataModel.GetObjectsByName("Pre-Stress/Modal (None)")[0]
+        analysis_settings_HR_IC.PreStressICEnvironment = analysis_static
         # endregion
 
         # region Create load objects and their dependent objects for each interface
+        interface_index_no = 1
         for interface_name in list_of_part_interface_names:
 
             # region Create dependent objects (coordinate systems and remote points)
@@ -1034,6 +1069,7 @@ class WE_load_plotter(QWidget):
             RP_interface = Model.AddRemotePoint()
             RP_interface.Name = "RP_" + interface_name
             RP_interface.CoordinateSystem = CS_interface
+            RP_interface.PilotNodeAPDLName = "RF_" + str(interface_index_no)
             # endregion
 
             print(f"Creating force & moment objects for {interface_name}...")
@@ -1044,14 +1080,19 @@ class WE_load_plotter(QWidget):
             remote_force.Name = "RF_" + interface_name
             remote_force.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to a remote point
             remote_force.Location = RP_interface
-
+            remote_force_index_name = "RF_" + str(interface_index_no)
+            
             # Create moments at each interface
             moment = analysis_HR.AddMoment()
             moment.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
             moment.Name = "RM_" + interface_name
             moment.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote point
             moment.Location = RP_interface
+            moment_index_name = "RM_" + str(interface_index_no)
             # endregion
+
+            # Increase the interface index counter by 1
+            interface_index_no += 1
 
             # region Define the numerical values of loads and their phase angles
             # Initialize the lists of values
@@ -1083,6 +1124,44 @@ class WE_load_plotter(QWidget):
                 list_of_angle_fy_values.append(Quantity(angle_fy, "deg"))
                 list_of_angle_fz_values.append(Quantity(angle_fz, "deg"))
 
+            # region Create harmonic force dataframes (not needed for now, but created anyway)
+            df_load_table_fx = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'T1': interface_dicts_full[interface_name]["T1"]
+            })
+            df_load_table_fx.set_index('FREQ', inplace=True)
+
+            df_load_table_fy = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'T2': interface_dicts_full[interface_name]["T2"]
+            })
+            df_load_table_fy.set_index('FREQ', inplace=True)
+
+            df_load_table_fz = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'T3': interface_dicts_full[interface_name]["T3"]
+            })
+            df_load_table_fz.set_index('FREQ', inplace=True)
+
+            df_load_table_phase_fx = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'Phase_T1': interface_dicts_full[interface_name]["Phase_T1"]
+            })
+            df_load_table_phase_fx.set_index('FREQ', inplace=True)
+
+            df_load_table_phase_fy = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'Phase_T2': interface_dicts_full[interface_name]["Phase_T2"]
+            })
+            df_load_table_phase_fy.set_index('FREQ', inplace=True)
+
+            df_load_table_phase_fz = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'Phase_T3': interface_dicts_full[interface_name]["Phase_T3"]
+            })
+            df_load_table_phase_fz.set_index('FREQ', inplace=True)
+            # endregion
+
             # Create lists of quantities (for R1, R2, R3)
             for mx, my, mz, angle_mx, angle_my, angle_mz in zip(interface_dicts_full[interface_name]["R1"],
                                                                 interface_dicts_full[interface_name]["R2"],
@@ -1096,11 +1175,48 @@ class WE_load_plotter(QWidget):
                 list_of_angle_mx_values.append(Quantity(angle_mx, "deg"))
                 list_of_angle_my_values.append(Quantity(angle_my, "deg"))
                 list_of_angle_mz_values.append(Quantity(angle_mz, "deg"))
+
+            # region Create harmonic moment dataframes (which will serve as sources when creating APDL tables)
+            df_load_table_mx = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'R1': interface_dicts_full[interface_name]["R1"]
+            })
+            df_load_table_mx.set_index('FREQ', inplace=True)
+
+            df_load_table_my = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'R2': interface_dicts_full[interface_name]["R2"]
+            })
+            df_load_table_my.set_index('FREQ', inplace=True)
+
+            df_load_table_mz = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'R3': interface_dicts_full[interface_name]["R3"]
+            })
+            df_load_table_mz.set_index('FREQ', inplace=True)
+
+            df_load_table_phase_mx = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'Phase_R1': interface_dicts_full[interface_name]["Phase_R1"]
+            })
+            df_load_table_phase_mx.set_index('FREQ', inplace=True)
+
+            df_load_table_phase_my = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'Phase_R2': interface_dicts_full[interface_name]["Phase_R2"]
+            })
+            df_load_table_phase_my.set_index('FREQ', inplace=True)
+
+            df_load_table_phase_mz = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'Phase_R3': interface_dicts_full[interface_name]["Phase_R3"]
+            })
+            df_load_table_phase_mz.set_index('FREQ', inplace=True)
+            # endregion
             # endregion
 
-            print(f"Populating the input tabular data for {interface_name}...")
-
             # region Populate load objects with numerical values obtained from each relevant interface
+            print(f"Populating the input tabular data for {interface_name}...")
             # Define remote force frequencies
             remote_force.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
             remote_force.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
@@ -1134,7 +1250,35 @@ class WE_load_plotter(QWidget):
             moment.ZPhaseAngle.Output.DiscreteValues = list_of_angle_mz_values
             # endregion
 
-            # region Delete moment object if no R1, R2, R3 components are all zero, making moment undefined
+            # region Define T1,T2,T3 and R1, R2, R3 loads via Command Objects
+            command_snippet_RF = analysis_HR.AddCommandSnippet()
+            command_snippet_RM = analysis_HR.AddCommandSnippet()
+            command_snippet_RM.Name = "Commands_RM_" + interface_name
+            command_snippet_RF.Name = "Commands_RM_" + interface_name
+
+            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx,"table_X_" + moment_index_name)
+            apdl_lines_RMy = self.create_APDL_table(df_load_table_my, "table_Y_" + moment_index_name)
+            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz, "table_Z_" + moment_index_name)
+            apdl_lines_RMxi = self.create_APDL_table(df_load_table_phase_mx,"table_Xi_" + moment_index_name)
+            apdl_lines_RMyi = self.create_APDL_table(df_load_table_phase_my, "table_Yi_" + moment_index_name)
+            apdl_lines_RMzi = self.create_APDL_table(df_load_table_phase_mz, "table_Zi_" + moment_index_name)
+            
+            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx,"table_X_" + remote_force_index_name)
+            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy, "table_Y_" + remote_force_index_name)
+            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz, "table_Z_" + remote_force_index_name)
+            apdl_lines_RFxi = self.create_APDL_table(df_load_table_phase_fx,"table_Xi_" + remote_force_index_name)
+            apdl_lines_RFyi = self.create_APDL_table(df_load_table_phase_fy, "table_Yi_" + remote_force_index_name)
+            apdl_lines_RFzi = self.create_APDL_table(df_load_table_phase_fz, "table_Zi_" + remote_force_index_name)
+
+            command_snippet_RM.AppendText(''.join(apdl_lines_RMx))
+            command_snippet_RM.AppendText(''.join(apdl_lines_RMy))
+            command_snippet_RM.AppendText(''.join(apdl_lines_RMz))
+            command_snippet_RM.AppendText(''.join(apdl_lines_RMxi))
+            command_snippet_RM.AppendText(''.join(apdl_lines_RMyi))
+            command_snippet_RM.AppendText(''.join(apdl_lines_RMzi))
+            # endregion
+
+            # region Delete force or moment object if T1,T2,T3 or R1,R2,R3 components are all zero, making obj undefined
             # Check whether input lists are all zero for a set of lists
             def are_all_zeroes(*lists):
                 return all(all(x == 0 for x in lst) for lst in lists)
@@ -1143,6 +1287,13 @@ class WE_load_plotter(QWidget):
                               interface_dicts_full[interface_name]["R2"],
                               interface_dicts_full[interface_name]["R3"]):
                 moment.Delete()
+                command_snippet_RM.Delete()
+            
+            if are_all_zeroes(interface_dicts_full[interface_name]["T1"],
+                              interface_dicts_full[interface_name]["T2"],
+                              interface_dicts_full[interface_name]["T3"]):
+                remote_force.Delete()
+                command_snippet_RF.Delete()
             # endregion
 
         # region Save the analysis template in the solution directory
@@ -1173,8 +1324,6 @@ class WE_load_plotter(QWidget):
         app_ansys.close()
         # endregion
         ############################################################################
-
-
     # endregion
 
     # region Define the logic for each combobox
