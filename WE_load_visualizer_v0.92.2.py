@@ -148,11 +148,12 @@ def main():
             df_intf = insert_phase_columns(df_intf_before)
             df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
             new_columns = ['NO'] + ['FREQ'] + df_intf_labels.iloc[0].tolist()
+            DATA_DOMAIN = 'FREQ'
         elif 'TIME' in df.columns:
             df_intf = df_intf_before
             df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
             new_columns = ['NO'] + ['TIME'] + df_intf_labels.iloc[0].tolist()
-
+            DATA_DOMAIN = 'TIME'
         additional_columns_needed = len(df.columns) - len(new_columns)
         if additional_columns_needed > 0:
             extended_new_columns = new_columns + [f"Extra_Column_{i}" for i in range(1, additional_columns_needed + 1)]
@@ -442,7 +443,11 @@ class WE_load_plotter(QWidget):
             data_point_selector_tab3_layout.addWidget(self.extract_all_data_button)
         if 'TIME' in self.df.columns:
             self.extract_data_button = QPushButton("Extract Data for Selected Time")
+            self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part")
+            self.extract_all_data_button.clicked.connect(self.extract_all_data_points_in_time_domain)
+            self.extract_data_button.setStyleSheet("color: gray;")
             data_point_selector_tab3_layout.addWidget(self.extract_data_button)
+            data_point_selector_tab3_layout.addWidget(self.extract_all_data_button)
 
         layout.addLayout(data_point_selector_tab3_layout)
 
@@ -857,7 +862,7 @@ class WE_load_plotter(QWidget):
     def convert_to_Nmm_units(self, data):
         nmm_data = data.copy()
         for col in nmm_data.columns:
-            if col != 'Theta':
+            if col != 'Theta' or col != 'TIME':
                 nmm_data[col] = nmm_data[col].astype(float) * 1000
         nmm_data.to_csv("extracted_time_data_values_in_Nmm_units.csv", index=False)
 
@@ -940,29 +945,75 @@ class WE_load_plotter(QWidget):
             print(traceback_info)
             QMessageBox.critical(None, 'Error', f"An error occurred during the execution of this button: {str(e)}")
 
+    def extract_all_data_points_in_time_domain(self):
+        # region Handle the case where no valid selection of part loads is not yet made and displayed on screen.
+        selected_side = self.side_filter_selector.currentText()
+        if not selected_side:
+            QMessageBox.information(self, "Selection Required", "Please select a valid side.")
+            return
+        # endregion
+
+        # Otherwise,
+        try:
+            # region Extract the raw data to be used as inputs for interfaces in case user wants to take a look at them
+            side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
+            columns = ['TIME']
+            columns += [col for col in self.df.columns
+                        if side_pattern.search(col)
+                        and col != 'TIME'
+                        and "T2/T3" not in col
+                        and "R2/R3" not in col]
+
+            self.result_df_full_part_load = self.df[columns]
+
+            original_file_path = f"extracted_data_for_{selected_side}_all_time_points.csv"
+            self.result_df_full_part_load.to_csv(original_file_path, index=False)
+
+            for col in self.result_df_full_part_load.columns:
+                if col != 'TIME':
+                    self.result_df_full_part_load[col] = self.result_df_full_part_load[col] * 1000
+
+            converted_file_path = f"extracted_data_for_{selected_side}_all_time_points_multiplied_in_Nmm_units.csv"
+            self.result_df_full_part_load.to_csv(converted_file_path, index=False)
+
+            QMessageBox.information(self, "Extraction Complete",
+                                    f"Data has been extracted and converted. \n\nOriginal data is saved to: \n\n{original_file_path}. \n\nConverted data is saved to: \n\n{converted_file_path}.")
+            # endregion
+
+            self.create_ansys_mechanical_input_template_transient()
+
+        except Exception as e:
+            traceback_info = traceback.format_exc()
+            print(traceback_info)
+            QMessageBox.critical(None, 'Error', f"An error occurred during the execution of this button: {str(e)}")
+
     def create_APDL_table(self, result_df, table_name="my_table"):
+        global DATA_DOMAIN  # Access the data type from global variables
         col_index_name = result_df.columns.name
         num_rows, num_cols = result_df.shape
         apdl_lines = []
 
+        # Convert the DataFrame to a NumPy array for faster access
+        values = result_df.values
+        row_indices = result_df.index
+        col_indices = result_df.columns
+
         # DIM command
-        apdl_lines.append("\n\n\n" +f"! Create load table {table_name}\n")
-        apdl_lines.append(
-            f"*DIM,{table_name},TABLE,{num_rows},{num_cols},1,FREQ\n\n")
+        apdl_lines.append("\n\n\n" + f"! Create load table {table_name}\n")
+        apdl_lines.append(f"*DIM,{table_name},TABLE,{num_rows},{num_cols},1,{DATA_DOMAIN}\n\n")
 
-        # Add row index values
-        apdl_lines.append(f"! {table_name}, FREQ Values\n")
-        for i, row_index_value in enumerate(result_df.index, start=1):
-            apdl_lines.append(f"*SET,{table_name}({i},0,1),{row_index_value}\n")
-        apdl_lines.append(f"\n")
+        # Add row index values (vectorized)
+        apdl_lines.append(f"! {table_name}, {DATA_DOMAIN} Values\n")
+        apdl_lines.extend([f"*SET,{table_name}({i+1},0,1),{row_index}\n" for i, row_index in enumerate(row_indices)])
+        apdl_lines.append("\n")
 
-        # Add table values
+        # Add table values (vectorized)
         apdl_lines.append(f"! {table_name} Data Values\n")
-        for i, row_index in enumerate(result_df.index, start=1):
-            for j, col_index in enumerate(result_df.columns, start=1):
-                data_value = result_df.loc[row_index, col_index]
-                if pd.notna(data_value):  # Only write non-NaN values
-                    apdl_lines.append(f"*SET,{table_name}({i},{j},1),{data_value}\n")
+        for i in range(num_rows):
+            for j in range(num_cols):
+                data_value = values[i, j]
+                if not pd.isna(data_value):  # Only write non-NaN values
+                    apdl_lines.append(f"*SET,{table_name}({i+1},{j+1},1),{data_value}\n")
 
         return apdl_lines
 
@@ -1274,7 +1325,7 @@ class WE_load_plotter(QWidget):
             command_snippet_RF.AppendText(''.join(apdl_lines_RFxi))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFyi))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFzi))
-            command_snippet_RF.AppendText("\n\n" + f"! Apply load on the previously-specified remote point\n")
+            command_snippet_RF.AppendText("\n\n"+ f"! Apply the load on the remote point specified for the interface\n")
             command_snippet_RF.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
 
             command_snippet_RF.AppendText(
@@ -1291,7 +1342,7 @@ class WE_load_plotter(QWidget):
             command_snippet_RM.AppendText(''.join(apdl_lines_RMxi))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMyi))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMzi))
-            command_snippet_RM.AppendText("\n\n" + f"! Apply the load on the remote point specified for the interface\n")
+            command_snippet_RM.AppendText("\n\n"+ f"! Apply the load on the remote point specified for the interface\n")
             command_snippet_RM.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
 
             command_snippet_RM.AppendText(
@@ -1318,6 +1369,294 @@ class WE_load_plotter(QWidget):
                               interface_dicts_full[interface_name]["T2"],
                               interface_dicts_full[interface_name]["T3"]):
                 remote_force.Delete()
+                command_snippet_RF.Delete()
+            # endregion
+
+            # Increase the interface index counter by 1
+            interface_index_no += 1
+
+        # region Save the analysis template in the solution directory
+        app_ansys.save(os.path.join(os.getcwd(), "WE_Loading_Template.mechdat"))
+
+        # Remove the folder which locks the .mechdat file created (so that it can be overwritten)
+        dir_path = 'WE_Loading_Template_Mech_Files'
+
+        try:
+            if os.path.exists(dir_path) and os.path.isdir(dir_path):
+                shutil.rmtree(dir_path)
+                print(f'WE_Loading_Template.mechdat file is created successfully in: \n\n "{os.getcwd()}"')
+            else:
+                print(f"The directory {dir_path} does not exist.")
+        except Exception as e:
+            print(f"An error occurred while trying to delete the directory {dir_path}: {e}")
+
+        app_ansys.print_tree(DataModel.Project.Model)
+
+        QMessageBox.information(self, "Extraction Complete",
+                                f'WE_Loading_Template.mechdat file is created successfully in: \n\n "{os.getcwd()}." \n\n '
+                                f'Please restart the whole program first if you need to re-run this button.')
+
+        # Open up the folder of the output file
+        os.startfile(os.getcwd())
+        # endregion
+
+        app_ansys.close()
+        # endregion
+        ############################################################################
+
+    def create_ansys_mechanical_input_template_transient(self):
+        ############################################################################
+        # region Collect interface names and metadata to be used as input loads for the selected part
+        # List of all possible keys for load components and phase angles
+        all_keys = ["T1", "T2", "T3", "R1", "R2", "R3"]
+
+        # Function to extract the interface name
+        def get_full_interface_name(column_name):
+            column_name = re.sub(r'\s+[TR][1-3]$', '', column_name)
+            return column_name
+
+        # Identify unique interfaces and their corresponding columns
+        full_interfaces = OrderedDict()
+        for col in self.result_df_full_part_load.columns:
+            if col != "TIME":
+                interface_name = get_full_interface_name(col)
+                if interface_name not in full_interfaces:
+                    full_interfaces[interface_name] = []
+                full_interfaces[interface_name].append(col)
+
+        # Function to create interface dictionary with all keys populated, missing ones with zeroes
+        def create_full_interface_dict(df, columns):
+            # Initialize the dictionary with all keys set to lists of zeroes
+            interface_dict = {key: [0] * len(df) for key in all_keys}
+            for col in columns:
+                key = col.split()[-1]  # Get the last part which is T1, T2, etc.
+                interface_dict[key] = df[col].tolist()
+            return interface_dict
+
+        # Create full dictionaries for each unique interface
+        interface_dicts_full = {interface: create_full_interface_dict(self.result_df_full_part_load, cols) for
+                                interface, cols in
+                                full_interfaces.items()}
+
+        # List of interfaces for the selected part
+        list_of_part_interface_names = list(interface_dicts_full.keys())
+        # endregion
+
+        # region Import libraries
+        print("Importing ansys-mechanical-core library...")
+        import ansys.api.mechanical
+        import ansys.mechanical.core
+        from ansys.mechanical.core import global_variables
+        from ansys.mechanical.core import App
+        print("Imported.")
+        # endregion
+
+        # region Initialization of ANSYS Mechanical App
+        print("Starting Ansys Mechanical...")
+        app_ansys = App(private_appdata=False)
+        print("Running the scripts...")
+        globals().update(global_variables(app_ansys))
+        print("Updating the global variables...")
+        # endregion
+
+        # region Initialize the list of frequency points extracted
+        # Create a separate list for FREQ
+        list_of_all_time_points = self.result_df_full_part_load["TIME"].tolist()
+
+        # Convert list of frequencies to a list of frequencies as quantities (in Hz)
+        list_of_all_time_points_as_quantity = []
+        for time_point in list_of_all_time_points:
+            list_of_all_time_points_as_quantity.append(Quantity(time_point, "sec"))
+        # endregion
+
+        # region Create a static analysis environment template for pre-stressed solution
+        print("Creating the static analysis environment...")
+        analysis_static = Model.AddStaticStructuralAnalysis()
+        analysis_settings_static = analysis_static.AnalysisSettings
+        analysis_settings_static.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
+        analysis_settings_static.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
+        # endregion
+
+        # region Create a modal analysis environment template for MSUP based solution
+        print("Creating the modal analysis environment...")
+        analysis_modal = Model.AddModalAnalysis()
+        analysis_settings_modal = analysis_modal.AnalysisSettings
+        analysis_settings_modal.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
+        analysis_settings_modal.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
+        # endregion
+
+        # region Create tree objects in Mechanical for harmonic analysis and initialize analysis settings
+        print("Creating the transient analysis environment...")
+        analysis_TR = Model.AddTransientStructuralAnalysis()
+        analysis_settings_TR = analysis_TR.AnalysisSettings
+        analysis_settings_TR_IC = DataModel.GetObjectsByName("Modal (None)")[0]
+        analysis_settings_TR_IC.ModalICEnvironment = analysis_modal
+        analysis_settings_TR.PropertyByName("TimeStepDefineby").InternalValue = 0  # by Substeps
+        analysis_settings_TR.PropertyByName("NumberOfSubSteps").InternalValue = len(list_of_all_time_points)
+        analysis_settings_TR.PropertyByName("EndTime").InternalValue = max(list_of_all_time_points)
+        analysis_settings_TR.PropertyByName("MSUPSkipExpansion").InternalValue = 1  # Yes
+        analysis_settings_TR.PropertyByName("ExpandResultFrom").InternalValue = 1  # Modal Solution
+        analysis_settings_TR.PropertyByName("ConstantDampingValue").InternalValue = 0.02  # 2% damping by default
+        analysis_settings_TR.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
+        analysis_settings_TR.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
+        # endregion
+
+        # region Create load objects and their dependent objects for each interface
+        interface_index_no = 1
+        for interface_name in list_of_part_interface_names:
+
+            # region Create dependent objects (coordinate systems and remote points)
+            # Add a reference coordinate system for each interface
+            CS_interface = Model.CoordinateSystems.AddCoordinateSystem()
+            CS_interface.Name = "CS_" + interface_name
+
+            # Create remote points for each interface
+            RP_interface = Model.AddRemotePoint()
+            RP_interface.Name = "RP_" + interface_name
+            RP_interface.CoordinateSystem = CS_interface
+            RP_interface.PilotNodeAPDLName = "RP_" + str(interface_index_no)
+            # endregion
+
+            # # region Create remote force objects at each interface
+            remote_force_index_name = "RF_" + str(interface_index_no)
+            moment_index_name = "RM_" + str(interface_index_no)
+            # # endregion
+
+            # region Define the numerical values of loads
+            # region Create harmonic force dataframes (not needed for now, but created anyway)
+            df_load_table_fx = pd.DataFrame({
+                'TIME': list_of_all_time_points,
+                'T1': interface_dicts_full[interface_name]["T1"]
+            })
+            df_load_table_fx.set_index('TIME', inplace=True)
+
+            df_load_table_fy = pd.DataFrame({
+                'TIME': list_of_all_time_points,
+                'T2': interface_dicts_full[interface_name]["T2"]
+            })
+            df_load_table_fy.set_index('TIME', inplace=True)
+
+            df_load_table_fz = pd.DataFrame({
+                'TIME': list_of_all_time_points,
+                'T3': interface_dicts_full[interface_name]["T3"]
+            })
+            df_load_table_fz.set_index('TIME', inplace=True)
+            # endregion
+
+            # Store dictionary entries in local variables
+            r1_values = interface_dicts_full[interface_name]["R1"]
+            r2_values = interface_dicts_full[interface_name]["R2"]
+            r3_values = interface_dicts_full[interface_name]["R3"]
+
+            # Use list comprehension to create lists of quantities (R1, R2, R3)
+            list_of_mx_values = [Quantity(mx, "N mm") for mx in r1_values]
+            list_of_my_values = [Quantity(my, "N mm") for my in r2_values]
+            list_of_mz_values = [Quantity(mz, "N mm") for mz in r3_values]
+
+            # region Create harmonic moment dataframes (which will serve as sources when creating APDL tables)
+            df_load_table_mx = pd.DataFrame({
+                'TIME': list_of_all_time_points,
+                'R1': interface_dicts_full[interface_name]["R1"]
+            })
+            df_load_table_mx.set_index('TIME', inplace=True)
+
+            df_load_table_my = pd.DataFrame({
+                'TIME': list_of_all_time_points,
+                'R2': interface_dicts_full[interface_name]["R2"]
+            })
+            df_load_table_my.set_index('TIME', inplace=True)
+
+            df_load_table_mz = pd.DataFrame({
+                'TIME': list_of_all_time_points,
+                'R3': interface_dicts_full[interface_name]["R3"]
+            })
+            df_load_table_mz.set_index('TIME', inplace=True)
+            # endregion
+            # endregion
+
+            # region Populate load objects with numerical values obtained from each relevant interface
+            print(f"Populating the input tabular data for {interface_name}...")
+            # Define remote force frequencies
+            # remote_force.XComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
+            # remote_force.YComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
+            # remote_force.ZComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
+            #
+            # # Define remote force forces and angles
+            # remote_force.XComponent.Output.DiscreteValues = list_of_fx_values
+            # remote_force.YComponent.Output.DiscreteValues = list_of_fy_values
+            # remote_force.ZComponent.Output.DiscreteValues = list_of_fz_values
+            #
+            # # Define moment frequencies
+            # moment.XComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
+            # moment.YComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
+            # moment.ZComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
+            #
+            # # Define moments and angles
+            # moment.XComponent.Output.DiscreteValues = list_of_mx_values
+            # moment.YComponent.Output.DiscreteValues = list_of_my_values
+            # moment.ZComponent.Output.DiscreteValues = list_of_mz_values
+            # endregion
+
+            # region Define T1,T2,T3 and R1, R2, R3 loads via Command Objects
+            command_snippet_RF = analysis_TR.AddCommandSnippet()
+            command_snippet_RM = analysis_TR.AddCommandSnippet()
+            command_snippet_RF.Name = "Commands_RF_" + interface_name
+            command_snippet_RM.Name = "Commands_RM_" + interface_name
+
+
+            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx,"table_X_" + remote_force_index_name)
+            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy, "table_Y_" + remote_force_index_name)
+            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz, "table_Z_" + remote_force_index_name)
+
+            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx,"table_X_" + moment_index_name)
+            apdl_lines_RMy = self.create_APDL_table(df_load_table_my, "table_Y_" + moment_index_name)
+            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz, "table_Z_" + moment_index_name)
+
+
+            command_snippet_RF.AppendText(''.join(apdl_lines_RFx))
+            command_snippet_RF.AppendText(''.join(apdl_lines_RFy))
+            command_snippet_RF.AppendText(''.join(apdl_lines_RFz))
+            command_snippet_RF.AppendText("\n\n"+ f"! Apply the load on the remote point specified for the interface\n")
+            command_snippet_RF.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
+
+            command_snippet_RF.AppendText(
+                f"f, all, fx, %{'table_X_' + remote_force_index_name}%\n")
+            command_snippet_RF.AppendText(
+                f"f, all, fy, %{'table_Y_' + remote_force_index_name}%\n")
+            command_snippet_RF.AppendText(
+                f"f, all, fz, %{'table_Z_' + remote_force_index_name}%\n")
+            command_snippet_RF.AppendText("nsel,all\n")
+
+            command_snippet_RM.AppendText(''.join(apdl_lines_RMx))
+            command_snippet_RM.AppendText(''.join(apdl_lines_RMy))
+            command_snippet_RM.AppendText(''.join(apdl_lines_RMz))
+            command_snippet_RM.AppendText("\n\n"+ f"! Apply the load on the remote point specified for the interface\n")
+            command_snippet_RM.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
+
+            command_snippet_RM.AppendText(
+                f"f, all, mx, %{'table_X_' + moment_index_name}%\n")
+            command_snippet_RM.AppendText(
+                f"f, all, my, %{'table_Y_' + moment_index_name}%\n")
+            command_snippet_RM.AppendText(
+                f"f, all, mz, %{'table_Z_' + moment_index_name}%\n")
+            command_snippet_RM.AppendText("nsel,all\n")
+            # endregion
+
+            # region Delete force or moment object if T1,T2,T3 or R1,R2,R3 components are all zero, making obj undefined
+            # Check whether input lists are all zero for a set of lists
+            def are_all_zeroes(*lists):
+                return all(all(x == 0 for x in lst) for lst in lists)
+
+            if are_all_zeroes(interface_dicts_full[interface_name]["R1"],
+                              interface_dicts_full[interface_name]["R2"],
+                              interface_dicts_full[interface_name]["R3"]):
+                #moment.Delete()
+                command_snippet_RM.Delete()
+
+            if are_all_zeroes(interface_dicts_full[interface_name]["T1"],
+                              interface_dicts_full[interface_name]["T2"],
+                              interface_dicts_full[interface_name]["T3"]):
+                #remote_force.Delete()
                 command_snippet_RF.Delete()
             # endregion
 
@@ -2138,6 +2477,8 @@ class WE_load_plotter(QWidget):
         if 'FREQ' in self.df.columns:
             self.update_time_domain_plot()
     # endregion
+
+
 #######################################
 # endregion
 
