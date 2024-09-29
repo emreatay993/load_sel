@@ -1069,7 +1069,7 @@ class WE_load_plotter(QWidget):
             RP_interface = Model.AddRemotePoint()
             RP_interface.Name = "RP_" + interface_name
             RP_interface.CoordinateSystem = CS_interface
-            RP_interface.PilotNodeAPDLName = "RF_" + str(interface_index_no)
+            RP_interface.PilotNodeAPDLName = "RP_" + str(interface_index_no)
             # endregion
 
             print(f"Creating force & moment objects for {interface_name}...")
@@ -1081,7 +1081,7 @@ class WE_load_plotter(QWidget):
             remote_force.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to a remote point
             remote_force.Location = RP_interface
             remote_force_index_name = "RF_" + str(interface_index_no)
-            
+
             # Create moments at each interface
             moment = analysis_HR.AddMoment()
             moment.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
@@ -1090,9 +1090,6 @@ class WE_load_plotter(QWidget):
             moment.Location = RP_interface
             moment_index_name = "RM_" + str(interface_index_no)
             # endregion
-
-            # Increase the interface index counter by 1
-            interface_index_no += 1
 
             # region Define the numerical values of loads and their phase angles
             # Initialize the lists of values
@@ -1253,16 +1250,10 @@ class WE_load_plotter(QWidget):
             # region Define T1,T2,T3 and R1, R2, R3 loads via Command Objects
             command_snippet_RF = analysis_HR.AddCommandSnippet()
             command_snippet_RM = analysis_HR.AddCommandSnippet()
+            command_snippet_RF.Name = "Commands_RF_" + interface_name
             command_snippet_RM.Name = "Commands_RM_" + interface_name
-            command_snippet_RF.Name = "Commands_RM_" + interface_name
 
-            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx,"table_X_" + moment_index_name)
-            apdl_lines_RMy = self.create_APDL_table(df_load_table_my, "table_Y_" + moment_index_name)
-            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz, "table_Z_" + moment_index_name)
-            apdl_lines_RMxi = self.create_APDL_table(df_load_table_phase_mx,"table_Xi_" + moment_index_name)
-            apdl_lines_RMyi = self.create_APDL_table(df_load_table_phase_my, "table_Yi_" + moment_index_name)
-            apdl_lines_RMzi = self.create_APDL_table(df_load_table_phase_mz, "table_Zi_" + moment_index_name)
-            
+
             apdl_lines_RFx = self.create_APDL_table(df_load_table_fx,"table_X_" + remote_force_index_name)
             apdl_lines_RFy = self.create_APDL_table(df_load_table_fy, "table_Y_" + remote_force_index_name)
             apdl_lines_RFz = self.create_APDL_table(df_load_table_fz, "table_Z_" + remote_force_index_name)
@@ -1270,12 +1261,46 @@ class WE_load_plotter(QWidget):
             apdl_lines_RFyi = self.create_APDL_table(df_load_table_phase_fy, "table_Yi_" + remote_force_index_name)
             apdl_lines_RFzi = self.create_APDL_table(df_load_table_phase_fz, "table_Zi_" + remote_force_index_name)
 
+            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx,"table_X_" + moment_index_name)
+            apdl_lines_RMy = self.create_APDL_table(df_load_table_my, "table_Y_" + moment_index_name)
+            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz, "table_Z_" + moment_index_name)
+            apdl_lines_RMxi = self.create_APDL_table(df_load_table_phase_mx,"table_Xi_" + moment_index_name)
+            apdl_lines_RMyi = self.create_APDL_table(df_load_table_phase_my, "table_Yi_" + moment_index_name)
+            apdl_lines_RMzi = self.create_APDL_table(df_load_table_phase_mz, "table_Zi_" + moment_index_name)
+
+            command_snippet_RF.AppendText(''.join(apdl_lines_RFx))
+            command_snippet_RF.AppendText(''.join(apdl_lines_RFy))
+            command_snippet_RF.AppendText(''.join(apdl_lines_RFz))
+            command_snippet_RF.AppendText(''.join(apdl_lines_RFxi))
+            command_snippet_RF.AppendText(''.join(apdl_lines_RFyi))
+            command_snippet_RF.AppendText(''.join(apdl_lines_RFzi))
+            command_snippet_RF.AppendText("\n\n" + f"! Apply load on the previously-specified remote point\n")
+            command_snippet_RF.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
+
+            command_snippet_RF.AppendText(
+                f"f, all, fx, %{'table_X_' + remote_force_index_name}%, %{'table_Xi_' + remote_force_index_name}%\n")
+            command_snippet_RF.AppendText(
+                f"f, all, fy, %{'table_Y_' + remote_force_index_name}%, %{'table_Yi_' + remote_force_index_name}%\n")
+            command_snippet_RF.AppendText(
+                f"f, all, fz, %{'table_Z_' + remote_force_index_name}%, %{'table_Zi_' + remote_force_index_name}%\n")
+            command_snippet_RF.AppendText("nsel,all\n")
+
             command_snippet_RM.AppendText(''.join(apdl_lines_RMx))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMy))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMz))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMxi))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMyi))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMzi))
+            command_snippet_RM.AppendText("\n\n" + f"! Apply the load on the remote point specified for the interface\n")
+            command_snippet_RM.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
+
+            command_snippet_RM.AppendText(
+                f"f, all, mx, %{'table_X_' + moment_index_name}%, %{'table_Xi_' + moment_index_name}%\n")
+            command_snippet_RM.AppendText(
+                f"f, all, my, %{'table_Y_' + moment_index_name}%, %{'table_Yi_' + moment_index_name}%\n")
+            command_snippet_RM.AppendText(
+                f"f, all, mz, %{'table_Z_' + moment_index_name}%, %{'table_Zi_' + moment_index_name}%\n")
+            command_snippet_RM.AppendText("nsel,all\n")
             # endregion
 
             # region Delete force or moment object if T1,T2,T3 or R1,R2,R3 components are all zero, making obj undefined
@@ -1288,13 +1313,16 @@ class WE_load_plotter(QWidget):
                               interface_dicts_full[interface_name]["R3"]):
                 moment.Delete()
                 command_snippet_RM.Delete()
-            
+
             if are_all_zeroes(interface_dicts_full[interface_name]["T1"],
                               interface_dicts_full[interface_name]["T2"],
                               interface_dicts_full[interface_name]["T3"]):
                 remote_force.Delete()
                 command_snippet_RF.Delete()
             # endregion
+
+            # Increase the interface index counter by 1
+            interface_index_no += 1
 
         # region Save the analysis template in the solution directory
         app_ansys.save(os.path.join(os.getcwd(), "WE_Loading_Template.mechdat"))
