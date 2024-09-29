@@ -296,7 +296,7 @@ class WE_load_plotter(QWidget):
 
         main_layout.addWidget(tab_widget)
         self.setLayout(main_layout)
-        self.setWindowTitle("WE Load Visualizer - v0.92")
+        self.setWindowTitle("WE Load Visualizer - v0.93")
         self.showMaximized()
 
     def create_tab(self, name, setup_method):
@@ -406,7 +406,7 @@ class WE_load_plotter(QWidget):
 
         self.setupSideFilterSelector(upper_layout)
 
-        self.exclude_checkbox = QCheckBox(" Filter out T2, T3, R2, and R3 from graphs")
+        self.exclude_checkbox = QCheckBox(r"Filter out T2/T3, R2/R3 components from graphs")
         self.exclude_checkbox.stateChanged.connect(self.update_plots_tab3)
         upper_layout.addWidget(self.exclude_checkbox)
 
@@ -1135,7 +1135,9 @@ class WE_load_plotter(QWidget):
             remote_force.Name = "RF_" + interface_name
             remote_force.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to a remote point
             remote_force.Location = RP_interface
+            remote_force.Suppressed = True
             remote_force_index_name = "RF_" + str(interface_index_no)
+
 
             # Create moments at each interface
             moment = analysis_HR.AddMoment()
@@ -1143,11 +1145,12 @@ class WE_load_plotter(QWidget):
             moment.Name = "RM_" + interface_name
             moment.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote point
             moment.Location = RP_interface
+            moment.Suppressed = True
             moment_index_name = "RM_" + str(interface_index_no)
             # endregion
 
             # region Define the numerical values of loads and their phase angles
-            # Initialize the lists of values
+            # region Initialize the lists of values
             list_of_fx_values = []
             list_of_fy_values = []
             list_of_fz_values = []
@@ -1161,8 +1164,9 @@ class WE_load_plotter(QWidget):
             list_of_angle_mx_values = []
             list_of_angle_my_values = []
             list_of_angle_mz_values = []
+            # endregion
 
-            # Create lists of quantities (for T1, T2, T3)
+            # region Create lists of quantities (for T1, T2, T3)
             for fx, fy, fz, angle_fx, angle_fy, angle_fz in zip(interface_dicts_full[interface_name]["T1"],
                                                                 interface_dicts_full[interface_name]["T2"],
                                                                 interface_dicts_full[interface_name]["T3"],
@@ -1175,46 +1179,71 @@ class WE_load_plotter(QWidget):
                 list_of_angle_fx_values.append(Quantity(angle_fx, "deg"))
                 list_of_angle_fy_values.append(Quantity(angle_fy, "deg"))
                 list_of_angle_fz_values.append(Quantity(angle_fz, "deg"))
+            # endregion
 
-            # region Create harmonic force dataframes (not needed for now, but created anyway)
+            # region Create harmonic force dataframes (which will serve as sources when creating APDL tables)
+            # region Fx Dataframe (Real and Imag)
             df_load_table_fx = pd.DataFrame({
                 'FREQ': list_of_all_frequencies,
-                'T1': interface_dicts_full[interface_name]["T1"]
-            })
+                'T1': interface_dicts_full[interface_name]["T1"]})
             df_load_table_fx.set_index('FREQ', inplace=True)
-
-            df_load_table_fy = pd.DataFrame({
-                'FREQ': list_of_all_frequencies,
-                'T2': interface_dicts_full[interface_name]["T2"]
-            })
-            df_load_table_fy.set_index('FREQ', inplace=True)
-
-            df_load_table_fz = pd.DataFrame({
-                'FREQ': list_of_all_frequencies,
-                'T3': interface_dicts_full[interface_name]["T3"]
-            })
-            df_load_table_fz.set_index('FREQ', inplace=True)
 
             df_load_table_phase_fx = pd.DataFrame({
                 'FREQ': list_of_all_frequencies,
-                'Phase_T1': interface_dicts_full[interface_name]["Phase_T1"]
-            })
+                'Phase_T1': interface_dicts_full[interface_name]["Phase_T1"]})
             df_load_table_phase_fx.set_index('FREQ', inplace=True)
+
+            df_load_table_fx_real = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_fx_real.set_index('FREQ', inplace=True)
+            df_load_table_fx_real['Real_T1'] = df_load_table_fx['T1'] * np.cos(df_load_table_phase_fx['Phase_T1'])
+
+            df_load_table_fx_imag = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_fx_imag.set_index('FREQ', inplace=True)
+            df_load_table_fx_imag['Real_T1'] = df_load_table_fx['T1'] * np.sin(df_load_table_phase_fx['Phase_T1'])
+            # endregion
+
+            # region Fy Dataframe (Real and Imag)
+            df_load_table_fy = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'T2': interface_dicts_full[interface_name]["T2"]})
+            df_load_table_fy.set_index('FREQ', inplace=True)
 
             df_load_table_phase_fy = pd.DataFrame({
                 'FREQ': list_of_all_frequencies,
-                'Phase_T2': interface_dicts_full[interface_name]["Phase_T2"]
-            })
+                'Phase_T2': interface_dicts_full[interface_name]["Phase_T2"]})
             df_load_table_phase_fy.set_index('FREQ', inplace=True)
+
+            df_load_table_fy_real = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_fy_real.set_index('FREQ', inplace=True)
+            df_load_table_fy_real['Real_T2'] = df_load_table_fy['T2'] * np.cos(df_load_table_phase_fy['Phase_T2'])
+
+            df_load_table_fy_imag = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_fy_imag.set_index('FREQ', inplace=True)
+            df_load_table_fy_imag['Real_T2'] = df_load_table_fy['T2'] * np.sin(df_load_table_phase_fy['Phase_T2'])
+            # endregion
+
+            # region Fz Dataframe (Real and Imag)
+            df_load_table_fz = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'T3': interface_dicts_full[interface_name]["T3"]})
+            df_load_table_fz.set_index('FREQ', inplace=True)
 
             df_load_table_phase_fz = pd.DataFrame({
                 'FREQ': list_of_all_frequencies,
-                'Phase_T3': interface_dicts_full[interface_name]["Phase_T3"]
-            })
+                'Phase_T3': interface_dicts_full[interface_name]["Phase_T3"]})
             df_load_table_phase_fz.set_index('FREQ', inplace=True)
+
+            df_load_table_fz_real = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_fz_real.set_index('FREQ', inplace=True)
+            df_load_table_fz_real['Real_T3'] = df_load_table_fz['T3'] * np.cos(df_load_table_phase_fz['Phase_T3'])
+
+            df_load_table_fz_imag = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_fz_imag.set_index('FREQ', inplace=True)
+            df_load_table_fz_imag['Real_T3'] = df_load_table_fz['T3'] * np.sin(df_load_table_phase_fz['Phase_T3'])
+            # endregion
             # endregion
 
-            # Create lists of quantities (for R1, R2, R3)
+            # region Create lists of quantities (for R1, R2, R3)
             for mx, my, mz, angle_mx, angle_my, angle_mz in zip(interface_dicts_full[interface_name]["R1"],
                                                                 interface_dicts_full[interface_name]["R2"],
                                                                 interface_dicts_full[interface_name]["R3"],
@@ -1227,44 +1256,68 @@ class WE_load_plotter(QWidget):
                 list_of_angle_mx_values.append(Quantity(angle_mx, "deg"))
                 list_of_angle_my_values.append(Quantity(angle_my, "deg"))
                 list_of_angle_mz_values.append(Quantity(angle_mz, "deg"))
+            # endregion
 
             # region Create harmonic moment dataframes (which will serve as sources when creating APDL tables)
+            # region Mx Dataframe (Real and Imag)
             df_load_table_mx = pd.DataFrame({
                 'FREQ': list_of_all_frequencies,
-                'R1': interface_dicts_full[interface_name]["R1"]
-            })
+                'R1': interface_dicts_full[interface_name]["R1"]})
             df_load_table_mx.set_index('FREQ', inplace=True)
-            
-
-            df_load_table_my = pd.DataFrame({
-                'FREQ': list_of_all_frequencies,
-                'R2': interface_dicts_full[interface_name]["R2"]
-            })
-            df_load_table_my.set_index('FREQ', inplace=True)
-
-            df_load_table_mz = pd.DataFrame({
-                'FREQ': list_of_all_frequencies,
-                'R3': interface_dicts_full[interface_name]["R3"]
-            })
-            df_load_table_mz.set_index('FREQ', inplace=True)
 
             df_load_table_phase_mx = pd.DataFrame({
                 'FREQ': list_of_all_frequencies,
-                'Phase_R1': interface_dicts_full[interface_name]["Phase_R1"]
-            })
+                'Phase_R1': interface_dicts_full[interface_name]["Phase_R1"]})
             df_load_table_phase_mx.set_index('FREQ', inplace=True)
+
+            df_load_table_mx_real = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_mx_real.set_index('FREQ', inplace=True)
+            df_load_table_mx_real['Real_R1'] = df_load_table_mx['R1'] * np.cos(df_load_table_phase_mx['Phase_R1'])
+
+            df_load_table_mx_imag = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_mx_imag.set_index('FREQ', inplace=True)
+            df_load_table_mx_imag['Real_R1'] = df_load_table_mx['R1'] * np.sin(df_load_table_phase_mx['Phase_R1'])
+            # endregion
+
+            # region My Dataframe (Real and Imag)
+            df_load_table_my = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'R2': interface_dicts_full[interface_name]["R2"]})
+            df_load_table_my.set_index('FREQ', inplace=True)
 
             df_load_table_phase_my = pd.DataFrame({
                 'FREQ': list_of_all_frequencies,
-                'Phase_R2': interface_dicts_full[interface_name]["Phase_R2"]
-            })
+                'Phase_R2': interface_dicts_full[interface_name]["Phase_R2"]})
             df_load_table_phase_my.set_index('FREQ', inplace=True)
+
+            df_load_table_my_real = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_my_real.set_index('FREQ', inplace=True)
+            df_load_table_my_real['Real_R2'] = df_load_table_my['R2'] * np.cos(df_load_table_phase_my['Phase_R2'])
+
+            df_load_table_my_imag = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_my_imag.set_index('FREQ', inplace=True)
+            df_load_table_my_imag['Real_R2'] = df_load_table_my['R2'] * np.sin(df_load_table_phase_my['Phase_R2'])
+            # endregion
+
+            # region Mz Dataframe (Real and Imag)
+            df_load_table_mz = pd.DataFrame({
+                'FREQ': list_of_all_frequencies,
+                'R3': interface_dicts_full[interface_name]["R3"]})
+            df_load_table_mz.set_index('FREQ', inplace=True)
 
             df_load_table_phase_mz = pd.DataFrame({
                 'FREQ': list_of_all_frequencies,
-                'Phase_R3': interface_dicts_full[interface_name]["Phase_R3"]
-            })
+                'Phase_R3': interface_dicts_full[interface_name]["Phase_R3"]})
             df_load_table_phase_mz.set_index('FREQ', inplace=True)
+
+            df_load_table_mz_real = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_mz_real.set_index('FREQ', inplace=True)
+            df_load_table_mz_real['Real_R3'] = df_load_table_mz['R3'] * np.cos(df_load_table_phase_mz['Phase_R3'])
+
+            df_load_table_mz_imag = pd.DataFrame({'FREQ': list_of_all_frequencies})
+            df_load_table_mz_imag.set_index('FREQ', inplace=True)
+            df_load_table_mz_imag['Real_R3'] = df_load_table_mz['R3'] * np.sin(df_load_table_phase_mz['Phase_R3'])
+            # endregion
             # endregion
             # endregion
 
@@ -1309,20 +1362,19 @@ class WE_load_plotter(QWidget):
             command_snippet_RF.Name = "Commands_RF_" + interface_name
             command_snippet_RM.Name = "Commands_RM_" + interface_name
 
+            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx_real,"table_X_" + remote_force_index_name)
+            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy_real, "table_Y_" + remote_force_index_name)
+            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz_real, "table_Z_" + remote_force_index_name)
+            apdl_lines_RFxi = self.create_APDL_table(df_load_table_fx_imag,"table_Xi_" + remote_force_index_name)
+            apdl_lines_RFyi = self.create_APDL_table(df_load_table_fy_imag, "table_Yi_" + remote_force_index_name)
+            apdl_lines_RFzi = self.create_APDL_table(df_load_table_fz_imag, "table_Zi_" + remote_force_index_name)
 
-            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx,"table_X_" + remote_force_index_name)
-            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy, "table_Y_" + remote_force_index_name)
-            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz, "table_Z_" + remote_force_index_name)
-            apdl_lines_RFxi = self.create_APDL_table(df_load_table_phase_fx,"table_Xi_" + remote_force_index_name)
-            apdl_lines_RFyi = self.create_APDL_table(df_load_table_phase_fy, "table_Yi_" + remote_force_index_name)
-            apdl_lines_RFzi = self.create_APDL_table(df_load_table_phase_fz, "table_Zi_" + remote_force_index_name)
-
-            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx,"table_X_" + moment_index_name)
-            apdl_lines_RMy = self.create_APDL_table(df_load_table_my, "table_Y_" + moment_index_name)
-            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz, "table_Z_" + moment_index_name)
-            apdl_lines_RMxi = self.create_APDL_table(df_load_table_phase_mx,"table_Xi_" + moment_index_name)
-            apdl_lines_RMyi = self.create_APDL_table(df_load_table_phase_my, "table_Yi_" + moment_index_name)
-            apdl_lines_RMzi = self.create_APDL_table(df_load_table_phase_mz, "table_Zi_" + moment_index_name)
+            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx_real,"table_X_" + moment_index_name)
+            apdl_lines_RMy = self.create_APDL_table(df_load_table_my_real, "table_Y_" + moment_index_name)
+            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz_real, "table_Z_" + moment_index_name)
+            apdl_lines_RMxi = self.create_APDL_table(df_load_table_mx_imag,"table_Xi_" + moment_index_name)
+            apdl_lines_RMyi = self.create_APDL_table(df_load_table_my_imag, "table_Yi_" + moment_index_name)
+            apdl_lines_RMzi = self.create_APDL_table(df_load_table_mz_imag, "table_Zi_" + moment_index_name)
 
             command_snippet_RF.AppendText(''.join(apdl_lines_RFx))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFy))
@@ -1383,9 +1435,7 @@ class WE_load_plotter(QWidget):
         # region Save the analysis template in the solution directory
         app_ansys.save(os.path.join(os.getcwd(), "WE_Loading_Template.mechdat"))
 
-        # Remove the folder which locks the .mechdat file created (so that it can be overwritten)
         dir_path = 'WE_Loading_Template_Mech_Files'
-
         try:
             if os.path.exists(dir_path) and os.path.isdir(dir_path):
                 shutil.rmtree(dir_path)
@@ -1522,60 +1572,56 @@ class WE_load_plotter(QWidget):
             RP_interface.PilotNodeAPDLName = "RP_" + str(interface_index_no)
             # endregion
 
-            # # region Create remote force objects at each interface
+            # region Create remote force objects at each interface
             remote_force_index_name = "RF_" + str(interface_index_no)
             moment_index_name = "RM_" + str(interface_index_no)
-            # # endregion
-
-            # region Define the numerical values of loads
-            # region Create harmonic force dataframes (not needed for now, but created anyway)
-            df_load_table_fx = pd.DataFrame({
-                'TIME': list_of_all_time_points,
-                'T1': interface_dicts_full[interface_name]["T1"]
-            })
-            df_load_table_fx.set_index('TIME', inplace=True)
-
-            df_load_table_fy = pd.DataFrame({
-                'TIME': list_of_all_time_points,
-                'T2': interface_dicts_full[interface_name]["T2"]
-            })
-            df_load_table_fy.set_index('TIME', inplace=True)
-
-            df_load_table_fz = pd.DataFrame({
-                'TIME': list_of_all_time_points,
-                'T3': interface_dicts_full[interface_name]["T3"]
-            })
-            df_load_table_fz.set_index('TIME', inplace=True)
             # endregion
 
-            # Store dictionary entries in local variables
-            r1_values = interface_dicts_full[interface_name]["R1"]
-            r2_values = interface_dicts_full[interface_name]["R2"]
-            r3_values = interface_dicts_full[interface_name]["R3"]
+            # region Define the numerical values of loads
+            # region Create force dataframes (which will serve as sources when creating APDL tables)
+            # region Fx Dataframe
+            df_load_table_fx = pd.DataFrame({
+                'TIME': list_of_all_time_points,
+                'T1': interface_dicts_full[interface_name]["T1"]})
+            df_load_table_fx.set_index('TIME', inplace=True)
+            # endregion
 
-            # Use list comprehension to create lists of quantities (R1, R2, R3)
-            list_of_mx_values = [Quantity(mx, "N mm") for mx in r1_values]
-            list_of_my_values = [Quantity(my, "N mm") for my in r2_values]
-            list_of_mz_values = [Quantity(mz, "N mm") for mz in r3_values]
+            # region Fy Dataframe
+            df_load_table_fy = pd.DataFrame({
+                'TIME': list_of_all_time_points,
+                'T2': interface_dicts_full[interface_name]["T2"]})
+            df_load_table_fy.set_index('TIME', inplace=True)
+            # endregion
 
-            # region Create harmonic moment dataframes (which will serve as sources when creating APDL tables)
+            # region Fz Dataframe
+            df_load_table_fz = pd.DataFrame({
+                'TIME': list_of_all_time_points,
+                'T3': interface_dicts_full[interface_name]["T3"]})
+            df_load_table_fz.set_index('TIME', inplace=True)
+            # endregion
+            # endregion
+
+            # region Create moment dataframes (which will serve as sources when creating APDL tables)
+            # region Mx Dataframe
             df_load_table_mx = pd.DataFrame({
                 'TIME': list_of_all_time_points,
-                'R1': interface_dicts_full[interface_name]["R1"]
-            })
+                'R1': interface_dicts_full[interface_name]["R1"]})
             df_load_table_mx.set_index('TIME', inplace=True)
+            # endregion
 
+            # region My Dataframe
             df_load_table_my = pd.DataFrame({
                 'TIME': list_of_all_time_points,
-                'R2': interface_dicts_full[interface_name]["R2"]
-            })
+                'R2': interface_dicts_full[interface_name]["R2"]})
             df_load_table_my.set_index('TIME', inplace=True)
+            # endregion
 
+            # region Mz Dataframe
             df_load_table_mz = pd.DataFrame({
                 'TIME': list_of_all_time_points,
-                'R3': interface_dicts_full[interface_name]["R3"]
-            })
+                'R3': interface_dicts_full[interface_name]["R3"]})
             df_load_table_mz.set_index('TIME', inplace=True)
+            # endregion
             # endregion
             # endregion
 
@@ -1594,7 +1640,6 @@ class WE_load_plotter(QWidget):
             apdl_lines_RMx = self.create_APDL_table(df_load_table_mx,"table_X_" + moment_index_name)
             apdl_lines_RMy = self.create_APDL_table(df_load_table_my, "table_Y_" + moment_index_name)
             apdl_lines_RMz = self.create_APDL_table(df_load_table_mz, "table_Z_" + moment_index_name)
-
 
             command_snippet_RF.AppendText(''.join(apdl_lines_RFx))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFy))
@@ -1649,9 +1694,7 @@ class WE_load_plotter(QWidget):
         # region Save the analysis template in the solution directory
         app_ansys.save(os.path.join(os.getcwd(), "WE_Loading_Template.mechdat"))
 
-        # Remove the folder which locks the .mechdat file created (so that it can be overwritten)
         dir_path = 'WE_Loading_Template_Mech_Files'
-
         try:
             if os.path.exists(dir_path) and os.path.isdir(dir_path):
                 shutil.rmtree(dir_path)
