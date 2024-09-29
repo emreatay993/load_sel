@@ -140,7 +140,7 @@ def vectorized_rainflow(series):
     rf = rainflow(series, use_pandas=False)
     return rf[:,0], rf[:,2]
 
-@njit
+@njit(parallel=True)
 def vectorized_calculate_damage(stress_ranges, counts, A, m):
     """
     Calculate the total damage using the S-N curve parameters.
@@ -151,6 +151,16 @@ def vectorized_calculate_damage(stress_ranges, counts, A, m):
     damage = np.sum(counts / Nf)
     return damage
 # endregion
+
+@njit(parallel=True)
+def compute_actual_stresses(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord, start_idx, end_idx):
+    actual_sx = np.dot(modal_sx[start_idx:end_idx, :], modal_coord)
+    actual_sy = np.dot(modal_sy[start_idx:end_idx, :], modal_coord)
+    actual_sz = np.dot(modal_sz[start_idx:end_idx, :], modal_coord)
+    actual_sxy = np.dot(modal_sxy[start_idx:end_idx, :], modal_coord)
+    actual_syz = np.dot(modal_syz[start_idx:end_idx, :], modal_coord)
+    actual_sxz = np.dot(modal_sxz[start_idx:end_idx, :], modal_coord)
+    return actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
 
 def process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord):
     """Process stress results to compute von Mises stresses or fatigue damage."""
@@ -177,12 +187,9 @@ def process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, m
 
         # Perform matrix multiplications for the chunk
         if not CUDA_ENABLED:
-            actual_sx = np.dot(modal_sx[start_idx:end_idx, :], modal_coord)
-            actual_sy = np.dot(modal_sy[start_idx:end_idx, :], modal_coord)
-            actual_sz = np.dot(modal_sz[start_idx:end_idx, :], modal_coord)
-            actual_sxy = np.dot(modal_sxy[start_idx:end_idx, :], modal_coord)
-            actual_syz = np.dot(modal_syz[start_idx:end_idx, :], modal_coord)
-            actual_sxz = np.dot(modal_sxz[start_idx:end_idx, :], modal_coord)
+            actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
+                compute_actual_stresses(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz,
+                                        modal_sxz, modal_coord, start_idx, end_idx)
 
         if CUDA_ENABLED:
             actual_sx = cp.dot(modal_sx[start_idx:end_idx, :], modal_coord)
@@ -204,7 +211,7 @@ def process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, m
             for node_idx in range(sigma_vm.shape[0]):
                 ranges, counts = vectorized_rainflow(sigma_vm[node_idx, :])
                 damage = vectorized_calculate_damage(ranges, counts, A=1.0, m=3.0)  # Example S-N curve parameters
-                print(f"Node {start_idx + node_idx} damage: {damage:.4f}")
+                #print(f"Node {start_idx + node_idx} damage: {damage:.4f}")
 
 
         # Inform user of memory status after each iteration
@@ -226,7 +233,7 @@ modal_sz = np.random.randn(30000, 40).astype(DTYPE)
 modal_sxy = np.random.randn(30000, 40).astype(DTYPE)
 modal_syz = np.random.randn(30000, 40).astype(DTYPE)
 modal_sxz = np.random.randn(30000, 40).astype(DTYPE)
-modal_coord = np.random.randn(40, 100000).astype(DTYPE)
+modal_coord = np.random.randn(40, 500000).astype(DTYPE)
 
 if CUDA_ENABLED:
     # Convert Modal Inputs into CuPy arrays
