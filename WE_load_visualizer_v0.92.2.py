@@ -32,6 +32,10 @@ print("Done.")
 
 # endregion
 
+# region Define global variables
+
+# endregion
+
 # region Read input file
 #######################################
 # region Set up functions to be used for reading raw input
@@ -165,7 +169,7 @@ def main():
 
         print(df)
 
-        return df
+        return df, DATA_DOMAIN
     except Exception as e:
         QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
         sys.exit()
@@ -173,7 +177,7 @@ def main():
 
 # region Run the file reader
 if __name__ == "__main__":
-    data = main()
+    data, DATA_DOMAIN = main()
 
     # Write the raw data with correct headers inside the solution directory
     data.to_csv("full_data.csv", index=False)
@@ -1230,6 +1234,7 @@ class WE_load_plotter(QWidget):
                 'R1': interface_dicts_full[interface_name]["R1"]
             })
             df_load_table_mx.set_index('FREQ', inplace=True)
+            
 
             df_load_table_my = pd.DataFrame({
                 'FREQ': list_of_all_frequencies,
@@ -1574,30 +1579,8 @@ class WE_load_plotter(QWidget):
             # endregion
             # endregion
 
-            # region Populate load objects with numerical values obtained from each relevant interface
-            print(f"Populating the input tabular data for {interface_name}...")
-            # Define remote force frequencies
-            # remote_force.XComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
-            # remote_force.YComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
-            # remote_force.ZComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
-            #
-            # # Define remote force forces and angles
-            # remote_force.XComponent.Output.DiscreteValues = list_of_fx_values
-            # remote_force.YComponent.Output.DiscreteValues = list_of_fy_values
-            # remote_force.ZComponent.Output.DiscreteValues = list_of_fz_values
-            #
-            # # Define moment frequencies
-            # moment.XComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
-            # moment.YComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
-            # moment.ZComponent.Inputs[0].DiscreteValues = list_of_all_time_points_as_quantity
-            #
-            # # Define moments and angles
-            # moment.XComponent.Output.DiscreteValues = list_of_mx_values
-            # moment.YComponent.Output.DiscreteValues = list_of_my_values
-            # moment.ZComponent.Output.DiscreteValues = list_of_mz_values
-            # endregion
-
             # region Define T1,T2,T3 and R1, R2, R3 loads via Command Objects
+            print(f"Populating the input tabular data for {interface_name}...")
             command_snippet_RF = analysis_TR.AddCommandSnippet()
             command_snippet_RM = analysis_TR.AddCommandSnippet()
             command_snippet_RF.Name = "Commands_RF_" + interface_name
