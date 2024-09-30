@@ -3,7 +3,7 @@ import cupy
 import numpy as np
 import psutil
 import gc
-from numba import njit
+from numba import njit, jit
 from pyyeti.cyclecount import rainflow
 from pyyeti import cyclecount
 import time
@@ -12,7 +12,7 @@ import cupy as cp
 
 # region Define global variables
 # Enable CuPy if CUDA is installed
-CUDA_ENABLED = True
+CUDA_ENABLED = False
 
 # Global flag to control disk writing
 WRITE_TO_DISK = False  # Set to False to compute fatigue damage directly
@@ -145,21 +145,30 @@ def vectorized_calculate_damage(stress_ranges, counts, A, m):
     """
     Calculate the total damage using the S-N curve parameters.
     """
-    # Add epsilon to avoid division by zero
-    epsilon = 1e-10
-    Nf = A / ((stress_ranges + epsilon) ** m)  # Basquin's equation
-    damage = np.sum(counts / Nf)
+    damage = np.sum(counts / (A / ((stress_ranges + 1e-10) ** m)))
     return damage
 # endregion
 
-@njit(parallel=True)
-def compute_actual_stresses(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord, start_idx, end_idx):
-    actual_sx = np.dot(modal_sx[start_idx:end_idx, :], modal_coord)
-    actual_sy = np.dot(modal_sy[start_idx:end_idx, :], modal_coord)
-    actual_sz = np.dot(modal_sz[start_idx:end_idx, :], modal_coord)
-    actual_sxy = np.dot(modal_sxy[start_idx:end_idx, :], modal_coord)
-    actual_syz = np.dot(modal_syz[start_idx:end_idx, :], modal_coord)
-    actual_sxz = np.dot(modal_sxz[start_idx:end_idx, :], modal_coord)
+@njit
+def compute_actual_stresses(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord, start_idx,
+                            end_idx):
+    # Ensure the slices are contiguous
+    modal_sx = np.ascontiguousarray(modal_sx[start_idx:end_idx, :])
+    modal_sy = np.ascontiguousarray(modal_sy[start_idx:end_idx, :])
+    modal_sz = np.ascontiguousarray(modal_sz[start_idx:end_idx, :])
+    modal_sxy = np.ascontiguousarray(modal_sxy[start_idx:end_idx, :])
+    modal_syz = np.ascontiguousarray(modal_syz[start_idx:end_idx, :])
+    modal_sxz = np.ascontiguousarray(modal_sxz[start_idx:end_idx, :])
+    modal_coord = np.ascontiguousarray(modal_coord)
+
+    # Perform matrix multiplication
+    actual_sx = np.dot(modal_sx, modal_coord)
+    actual_sy = np.dot(modal_sy, modal_coord)
+    actual_sz = np.dot(modal_sz, modal_coord)
+    actual_sxy = np.dot(modal_sxy, modal_coord)
+    actual_syz = np.dot(modal_syz, modal_coord)
+    actual_sxz = np.dot(modal_sxz, modal_coord)
+
     return actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
 
 def process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord):
@@ -202,15 +211,21 @@ def process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, m
         # Compute von Mises stresses
         sigma_vm = compute_von_mises(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz)
 
+        # Discard actual stresses as soon as von Mises stress is computed
+        del actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
+        gc.collect()  # Force garbage collection to free memory
+
         if WRITE_TO_DISK:
             # Write to disk
             vm_memmap[start_idx:end_idx, :] = sigma_vm
         else:
             start_time = time.time()
+            A=1
+            m=-3
             # Compute fatigue damage directly for each node
             for node_idx in range(sigma_vm.shape[0]):
                 ranges, counts = vectorized_rainflow(sigma_vm[node_idx, :])
-                damage = vectorized_calculate_damage(ranges, counts, A=1.0, m=3.0)  # Example S-N curve parameters
+                damage = vectorized_calculate_damage(ranges, counts, A, m)  # Example S-N curve parameters
                 #print(f"Node {start_idx + node_idx} damage: {damage:.4f}")
 
 
