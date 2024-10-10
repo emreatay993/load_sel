@@ -1,270 +1,171 @@
 # region Import libraries
-import cupy
 import numpy as np
+import torch
 import psutil
 import gc
-from numba import njit, jit
+from numba import njit
 from pyyeti.cyclecount import rainflow
-from pyyeti import cyclecount
 import time
-import cupy as cp
 # endregion
 
-# region Define global variables
-# Enable CuPy if CUDA is installed
-CUDA_ENABLED = False
-
-# Global flag to control disk writing
-WRITE_TO_DISK = False  # Set to False to compute fatigue damage directly
-
-# Set the float size (directly affects RAM usage, computation speed)
-DTYPE = np.float32
-# Determine the byte size of the data type
-ELEMENT_SIZE = np.dtype(DTYPE).itemsize
-
-RAM_PERCENT = 0.5
+# region Global variables
+IS_CUDA_ENABLED = True
+IS_WRITE_TO_DISK = False
 # endregion
 
-# region Memory management: get total and available memory
-total_memory = psutil.virtual_memory().total / (1024 ** 3)
-available_memory = psutil.virtual_memory().available * RAM_PERCENT / (1024 ** 3)  # Use only 80% of available RAM
+# region Define global class & functions
+class PotentialDamageSolverByMSUP:
+    def __init__(self, modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord, cuda_enabled=IS_CUDA_ENABLED,
+                 write_to_disk=IS_WRITE_TO_DISK):
+        # Initialize modal inputs
+        self.device = torch.device("cuda" if cuda_enabled and torch.cuda.is_available() else "cpu")
+        self.modal_sx = torch.tensor(modal_sx, dtype=torch.float32).to(self.device)
+        self.modal_sy = torch.tensor(modal_sy, dtype=torch.float32).to(self.device)
+        self.modal_sz = torch.tensor(modal_sz, dtype=torch.float32).to(self.device)
+        self.modal_sxy = torch.tensor(modal_sxy, dtype=torch.float32).to(self.device)
+        self.modal_syz = torch.tensor(modal_syz, dtype=torch.float32).to(self.device)
+        self.modal_sxz = torch.tensor(modal_sxz, dtype=torch.float32).to(self.device)
+        self.modal_coord = torch.tensor(modal_coord, dtype=torch.float32).to(self.device)
 
-print(f"Total system RAM: {total_memory :.2f} GB")
-print(f"Available system RAM: {available_memory :.2f} GB")
+        # Global settings
+        self.cuda_enabled = cuda_enabled
+        self.write_to_disk = write_to_disk
+        self.DTYPE = np.float32
+        self.ELEMENT_SIZE = np.dtype(self.DTYPE).itemsize
+        self.RAM_PERCENT = 0.7
 
-def get_chunk_size(num_nodes, num_time_points, num_modes, element_size=ELEMENT_SIZE):
-    """Calculate the optimal chunk size for processing based on available memory."""
-    available_memory = psutil.virtual_memory().available * RAM_PERCENT  # Use only 80% of available RAM
+        # Memory details
+        self.total_memory = psutil.virtual_memory().total / (1024 ** 3)
+        self.available_memory = psutil.virtual_memory().available * self.RAM_PERCENT / (1024 ** 3)
+        print(f"Total system RAM: {self.total_memory:.2f} GB")
+        print(f"Available system RAM: {self.available_memory:.2f} GB")
 
-    # Calculate memory needed for intermediate stress matrices (6 stress matrices + von Mises matrix)
-    memory_per_node = (7 * num_time_points * element_size) + (num_time_points * element_size)
+    def get_chunk_size(self, num_nodes, num_time_points):
+        """Calculate the optimal chunk size for processing based on available memory."""
+        available_memory = psutil.virtual_memory().available * self.RAM_PERCENT  # Use only 80% of available RAM
+        memory_per_node = (7 * num_time_points * self.ELEMENT_SIZE) + (num_time_points * self.ELEMENT_SIZE)
+        max_nodes_per_iteration = available_memory // memory_per_node
+        return max(1, int(max_nodes_per_iteration))  # Ensure at least one node per chunk
 
-    # Calculate number of nodes that can fit within the available memory
-    max_nodes_per_iteration = available_memory // memory_per_node
-    return max(1, int(max_nodes_per_iteration))  # Ensure at least one node per chunk
+    @staticmethod
+    @njit
+    def estimate_ram_required_per_iteration(chunk_size, num_time_points, element_size):
+        """Estimate the total RAM required per iteration to compute von Mises stress."""
+        size_per_stress_matrix = chunk_size * num_time_points * element_size
+        total_stress_memory = 8 * size_per_stress_matrix
+        return total_stress_memory / (1024 ** 3)  # Convert to GB
 
-@njit
-def estimate_ram_required_per_iteration(chunk_size, num_time_points):
-    """Estimate the total RAM required per iteration to compute von Mises stress."""
-    # Memory required for each actual stress matrix (actual_sx, actual_sy, etc.)
-    size_per_stress_matrix = chunk_size * num_time_points * ELEMENT_SIZE
-    # Total memory for all six stress matrices
-    total_stress_memory = 7 * size_per_stress_matrix
+    @staticmethod
+    def compute_principal_stresses(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord, start_idx,
+                                   end_idx):
+        """Compute actual stresses using matrix multiplication."""
+        actual_sx = torch.matmul(modal_sx[start_idx:end_idx, :], modal_coord)
+        actual_sy = torch.matmul(modal_sy[start_idx:end_idx, :], modal_coord)
+        actual_sz = torch.matmul(modal_sz[start_idx:end_idx, :], modal_coord)
+        actual_sxy = torch.matmul(modal_sxy[start_idx:end_idx, :], modal_coord)
+        actual_syz = torch.matmul(modal_syz[start_idx:end_idx, :], modal_coord)
+        actual_sxz = torch.matmul(modal_sxz[start_idx:end_idx, :], modal_coord)
 
-    return total_stress_memory / (1024**3)  # Convert to GB
-# endregion
+        return actual_sx.cpu().numpy(), actual_sy.cpu().numpy(), actual_sz.cpu().numpy(), actual_sxy.cpu().numpy(), actual_syz.cpu().numpy(), actual_sxz.cpu().numpy()
 
-# region Compute Von Mises stresses
-if not CUDA_ENABLED:
+    @staticmethod
     @njit(parallel=True)
-    def compute_von_mises(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
-        """Compute von Mises stress in a single-line vectorized manner to minimize memory usage."""
+    def compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
+        """Compute von Mises stress."""
         sigma_vm = np.sqrt(
             0.5 * ((actual_sx - actual_sy) ** 2 + (actual_sy - actual_sz) ** 2 + (actual_sz - actual_sx) ** 2) +
             6 * (actual_sxy ** 2 + actual_syz ** 2 + actual_sxz ** 2)
         )
         return sigma_vm
 
-if CUDA_ENABLED:
-    def compute_von_mises(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
-        """Compute von Mises stress in a single-line vectorized manner to minimize memory usage."""
-        sigma_vm = cp.sqrt(
-            0.5 * ((actual_sx - actual_sy) ** 2 + (actual_sy - actual_sz) ** 2 + (actual_sz - actual_sx) ** 2) +
-            6 * (actual_sxy ** 2 + actual_syz ** 2 + actual_sxz ** 2)
-        )
-        return cupy.asnumpy(sigma_vm)
-# endregion
+    def process_stress_results(self):
+        """Process stress results to compute von Mises stresses or fatigue damage."""
+        num_nodes, num_modes = self.modal_sx.shape
+        num_time_points = self.modal_coord.shape[1]
 
-'''
-def vectorized_rainflow(series):
-    """Perform optimized rainflow counting on a stress-time series using the three-point method with Numba."""
-    n = len(series)
+        chunk_size = self.get_chunk_size(num_nodes, num_time_points)
+        num_iterations = (num_nodes + chunk_size - 1) // chunk_size
+        print(f"Estimated number of iterations to avoid memory overflow: {num_iterations}")
 
-    # Calculate the differences and sign changes
-    diff = np.diff(series)
-    sign_change = np.diff(np.sign(diff))
+        memory_required_per_iteration = self.estimate_ram_required_per_iteration(chunk_size, num_time_points,
+                                                                                 self.ELEMENT_SIZE)
+        print(f"Estimated RAM required per iteration: {memory_required_per_iteration:.2f} GB")
 
-    # Peaks and valleys are where sign changes occur
-    peaks_indices_temp = np.where(sign_change != 0)[0] + 1
-    peaks_indices = np.empty(len(peaks_indices_temp) + 2, dtype=np.int64)
-    peaks_indices[0] = 0
-    peaks_indices[1:-1] = peaks_indices_temp
-    peaks_indices[-1] = n - 1
+        if self.write_to_disk:
+            vm_memmap = np.memmap('von_mises_stresses.dat', dtype='float32', mode='w+',
+                                  shape=(num_nodes, num_time_points))
 
-    peaks_and_valleys = series[peaks_indices]
+        for start_idx in range(0, num_nodes, chunk_size):
+            end_idx = min(start_idx + chunk_size, num_nodes)
 
-    # Initialize fixed-size arrays for stack, ranges, and counts
-    max_cycles = len(peaks_and_valleys)  # Maximum possible number of cycles
-    stack = np.empty(max_cycles, dtype=np.float64)
-    ranges = np.empty(max_cycles, dtype=np.float64)
-    counts = np.empty(max_cycles, dtype=np.float64)
-
-    stack_size = 0
-    range_count = 0
-
-    # Use a loop to find cycles
-    for i in range(len(peaks_and_valleys)):
-        stack[stack_size] = peaks_and_valleys[i]
-        stack_size += 1
-
-        while stack_size >= 3:
-            S0, S1, S2 = stack[stack_size - 3], stack[stack_size - 2], stack[stack_size - 1]
-            R1 = abs(S1 - S0)
-            R2 = abs(S2 - S1)
-
-            if R1 >= R2:
-                # Count half cycle
-                ranges[range_count] = R2
-                counts[range_count] = 0.5
-                range_count += 1
-
-                # Remove the middle point (shift elements)
-                stack[stack_size - 2] = stack[stack_size - 1]
-                stack_size -= 1
-            else:
-                break
-
-    # Handle remaining half-cycles
-    for i in range(stack_size - 1):
-        R = abs(stack[i + 1] - stack[i])
-        ranges[range_count] = R
-        counts[range_count] = 0.5
-        range_count += 1
-
-    return ranges[:range_count], counts[:range_count]
-'''
-
-# region Calculate damage
-def vectorized_rainflow(series):
-    #rf = rainflow(cyclecount.findap(series, tol=1e-6), use_pandas=False)
-    rf = rainflow(series, use_pandas=False)
-    return rf[:,0], rf[:,2]
-
-@njit(parallel=True)
-def vectorized_calculate_damage(stress_ranges, counts, A, m):
-    """
-    Calculate the total damage using the S-N curve parameters.
-    """
-    damage = np.sum(counts / (A / ((stress_ranges + 1e-10) ** m)))
-    return damage
-# endregion
-
-@njit
-def compute_actual_stresses(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord, start_idx,
-                            end_idx):
-    # Ensure the slices are contiguous
-    modal_sx = np.ascontiguousarray(modal_sx[start_idx:end_idx, :])
-    modal_sy = np.ascontiguousarray(modal_sy[start_idx:end_idx, :])
-    modal_sz = np.ascontiguousarray(modal_sz[start_idx:end_idx, :])
-    modal_sxy = np.ascontiguousarray(modal_sxy[start_idx:end_idx, :])
-    modal_syz = np.ascontiguousarray(modal_syz[start_idx:end_idx, :])
-    modal_sxz = np.ascontiguousarray(modal_sxz[start_idx:end_idx, :])
-    modal_coord = np.ascontiguousarray(modal_coord)
-
-    # Perform matrix multiplication
-    actual_sx = np.dot(modal_sx, modal_coord)
-    actual_sy = np.dot(modal_sy, modal_coord)
-    actual_sz = np.dot(modal_sz, modal_coord)
-    actual_sxy = np.dot(modal_sxy, modal_coord)
-    actual_syz = np.dot(modal_syz, modal_coord)
-    actual_sxz = np.dot(modal_sxz, modal_coord)
-
-    return actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
-
-def process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord):
-    """Process stress results to compute von Mises stresses or fatigue damage."""
-    # Determine matrix shapes
-    num_nodes, num_modes = modal_sx.shape
-    num_time_points = modal_coord.shape[1]
-
-    # Calculate optimal chunk size
-    chunk_size = get_chunk_size(num_nodes, num_time_points, num_modes)
-    num_iterations = (num_nodes + chunk_size - 1) // chunk_size  # Calculate the total number of iterations
-
-    print(f"Estimated number of iterations to avoid memory overflow: {num_iterations}")
-
-    # Calculate and display memory requirements per iteration
-    memory_required_per_iteration = estimate_ram_required_per_iteration(chunk_size, num_time_points)
-    print(f"Estimated RAM required per iteration: {memory_required_per_iteration:.2f} GB")
-
-    # Initialize memmap file if writing to disk
-    if WRITE_TO_DISK:
-        vm_memmap = np.memmap('von_mises_stresses.dat', dtype='float32', mode='w+', shape=(num_nodes, num_time_points))
-
-    for start_idx in range(0, num_nodes, chunk_size):
-        end_idx = min(start_idx + chunk_size, num_nodes)
-
-        # Perform matrix multiplications for the chunk
-        if not CUDA_ENABLED:
-            actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
-                compute_actual_stresses(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz,
-                                        modal_sxz, modal_coord, start_idx, end_idx)
-
-        if CUDA_ENABLED:
-            actual_sx = cp.dot(modal_sx[start_idx:end_idx, :], modal_coord)
-            actual_sy = cp.dot(modal_sy[start_idx:end_idx, :], modal_coord)
-            actual_sz = cp.dot(modal_sz[start_idx:end_idx, :], modal_coord)
-            actual_sxy = cp.dot(modal_sxy[start_idx:end_idx, :], modal_coord)
-            actual_syz = cp.dot(modal_syz[start_idx:end_idx, :], modal_coord)
-            actual_sxz = cp.dot(modal_sxz[start_idx:end_idx, :], modal_coord)
-
-        # Compute von Mises stresses
-        sigma_vm = compute_von_mises(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz)
-
-        # Discard actual stresses as soon as von Mises stress is computed
-        del actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
-        gc.collect()  # Force garbage collection to free memory
-
-        if WRITE_TO_DISK:
-            # Write to disk
-            vm_memmap[start_idx:end_idx, :] = sigma_vm
-        else:
+            # region Calculate principal stresses
             start_time = time.time()
-            A=1
-            m=-3
-            # Compute fatigue damage directly for each node
-            for node_idx in range(sigma_vm.shape[0]):
-                ranges, counts = vectorized_rainflow(sigma_vm[node_idx, :])
-                damage = vectorized_calculate_damage(ranges, counts, A, m)  # Example S-N curve parameters
-                #print(f"Node {start_idx + node_idx} damage: {damage:.4f}")
+            actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
+                self.compute_principal_stresses(self.modal_sx, self.modal_sy, self.modal_sz, self.modal_sxy,
+                                                self.modal_syz, self.modal_sxz, self.modal_coord, start_idx, end_idx)
+            print("Elapsed time for principal stresses: " + str(time.time() - start_time))
+            # endregion
 
+            # region Calculate von-Mises stresses
+            start_time = time.time()
+            sigma_vm = self.compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz)
+            print("Elapsed time for Von-Mises stresses: " + str(time.time() - start_time))
+            # endregion
 
-        # Inform user of memory status after each iteration
-        current_available_memory = psutil.virtual_memory().available * RAM_PERCENT
-        print(f"Iteration completed for nodes {start_idx} to {end_idx}. Available RAM: {current_available_memory / (1024**3):.2f} GB")
+            # region Free up some memory
+            start_time = time.time()
+            del actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
+            #gc.collect()  # Force garbage collection to free memory
+            print("Elapsed time for garbage collection: " + str(time.time() - start_time))
+            # endregion
 
-        fatigue_calc_endtime = time.time() - start_time
-        print("Elapsed time: " + str(fatigue_calc_endtime))
+            if self.write_to_disk:
+                vm_memmap[start_idx:end_idx, :] = sigma_vm
+            else:
+                start_time = time.time()
+                A = 1
+                m = -3
+                for node_idx in range(sigma_vm.shape[0]):
+                    ranges, counts = self.calculate_rainflow(sigma_vm[node_idx, :])
+                    damage = self.calculate_potential_damage_index(ranges, counts, A, m)
 
-    if WRITE_TO_DISK:
-        # Flush memory-mapped data to disk
-        vm_memmap.flush()
-        del vm_memmap
+            current_available_memory = psutil.virtual_memory().available * self.RAM_PERCENT
+            print(
+                f"Iteration completed for nodes {start_idx} to {end_idx}. Available RAM: {current_available_memory / (1024 ** 3):.2f} GB")
+            print("Elapsed time for calculating cycle counts and damage index: " + str(time.time() - start_time))
+
+        if self.write_to_disk:
+            vm_memmap.flush()
+            del vm_memmap
+
+    @staticmethod
+    def calculate_rainflow(series):
+        rf = rainflow(series, use_pandas=False)
+        return rf[:, 0], rf[:, 2]
+
+    @staticmethod
+    @njit(parallel=True)
+    def calculate_potential_damage_index(stress_ranges, counts, A, m):
+        """Calculate the total damage using the S-N curve parameters."""
+        damage = np.sum(counts / (A / ((stress_ranges + 1e-10) ** m)))
+        return damage
+# endregion
 
 # region Define modal inputs
-modal_sx = np.random.randn(30000, 40).astype(DTYPE)
-modal_sy = np.random.randn(30000, 40).astype(DTYPE)
-modal_sz = np.random.randn(30000, 40).astype(DTYPE)
-modal_sxy = np.random.randn(30000, 40).astype(DTYPE)
-modal_syz = np.random.randn(30000, 40).astype(DTYPE)
-modal_sxz = np.random.randn(30000, 40).astype(DTYPE)
-modal_coord = np.random.randn(40, 500000).astype(DTYPE)
-
-if CUDA_ENABLED:
-    # Convert Modal Inputs into CuPy arrays
-    modal_sx = cp.asarray(modal_sx)
-    modal_sy = cp.asarray(modal_sy)
-    modal_sz = cp.asarray(modal_sz)
-    modal_sxy = cp.asarray(modal_sxy)
-    modal_syz = cp.asarray(modal_syz)
-    modal_sxz = cp.asarray(modal_sxz)
-    modal_coord = cp.asarray(modal_coord)
+modal_sx = np.random.randn(30000, 40).astype(np.float32)
+modal_sy = np.random.randn(30000, 40).astype(np.float32)
+modal_sz = np.random.randn(30000, 40).astype(np.float32)
+modal_sxy = np.random.randn(30000, 40).astype(np.float32)
+modal_syz = np.random.randn(30000, 40).astype(np.float32)
+modal_sxz = np.random.randn(30000, 40).astype(np.float32)
+modal_coord = np.random.randn(40, 500000).astype(np.float32)
 # endregion
 
-# region Main routine
-start_time = time.time()
-process_stress_results(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord)
-endtime_main_calc = time.time() - start_time
+# region Run the main processor
+potential_damage_processor = PotentialDamageSolverByMSUP(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord)
 
+start_time = time.time()
+potential_damage_processor.process_stress_results()
+endtime_main_calc = time.time() - start_time
 print("Main calculation routine completed in: " + str(endtime_main_calc) + " seconds")
 # endregion
