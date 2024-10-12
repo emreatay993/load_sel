@@ -1524,8 +1524,12 @@ class WE_load_plotter(QWidget):
             list_of_all_time_points_as_quantity.append(Quantity(time_point, "sec"))
         # endregion
 
+        geometry_source = Model.AddGeometryImportGroup()
+        geometry_source.AddGeometryImport()
+
         # region Create a static analysis environment template for pre-stressed solution
         print("Creating the static analysis environment...")
+
         analysis_static = Model.AddStaticStructuralAnalysis()
         analysis_settings_static = analysis_static.AnalysisSettings
         analysis_settings_static.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
@@ -1535,6 +1539,8 @@ class WE_load_plotter(QWidget):
         # region Create a modal analysis environment template for MSUP based solution
         print("Creating the modal analysis environment...")
         analysis_modal = Model.AddModalAnalysis()
+        DataModel.GetObjectsByName("Pre - Stress(None)")[0]
+        analysis_modal.PreStressICEnvironment(analysis_static)
         analysis_settings_modal = analysis_modal.AnalysisSettings
         analysis_settings_modal.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
         analysis_settings_modal.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
