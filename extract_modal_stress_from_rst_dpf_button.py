@@ -7,15 +7,12 @@ folder = DataModel.GetObjectsByName("Modal")[0].WorkingDir
 filename = "file.rst"
 filepath = os.path.join(folder, filename)
 
-# Define stress operators manually
-stress_operators = {
-    "sx": dpf.operators.result.stress_X(),
-    "sy": dpf.operators.result.stress_Y(),
-    "sz": dpf.operators.result.stress_Z(),
-    "sxy": dpf.operators.result.stress_XY(),
-    "syz": dpf.operators.result.stress_YZ(),
-    "sxz": dpf.operators.result.stress_XZ()
-}
+op_SX  = dpf.operators.result.stress_X()
+op_SY  = dpf.operators.result.stress_Y()
+op_SZ  = dpf.operators.result.stress_Z()
+op_SXY = dpf.operators.result.stress_XY()
+op_SYZ = dpf.operators.result.stress_YZ()
+op_SXZ = dpf.operators.result.stress_XZ()
 
 dataSources = dpf.DataSources()
 dataSources.SetResultFilePath(filepath)
@@ -29,6 +26,14 @@ number_sets = model.TimeFreqSupport.NumberSets
 time_scoping.Ids = range(1, number_sets + 1)
 # endregion
 
+# # region Define scoping on a named selection (should exist inside rst already)
+# scoping_on_ns = dpf.operators.scoping.on_named_selection()
+# scoping_on_ns.inputs.requested_location.Connect('Nodal')
+# scoping_on_ns.inputs.named_selection_name.Connect('NS_Modal_Stress')
+# scoping_on_ns.inputs.data_sources.Connect(dataSources)
+# my_mesh_scoping = scoping_on_ns.outputs.mesh_scoping.GetData()
+# # endregion
+
 # region Define scoping on a named selection (should exist inside rst already)
 obj_of_NS_of_selected_nodes = DataModel.GetObjectsByName("NS_Modal_Expansion")[0]
 IDs_of_NS_of_selected_nodes = obj_of_NS_of_selected_nodes.Location.Ids
@@ -36,54 +41,214 @@ my_mesh_scoping = dpf.MeshScopingFactory.NodalScoping(IDs_of_NS_of_selected_node
 # endregion
 
 # region Connect input pins
-for op in stress_operators.values():
-    op.inputs.data_sources.Connect(dataSources)
-    op.inputs.time_scoping.Connect(time_scoping)
-    op.inputs.mesh_scoping.Connect(my_mesh_scoping)
+op_SX.inputs.data_sources.Connect(dataSources)
+op_SX.inputs.time_scoping.Connect(time_scoping)
+op_SX.inputs.mesh_scoping.Connect(my_mesh_scoping)
+
+op_SY.inputs.data_sources.Connect(dataSources)
+op_SY.inputs.time_scoping.Connect(time_scoping)
+op_SY.inputs.mesh_scoping.Connect(my_mesh_scoping)
+
+op_SZ.inputs.data_sources.Connect(dataSources)
+op_SZ.inputs.time_scoping.Connect(time_scoping)
+op_SZ.inputs.mesh_scoping.Connect(my_mesh_scoping)
+
+op_SXY.inputs.data_sources.Connect(dataSources)
+op_SXY.inputs.time_scoping.Connect(time_scoping)
+op_SXY.inputs.mesh_scoping.Connect(my_mesh_scoping)
+
+op_SYZ.inputs.data_sources.Connect(dataSources)
+op_SYZ.inputs.time_scoping.Connect(time_scoping)
+op_SYZ.inputs.mesh_scoping.Connect(my_mesh_scoping)
+
+op_SXZ.inputs.data_sources.Connect(dataSources)
+op_SXZ.inputs.time_scoping.Connect(time_scoping)
+op_SXZ.inputs.mesh_scoping.Connect(my_mesh_scoping)
 # endregion
 
 # Collect Modal Stress vs Nodes data in a Field Container
-fields_containers = {comp: op.outputs.fields_container.GetData() for comp, op in stress_operators.items()}
+my_fields_container_SX = op_SX.outputs.fields_container.GetData()
+my_fields_container_SY = op_SY.outputs.fields_container.GetData()
+my_fields_container_SZ = op_SZ.outputs.fields_container.GetData()
+my_fields_container_SXY = op_SXY.outputs.fields_container.GetData()
+my_fields_container_SYZ = op_SYZ.outputs.fields_container.GetData()
+my_fields_container_SXZ = op_SXZ.outputs.fields_container.GetData()
 
-# Get node IDs from the first field (assuming node IDs are consistent across modes)
-node_ids = fields_containers["sx"].GetFieldByTimeId(1).ScopingIds
+# Get node IDs from the first field
+node_ids = my_fields_container_SX.GetFieldByTimeId(1).ScopingIds
 
 # Initialize a dictionary to store stress data per node
-stress_data_per_node = {node_id: {comp: [] for comp in stress_components} for node_id in node_ids}
+stress_data_per_node_SX = {}
+stress_data_per_node_SY = {}
+stress_data_per_node_SZ = {}
+stress_data_per_node_SXY = {}
+stress_data_per_node_SYZ = {}
+stress_data_per_node_SXZ = {}
+
+# Initialize the stress_data_per_node dictionary with node IDs as keys
+for node_id in node_ids:
+    stress_data_per_node_SX[node_id]  = []
+    stress_data_per_node_SY[node_id]  = []
+    stress_data_per_node_SZ[node_id]  = []
+    stress_data_per_node_SXY[node_id] = []
+    stress_data_per_node_SYZ[node_id] = []
+    stress_data_per_node_SXZ[node_id] = []
 
 # Loop over each mode and collect stress data
 for field_no in time_scoping.Ids:
-    for comp in stress_components:
-        field = fields_containers[comp].GetFieldByTimeId(field_no)
-        field_node_ids = field.ScopingIds
-        stress_values = field.Data
+    # Get stress data for the current mode
+    field_SX  = my_fields_container_SX.GetFieldByTimeId(field_no)
+    field_SY  = my_fields_container_SY.GetFieldByTimeId(field_no)
+    field_SZ  = my_fields_container_SZ.GetFieldByTimeId(field_no)
+    field_SXY = my_fields_container_SXY.GetFieldByTimeId(field_no)
+    field_SYZ = my_fields_container_SYZ.GetFieldByTimeId(field_no)
+    field_SXZ = my_fields_container_SXZ.GetFieldByTimeId(field_no)
+    
+    field_node_ids = field_SX.ScopingIds
+    
+    stress_values_SX  = field_SX.Data
+    stress_values_SY  = field_SY.Data
+    stress_values_SZ  = field_SZ.Data
+    stress_values_SXY = field_SXY.Data
+    stress_values_SYZ = field_SYZ.Data
+    stress_values_SXZ = field_SXZ.Data
 
-        # Map stress values to node IDs
-        for idx, node_id in enumerate(field_node_ids):
-            stress_data_per_node[node_id][comp].append(stress_values[idx])
+    # Map stress values to node IDs
+    for idx, node_id in enumerate(field_node_ids):
+        stress_value_SX  = stress_values_SX[idx]
+        stress_value_SY  = stress_values_SY[idx]
+        stress_value_SZ  = stress_values_SZ[idx]
+        stress_value_SXY = stress_values_SXY[idx]
+        stress_value_SYZ = stress_values_SYZ[idx]
+        stress_value_SXZ = stress_values_SXZ[idx]
+        
+        stress_data_per_node_SX[node_id].append(stress_value_SX)
+        stress_data_per_node_SY[node_id].append(stress_value_SY)
+        stress_data_per_node_SZ[node_id].append(stress_value_SZ)
+        stress_data_per_node_SXY[node_id].append(stress_value_SXY)
+        stress_data_per_node_SYZ[node_id].append(stress_value_SYZ)
+        stress_data_per_node_SXZ[node_id].append(stress_value_SXZ)
 
-# Prepare CSV header: 'NodeID', 'SX_Mode1', 'SY_Mode1', ..., 'SX_ModeN', 'SY_ModeN', etc.
-csv_header = ["NodeID"]
-for field_no in time_scoping.Ids:
-    for comp in stress_components:
-        csv_header.append(comp + "_Mode" + str(field_no))
+# Prepare CSV header: 'NodeID', 'Mode1', 'Mode2', ..., 'ModeN'
+header_SX = ['NodeID'] + ['Mode%d_SX' % field_no for field_no in time_scoping.Ids]
+header_SY = ['NodeID'] + ['Mode%d_SY' % field_no for field_no in time_scoping.Ids]
+header_SZ = ['NodeID'] + ['Mode%d_SZ' % field_no for field_no in time_scoping.Ids]
+header_SXY = ['NodeID'] + ['Mode%d_SXY' % field_no for field_no in time_scoping.Ids]
+header_SYZ = ['NodeID'] + ['Mode%d_SYZ' % field_no for field_no in time_scoping.Ids]
+header_SXZ = ['NodeID'] + ['Mode%d_SXZ' % field_no for field_no in time_scoping.Ids]
 
-# Path to save the combined CSV file
-combined_csv_filename = "modal_stress.csv"
-combined_csv_filepath = os.path.join(folder, combined_csv_filename)
+# Path to save the CSV file
+filename_output_csv_SX  = "modal_stress_SX.csv"
+filename_output_csv_SY  = "modal_stress_SY.csv"
+filename_output_csv_SZ  = "modal_stress_SZ.csv"
+filename_output_csv_SXY = "modal_stress_SXY.csv"
+filename_output_csv_SYZ = "modal_stress_SYZ.csv"
+filename_output_csv_SXZ = "modal_stress_SXZ.csv"
 
-# Write combined data to a single CSV file
-with open(combined_csv_filepath, 'wb') as csvfile:
+filepath_output_csv_SX  = os.path.join(folder, filename_output_csv_SX)
+filepath_output_csv_SY  = os.path.join(folder, filename_output_csv_SY)
+filepath_output_csv_SZ  = os.path.join(folder, filename_output_csv_SZ)
+filepath_output_csv_SXY = os.path.join(folder, filename_output_csv_SXY)
+filepath_output_csv_SYZ = os.path.join(folder, filename_output_csv_SYZ)
+filepath_output_csv_SXZ = os.path.join(folder, filename_output_csv_SXZ)
+
+# Write data to CSV file
+with open(filepath_output_csv_SX, 'wb') as csvfile:
     csvwriter = csv.writer(csvfile)
     # Write the header
-    csvwriter.writerow(csv_header)
+    csvwriter.writerow(header_SX)
 
     # Write data rows
     for node_id in node_ids:
-        row = [node_id]
-        for mode_idx in range(len(time_scoping.Ids)):
-            for comp in stress_components:
-                row.append(stress_data_per_node[node_id][comp][mode_idx])
+        row = [node_id] + stress_data_per_node_SX[node_id]
+        csvwriter.writerow(row)
+        
+with open(filepath_output_csv_SY, 'wb') as csvfile:
+    csvwriter = csv.writer(csvfile)
+    # Write the header
+    csvwriter.writerow(header_SY)
+
+    # Write data rows
+    for node_id in node_ids:
+        row = [node_id] + stress_data_per_node_SY[node_id]
+        csvwriter.writerow(row)
+        
+with open(filepath_output_csv_SZ, 'wb') as csvfile:
+    csvwriter = csv.writer(csvfile)
+    # Write the header
+    csvwriter.writerow(header_SZ)
+
+    # Write data rows
+    for node_id in node_ids:
+        row = [node_id] + stress_data_per_node_SZ[node_id]
         csvwriter.writerow(row)
 
-print("Combined modal stress data has been successfully saved to " + combined_csv_filepath)
+with open(filepath_output_csv_SXY, 'wb') as csvfile:
+    csvwriter = csv.writer(csvfile)
+    # Write the header
+    csvwriter.writerow(header_SXY)
+
+    # Write data rows
+    for node_id in node_ids:
+        row = [node_id] + stress_data_per_node_SXY[node_id]
+        csvwriter.writerow(row)
+
+with open(filepath_output_csv_SYZ, 'wb') as csvfile:
+    csvwriter = csv.writer(csvfile)
+    # Write the header
+    csvwriter.writerow(header_SYZ)
+
+    # Write data rows
+    for node_id in node_ids:
+        row = [node_id] + stress_data_per_node_SYZ[node_id]
+        csvwriter.writerow(row)
+
+with open(filepath_output_csv_SXZ, 'wb') as csvfile:
+    csvwriter = csv.writer(csvfile)
+    # Write the header
+    csvwriter.writerow(header_SXZ)
+
+    # Write data rows
+    for node_id in node_ids:
+        row = [node_id] + stress_data_per_node_SXZ[node_id]
+        csvwriter.writerow(row)
+
+print("Modal stress data has been successfully saved to %s" % filepath_output_csv_SX)
+print("Modal stress data has been successfully saved to %s" % filepath_output_csv_SY)
+print("Modal stress data has been successfully saved to %s" % filepath_output_csv_SZ)
+print("Modal stress data has been successfully saved to %s" % filepath_output_csv_SXY)
+print("Modal stress data has been successfully saved to %s" % filepath_output_csv_SYZ)
+print("Modal stress data has been successfully saved to %s" % filepath_output_csv_SXZ)
+
+# Path to save the merged CSV file
+filename_output_csv_merged = "modal_stress.csv"
+filepath_output_csv_merged = os.path.join(folder, filename_output_csv_merged)
+
+# Prepare the merged CSV header
+merged_header = ['NodeID']
+merged_header += ['sx_Mode%s' % mode for mode in time_scoping.Ids]
+merged_header += ['sy_Mode%s' % mode for mode in time_scoping.Ids]
+merged_header += ['sz_Mode%s' % mode for mode in time_scoping.Ids]
+merged_header += ['sxy_Mode%s' % mode for mode in time_scoping.Ids]
+merged_header += ['syz_Mode%s' % mode for mode in time_scoping.Ids]
+merged_header += ['sxz_Mode%s' % mode for mode in time_scoping.Ids]
+
+# Write merged data to CSV file
+with open(filepath_output_csv_merged, 'wb') as csvfile:
+    csvwriter = csv.writer(csvfile)
+    # Write the header
+    csvwriter.writerow(merged_header)
+
+    # Write data rows
+    # Write data rows
+    for node_id in node_ids:
+        row = [node_id]
+        row.extend(stress_data_per_node_SX[node_id])
+        row.extend(stress_data_per_node_SY[node_id])
+        row.extend(stress_data_per_node_SZ[node_id])
+        row.extend(stress_data_per_node_SXY[node_id])
+        row.extend(stress_data_per_node_SYZ[node_id])
+        row.extend(stress_data_per_node_SXZ[node_id])
+        csvwriter.writerow(row)
+
+print("Merged modal stress data has been successfully saved to %s" % filepath_output_csv_merged)
