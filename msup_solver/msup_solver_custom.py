@@ -464,7 +464,7 @@ class MSUPSmartSolverTransient(QObject):
             # Compute Von Mises stress for the selected node
             sigma_vm = self.compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
                                                      actual_sxz)
-            print(f"Von Mises Stress calculated for Node {selected_node_idx}")
+            print(f"Von Mises Stress calculated for Node {selected_node_id}\n")
 
             return np.arange(sigma_vm.shape[1]), sigma_vm[0, :]  # time_points, stress_values
 
@@ -472,7 +472,7 @@ class MSUPSmartSolverTransient(QObject):
             # Compute Principal Stresses for the selected node
             s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
                                                          actual_sxz)
-            print(f"Principal Stresses calculated for Node {selected_node_idx}")
+            print(f"Principal Stresses calculated for Node {selected_node_id}\n")
 
             return np.arange(s1.shape[1]), s1[0, :]  # time_indices, stress_values
 
