@@ -460,6 +460,8 @@ class MSUPSmartSolverTransient(QObject):
             self.compute_normal_stresses_for_a_single_node(self.modal_sx, self.modal_sy, self.modal_sz, self.modal_sxy,
                                          self.modal_syz, self.modal_sxz, self.modal_coord, selected_node_idx)
 
+        selected_node_id = df_node_ids[selected_node_idx]
+
         if calculate_von_mises:
             # Compute Von Mises stress for the selected node
             sigma_vm = self.compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
