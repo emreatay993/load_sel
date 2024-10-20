@@ -604,7 +604,7 @@ class MSUPSmartSolverGUI(QWidget):
         self.time_history_checkbox.toggled.connect(self.toggle_single_node_solution_group)
 
         # Checkbox for Calculate Principal Stress
-        self.principal_stress_checkbox = QCheckBox('Principal Stress')
+        self.principal_stress_checkbox = QCheckBox('Max Principal Stress')
         self.principal_stress_checkbox.setStyleSheet("margin: 10px 0;")
         self.principal_stress_checkbox.toggled.connect(self.update_single_node_plot_based_on_checkboxes)
 
