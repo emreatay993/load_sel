@@ -1,0 +1,198 @@
+/batch
+/config,noeldb,1     ! force off writing results to database
+*get,_wallstrt,active,,time,wall
+! ANSYS input file written by Workbench version 2023 R2
+/assign,rstp,file,rst              ! Force Eigen analysis to write to file.rst because WB expects it
+/com,*********** Resuming The ANSYS db File from Modal Solution ***********
+resume,file,db
+*DIM,_wb_ProjectScratch_dir_Transient,string,248
+_wb_ProjectScratch_dir_Transient(1) = 'C:\Users\emre_\OneDrive\Desktop\J\ANSYS\Benchmark\Vibration_Fatigue\_ProjectScratch\Scr99E0\'
+*DIM,_wb_SolverFiles_dir_Transient,string,248
+_wb_SolverFiles_dir_Transient(1) = 'C:\Users\emre_\OneDrive\Desktop\J\ANSYS\Benchmark\Vibration_Fatigue\Vibration_Fatigue3_files\dp0\SYS-9\MECH\'
+*DIM,_wb_userfiles_dir_Transient,string,248
+_wb_userfiles_dir_Transient(1) = 'C:\Users\emre_\OneDrive\Desktop\J\ANSYS\Benchmark\Vibration_Fatigue\Vibration_Fatigue3_files\user_files\'
+/title,Vibration_Fatigue3--Transient (C5)
+! ****** Begin Custom Load Command Snippet ******
+/COM, ACT Extensions:
+/COM,     LSDYNA, 2023.2
+/COM,     5f463412-bd3e-484b-87e7-cbc0a665e474, wbex
+/COM,/COM,     AnsysForcedResponse, 2022.2
+/COM,     6ef906f8-8529-4043-bfde-45577efdf8c8, wbex
+/COM,/COM,     ANSYSMotion, 2023.2
+/COM,     20180725-3f81-49eb-9f31-41364844c769, wbex
+/COM,
+! ****** End   Custom Load Command Snippet ******
+/nopr
+/prep7
+/com,*********** Defining Loadings ***********
+RP_1 = 199      ! Set Remote Point Node ID to User Specified Name
+/com,*********** Create Remote Point "RP_I1 - PORT REAR MOUNT (CS-8013) 3" ***********
+! -------- Remote Point Used by "Moment" --------
+n,205,3.012500107e+02,5.000000075e+01,-4.499999993e+01
+*set,tid,5
+*set,cid,4
+et,cid,174
+et,tid,170
+keyo,tid,2,1               ! Don't fix the pilot node
+keyo,tid,4,111111
+keyo,cid,12,5              ! Bonded Contact 
+keyo,cid,4,1               ! Deformable RBE3 style load
+keyo,cid,2,2               ! MPC style contact
+eblock,10,,,10
+(15i9)
+      279        4        4        4        0      143      139      149      150
+      280        4        4        4        0      144      140      139      143
+      281        4        4        4        0      145      141      140      144
+      282        4        4        4        0      146      142      141      145
+      283        4        4        4        0      148      147      142      146
+      284        4        4        4        0      139      134      133      149
+      285        4        4        4        0      140      135      134      139
+      286        4        4        4        0      141      136      135      140
+      287        4        4        4        0      142      137      136      141
+      288        4        4        4        0      147      138      137      142
+-1
+*set,_npilot,205
+_npilot550=_npilot
+type,tid
+mat ,cid
+real,cid
+tshape,pilo
+en,289,_npilot
+tshape
+RP_1 = 205      ! Set Remote Point Node ID to User Specified Name
+/com,*********** Construct Moment Using Remote Attachment ***********
+
+*DIM,_loadvari112x,TABLE,4,1,1,TIME
+! Time values
+*TAXIS,_loadvari112x(1),1,0.,11.727,22.727,99.727
+! Load values
+_loadvari112x(1,1,1) = 7.
+_loadvari112x(2,1,1) = 11.
+_loadvari112x(3,1,1) = 33.
+_loadvari112x(4,1,1) = 55.
+
+
+
+*DIM,_loadvari112y,TABLE,4,1,1,TIME
+! Time values
+*TAXIS,_loadvari112y(1),1,0.,11.727,22.727,99.727
+! Load values
+_loadvari112y(1,1,1) = 0.
+_loadvari112y(2,1,1) = 0.
+_loadvari112y(3,1,1) = 0.
+_loadvari112y(4,1,1) = 0.
+
+
+
+*DIM,_loadvari112z,TABLE,4,1,1,TIME
+! Time values
+*TAXIS,_loadvari112z(1),1,0.,11.727,22.727,99.727
+! Load values
+_loadvari112z(1,1,1) = 0.
+_loadvari112z(2,1,1) = 0.
+_loadvari112z(3,1,1) = 0.
+_loadvari112z(4,1,1) = 0.
+
+
+fini
+/fcomp,rst,sparse		!	Result files compression using sparsification
+/com,*********** Performing Modal Re-start ***********
+/gopr
+/solu
+antype,modal,restart    ! restarting the modal analysis
+dmpoption,rst,no              ! Don't combine result files for DANSYS
+dmpopt,esav,no
+dmpopt,emat,no
+dmpopt,mode,no
+dmpopt,full,no
+dmpopt,mlv,no
+modcontrol,on
+thexpand,off     ! ignore thermal strains
+mxpand,,,,yes,,no,  ! expand element results, but not write them to file.mode
+outres,erase
+outres,all,none
+outres,strs,all
+fdele,all,all
+sfdele,all,all
+sfedele,all,all,all
+acel,0,0,0                 ! zero out the acceleration
+/com,*********** Setting and Solving Each Load Step ***********
+nsel,s,node,,205
+f,all,mx,1
+nsel,all
+solve
+/com,**********************
+/com *************** Write FE CONNECTORS ********* 
+CEWRITE,file,ce,,INTE
+fini
+/com,****************************************************************************
+/com,*******************    MSUP TRANSIENT SOLUTION      ************************
+/com,****************************************************************************
+/solu
+antype,4                   ! transient analysis
+trnopt,msup,,,,,,,,,yes                ! MSUP Transient analysis
+kbc,1                      ! stepped BC's since transient analysis
+_thickRatio=  0     ! Ratio of thick parts in the model
+eqsl,sparse,,,,,1
+outres,nsol,all
+dmprat,2.e-002      ! Constant Damping Ratio
+tintp,5.e-003       ! Numerical Damping
+autots,off                 ! Always constant time stepping for MSUP Transient
+deltim,1.5e-004
+time,0
+fdele,all,all
+sfdele,all,all
+sfedele,all,all,all
+acel,0,0,0                 ! zero out the acceleration
+! Dummy out LVSCALE command in order to set array size
+lvscale,0,1
+solve
+time,6.
+fdele,all,all
+sfdele,all,all
+sfedele,all,all,all
+acel,0,0,0                 ! zero out the acceleration
+/com,*********** Scaling Each Load Step for MSUP Solve ***********
+lvscale,%_loadvari112x%,1
+outres,erase
+outres,all,none
+outres,nsol,all
+solve
+/com,****************************************************
+/com,*************** FINISHED SOLVE FOR LS 1 *************
+fini
+save,file,db
+*get,_wallasol,active,,time,wall
+/nopr
+*get,_numnode,node,0,count
+*get,_numelem,elem,0,count
+*get, _MAXELEMNUM, elem, 0, NUM, MAX
+*get, _MAXNODENUM, node, 0, NUM, MAX,,,INTERNAL
+*get, _MAXELEMTYPE, etyp, 0, NUM, MAX
+*get, _MAXREALCONST, rcon, 0, NUM, MAX
+*get,_NSOLTHREADS,active,0,ntfs
+*get,_NSOLPROCESSES,active,0,npfs
+/gopr
+/post1
+xmlo,ENCODING,ISO-8859-1
+xmlo,parm
+/xml,parm,xml
+fini
+/gopr
+*get,_walldone,active,,time,wall
+_preptime=(_wallbsol-_wallstrt)*3600
+_solvtime=(_wallasol-_wallbsol)*3600
+_posttime=(_walldone-_wallasol)*3600
+_totaltim=(_walldone-_wallstrt)*3600
+*get,_dlbratio,active,0,solu,dlbr
+*get,_combtime,active,0,solu,comb
+*get,_ssmode,active,0,solu,ssmm
+*get,_ndofs,active,0,solu,ndof
+/fclean,rst,rstp,mode				!clean distributed files except specified
+/com,--- Total number of nodes = %_numnode%
+/com,--- Total number of elements = %_numelem%
+/com,--- Element load balance ratio = %_dlbratio%
+/com,--- Time to combine distributed files = %_combtime%
+/com,--- Sparse memory mode = %_ssmode%
+/com,--- Number of DOF = %_ndofs%
+/wb,file,end               ! done with WB generated input
