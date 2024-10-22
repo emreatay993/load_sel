@@ -2,6 +2,7 @@
 print("Importing libraries...")
 import sys
 import csv
+import math
 import pandas as pd
 import re
 from time import sleep
@@ -296,7 +297,7 @@ class WE_load_plotter(QWidget):
 
         main_layout.addWidget(tab_widget)
         self.setLayout(main_layout)
-        self.setWindowTitle("WE Load Visualizer - v0.93")
+        self.setWindowTitle("WE Load Visualizer - v0.94")
         self.showMaximized()
 
     def create_tab(self, name, setup_method):
@@ -1093,6 +1094,11 @@ class WE_load_plotter(QWidget):
             list_of_all_frequencies_as_quantity.append(Quantity(frequency_value, "Hz"))
         # endregion
 
+        # region Initialize geometry import
+        geometry_source = Model.AddGeometryImportGroup()
+        geometry_source.AddGeometryImport()
+        # endregion
+
         # region Create a static analysis environment template for pre-stressed solution
         print("Creating the static analysis environment...")
         analysis_static = Model.AddStaticStructuralAnalysis()
@@ -1130,23 +1136,22 @@ class WE_load_plotter(QWidget):
             print(f"Creating force & moment objects for {interface_name}...")
 
             # region Create remote force objects at each interface
-            remote_force = analysis_HR.AddRemoteForce()
-            remote_force.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
-            remote_force.Name = "RF_" + interface_name
-            remote_force.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to a remote point
-            remote_force.Location = RP_interface
-            remote_force.Suppressed = True
-            remote_force_index_name = "RF_" + str(interface_index_no)
-
+            force_HR = analysis_HR.AddRemoteForce()
+            force_HR.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
+            force_HR.Name = "RF_" + interface_name
+            force_HR.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to a remote point
+            force_HR.Location = RP_interface
+            force_HR.Suppressed = True
+            force_HR_index_name = "RF_" + str(interface_index_no)
 
             # Create moments at each interface
-            moment = analysis_HR.AddMoment()
-            moment.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
-            moment.Name = "RM_" + interface_name
-            moment.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote point
-            moment.Location = RP_interface
-            moment.Suppressed = True
-            moment_index_name = "RM_" + str(interface_index_no)
+            moment_HR = analysis_HR.AddMoment()
+            moment_HR.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
+            moment_HR.Name = "RM_" + interface_name
+            moment_HR.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote point
+            moment_HR.Location = RP_interface
+            moment_HR.Suppressed = True
+            moment_HR_index_name = "RM_" + str(interface_index_no)
             # endregion
 
             # region Define the numerical values of loads and their phase angles
@@ -1324,36 +1329,36 @@ class WE_load_plotter(QWidget):
             # region Populate load objects with numerical values obtained from each relevant interface
             print(f"Populating the input tabular data for {interface_name}...")
             # Define remote force frequencies
-            remote_force.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-            remote_force.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-            remote_force.ZComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-            remote_force.XPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-            remote_force.YPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-            remote_force.ZPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            force_HR.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            force_HR.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            force_HR.ZComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            force_HR.XPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            force_HR.YPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            force_HR.ZPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
 
             # Define remote force forces and angles
-            remote_force.XComponent.Output.DiscreteValues = list_of_fx_values
-            remote_force.YComponent.Output.DiscreteValues = list_of_fy_values
-            remote_force.ZComponent.Output.DiscreteValues = list_of_fz_values
-            remote_force.XPhaseAngle.Output.DiscreteValues = list_of_angle_fx_values
-            remote_force.YPhaseAngle.Output.DiscreteValues = list_of_angle_fy_values
-            remote_force.ZPhaseAngle.Output.DiscreteValues = list_of_angle_fz_values
+            force_HR.XComponent.Output.DiscreteValues = list_of_fx_values
+            force_HR.YComponent.Output.DiscreteValues = list_of_fy_values
+            force_HR.ZComponent.Output.DiscreteValues = list_of_fz_values
+            force_HR.XPhaseAngle.Output.DiscreteValues = list_of_angle_fx_values
+            force_HR.YPhaseAngle.Output.DiscreteValues = list_of_angle_fy_values
+            force_HR.ZPhaseAngle.Output.DiscreteValues = list_of_angle_fz_values
 
             # Define moment frequencies
-            moment.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-            moment.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-            moment.ZComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-            moment.XPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-            moment.YPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
-            moment.ZPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            moment_HR.XComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            moment_HR.YComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            moment_HR.ZComponent.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            moment_HR.XPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            moment_HR.YPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
+            moment_HR.ZPhaseAngle.Inputs[0].DiscreteValues = list_of_all_frequencies_as_quantity
 
             # Define moments and angles
-            moment.XComponent.Output.DiscreteValues = list_of_mx_values
-            moment.YComponent.Output.DiscreteValues = list_of_my_values
-            moment.ZComponent.Output.DiscreteValues = list_of_mz_values
-            moment.XPhaseAngle.Output.DiscreteValues = list_of_angle_mx_values
-            moment.YPhaseAngle.Output.DiscreteValues = list_of_angle_my_values
-            moment.ZPhaseAngle.Output.DiscreteValues = list_of_angle_mz_values
+            moment_HR.XComponent.Output.DiscreteValues = list_of_mx_values
+            moment_HR.YComponent.Output.DiscreteValues = list_of_my_values
+            moment_HR.ZComponent.Output.DiscreteValues = list_of_mz_values
+            moment_HR.XPhaseAngle.Output.DiscreteValues = list_of_angle_mx_values
+            moment_HR.YPhaseAngle.Output.DiscreteValues = list_of_angle_my_values
+            moment_HR.ZPhaseAngle.Output.DiscreteValues = list_of_angle_mz_values
             # endregion
 
             # region Define T1,T2,T3 and R1, R2, R3 loads via Command Objects
@@ -1362,19 +1367,19 @@ class WE_load_plotter(QWidget):
             command_snippet_RF.Name = "Commands_RF_" + interface_name
             command_snippet_RM.Name = "Commands_RM_" + interface_name
 
-            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx_real,"table_X_" + remote_force_index_name)
-            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy_real, "table_Y_" + remote_force_index_name)
-            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz_real, "table_Z_" + remote_force_index_name)
-            apdl_lines_RFxi = self.create_APDL_table(df_load_table_fx_imag,"table_Xi_" + remote_force_index_name)
-            apdl_lines_RFyi = self.create_APDL_table(df_load_table_fy_imag, "table_Yi_" + remote_force_index_name)
-            apdl_lines_RFzi = self.create_APDL_table(df_load_table_fz_imag, "table_Zi_" + remote_force_index_name)
+            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx_real,"table_X_" + force_HR_index_name)
+            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy_real, "table_Y_" + force_HR_index_name)
+            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz_real, "table_Z_" + force_HR_index_name)
+            apdl_lines_RFxi = self.create_APDL_table(df_load_table_fx_imag,"table_Xi_" + force_HR_index_name)
+            apdl_lines_RFyi = self.create_APDL_table(df_load_table_fy_imag, "table_Yi_" + force_HR_index_name)
+            apdl_lines_RFzi = self.create_APDL_table(df_load_table_fz_imag, "table_Zi_" + force_HR_index_name)
 
-            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx_real,"table_X_" + moment_index_name)
-            apdl_lines_RMy = self.create_APDL_table(df_load_table_my_real, "table_Y_" + moment_index_name)
-            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz_real, "table_Z_" + moment_index_name)
-            apdl_lines_RMxi = self.create_APDL_table(df_load_table_mx_imag,"table_Xi_" + moment_index_name)
-            apdl_lines_RMyi = self.create_APDL_table(df_load_table_my_imag, "table_Yi_" + moment_index_name)
-            apdl_lines_RMzi = self.create_APDL_table(df_load_table_mz_imag, "table_Zi_" + moment_index_name)
+            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx_real,"table_X_" + moment_HR_index_name)
+            apdl_lines_RMy = self.create_APDL_table(df_load_table_my_real, "table_Y_" + moment_HR_index_name)
+            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz_real, "table_Z_" + moment_HR_index_name)
+            apdl_lines_RMxi = self.create_APDL_table(df_load_table_mx_imag,"table_Xi_" + moment_HR_index_name)
+            apdl_lines_RMyi = self.create_APDL_table(df_load_table_my_imag, "table_Yi_" + moment_HR_index_name)
+            apdl_lines_RMzi = self.create_APDL_table(df_load_table_mz_imag, "table_Zi_" + moment_HR_index_name)
 
             command_snippet_RF.AppendText(''.join(apdl_lines_RFx))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFy))
@@ -1386,11 +1391,11 @@ class WE_load_plotter(QWidget):
             command_snippet_RF.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
 
             command_snippet_RF.AppendText(
-                f"f, all, fx, %{'table_X_' + remote_force_index_name}%, %{'table_Xi_' + remote_force_index_name}%\n")
+                f"f, all, fx, %{'table_X_' + force_HR_index_name}%, %{'table_Xi_' + force_HR_index_name}%\n")
             command_snippet_RF.AppendText(
-                f"f, all, fy, %{'table_Y_' + remote_force_index_name}%, %{'table_Yi_' + remote_force_index_name}%\n")
+                f"f, all, fy, %{'table_Y_' + force_HR_index_name}%, %{'table_Yi_' + force_HR_index_name}%\n")
             command_snippet_RF.AppendText(
-                f"f, all, fz, %{'table_Z_' + remote_force_index_name}%, %{'table_Zi_' + remote_force_index_name}%\n")
+                f"f, all, fz, %{'table_Z_' + force_HR_index_name}%, %{'table_Zi_' + force_HR_index_name}%\n")
             command_snippet_RF.AppendText("nsel,all\n")
 
             command_snippet_RM.AppendText(''.join(apdl_lines_RMx))
@@ -1403,11 +1408,11 @@ class WE_load_plotter(QWidget):
             command_snippet_RM.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
 
             command_snippet_RM.AppendText(
-                f"f, all, mx, %{'table_X_' + moment_index_name}%, %{'table_Xi_' + moment_index_name}%\n")
+                f"f, all, mx, %{'table_X_' + moment_HR_index_name}%, %{'table_Xi_' + moment_HR_index_name}%\n")
             command_snippet_RM.AppendText(
-                f"f, all, my, %{'table_Y_' + moment_index_name}%, %{'table_Yi_' + moment_index_name}%\n")
+                f"f, all, my, %{'table_Y_' + moment_HR_index_name}%, %{'table_Yi_' + moment_HR_index_name}%\n")
             command_snippet_RM.AppendText(
-                f"f, all, mz, %{'table_Z_' + moment_index_name}%, %{'table_Zi_' + moment_index_name}%\n")
+                f"f, all, mz, %{'table_Z_' + moment_HR_index_name}%, %{'table_Zi_' + moment_HR_index_name}%\n")
             command_snippet_RM.AppendText("nsel,all\n")
             # endregion
 
@@ -1419,13 +1424,13 @@ class WE_load_plotter(QWidget):
             if are_all_zeroes(interface_dicts_full[interface_name]["R1"],
                               interface_dicts_full[interface_name]["R2"],
                               interface_dicts_full[interface_name]["R3"]):
-                moment.Delete()
+                moment_HR.Delete()
                 command_snippet_RM.Delete()
 
             if are_all_zeroes(interface_dicts_full[interface_name]["T1"],
                               interface_dicts_full[interface_name]["T2"],
                               interface_dicts_full[interface_name]["T3"]):
-                remote_force.Delete()
+                force_HR.Delete()
                 command_snippet_RF.Delete()
             # endregion
 
@@ -1514,18 +1519,53 @@ class WE_load_plotter(QWidget):
         print("Updating the global variables...")
         # endregion
 
-        # region Initialize the list of frequency points extracted
+        # region Helper function to partition long dataframes of time vs. force / moment tabular data
+        @staticmethod
+        def partition_dataframe_for_load_input(df, partition_size):
+            partitions = []
+            prev_last_row = None  # To store the last row of the previous partition
+
+            # Get the column names (assuming 'TIME' is the first column and the data column is the second)
+            time_column = df.columns[0]
+            data_column = df.columns[1]
+
+            for i in range(0, len(df), partition_size):
+                partition = df[i:i + partition_size]
+
+                # Create a new row with 0 for both time and the corresponding data column
+                zero_row = pd.DataFrame({time_column: [0], data_column: [0]})
+
+                # If this is not the first partition, add the last row of the previous partition with the data set to 0
+                if prev_last_row is not None:
+                    prev_last_row_zero = prev_last_row.copy()
+                    prev_last_row_zero[data_column] = 0  # Set the data column to zero
+                    partition_with_last = pd.concat([zero_row, prev_last_row_zero, partition]).reset_index(drop=True)
+                else:
+                    # For the first partition, just add the zero row
+                    partition_with_last = pd.concat([zero_row, partition]).reset_index(drop=True)
+
+                # Store the last row of the current partition for the next iteration
+                prev_last_row = partition.tail(1)
+
+                partitions.append(partition_with_last)
+
+            return partitions
+        # endregion
+
+        # region Initialize the list of time points extracted
         # Create a separate list for FREQ
         list_of_all_time_points = self.result_df_full_part_load["TIME"].tolist()
 
-        # Convert list of frequencies to a list of frequencies as quantities (in Hz)
+        # Convert list of time points to a list of time points as quantities (in seconds)
         list_of_all_time_points_as_quantity = []
         for time_point in list_of_all_time_points:
             list_of_all_time_points_as_quantity.append(Quantity(time_point, "sec"))
         # endregion
 
+        # region Initialize geometry import
         geometry_source = Model.AddGeometryImportGroup()
         geometry_source.AddGeometryImport()
+        # endregion
 
         # region Create a static analysis environment template for pre-stressed solution
         print("Creating the static analysis environment...")
@@ -1539,14 +1579,14 @@ class WE_load_plotter(QWidget):
         # region Create a modal analysis environment template for MSUP based solution
         print("Creating the modal analysis environment...")
         analysis_modal = Model.AddModalAnalysis()
-        DataModel.GetObjectsByName("Pre - Stress(None)")[0]
-        analysis_modal.PreStressICEnvironment(analysis_static)
         analysis_settings_modal = analysis_modal.AnalysisSettings
+        analysis_settings_modal_IC = DataModel.GetObjectsByName("Pre-Stress (None)")[0]
+        analysis_settings_modal_IC.PreStressICEnvironment = analysis_static
         analysis_settings_modal.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
         analysis_settings_modal.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
         # endregion
 
-        # region Create tree objects in Mechanical for harmonic analysis and initialize analysis settings
+        # region Create tree objects in Mechanical for transient analysis and initialize analysis settings
         print("Creating the transient analysis environment...")
         analysis_TR = Model.AddTransientStructuralAnalysis()
         analysis_settings_TR = analysis_TR.AnalysisSettings
@@ -1560,50 +1600,51 @@ class WE_load_plotter(QWidget):
         analysis_settings_TR.PropertyByName("ConstantDampingValue").InternalValue = 0.02  # 2% damping by default
         analysis_settings_TR.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
         analysis_settings_TR.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
+        analysis_settings_TR.IncludeResidualVector = True
+        # endregion
+
+        # region Determine the number of partitions required
+        number_of_rows_in_mechanical = 50000
+        number_of_partitions = math.ceil(len(list_of_all_time_points) / number_of_rows_in_mechanical)
         # endregion
 
         # region Create load objects and their dependent objects for each interface
         interface_index_no = 1
         for interface_name in list_of_part_interface_names:
 
-            # region Create dependent objects (coordinate systems and remote points)
-            # Add a reference coordinate system for each interface
-            CS_interface = Model.CoordinateSystems.AddCoordinateSystem()
-            CS_interface.Name = "CS_" + interface_name
+            # region Create dependent objects
 
-            # Create remote points for each interface
-            RP_interface = Model.AddRemotePoint()
-            RP_interface.Name = "RP_" + interface_name
-            RP_interface.CoordinateSystem = CS_interface
-            RP_interface.PilotNodeAPDLName = "RP_" + str(interface_index_no)
+            # region Add a named selection for each interface face (or element face)
+            NS_interface = Model.AddNamedSelection()
+            NS_interface.Name = "NS_" + interface_name
             # endregion
 
-            # region Create remote force objects at each interface
-            remote_force_index_name = "RF_" + str(interface_index_no)
-            moment_index_name = "RM_" + str(interface_index_no)
+            # region Create force and/or moment objects at each interface
+            force_TR_index_name = "RF_" + str(interface_index_no)
+            moment_TR_index_name = "RM_" + str(interface_index_no)
             # endregion
 
-            # region Define the numerical values of loads
+            # region Define numerical values of loads
             # region Create force dataframes (which will serve as sources when creating APDL tables)
             # region Fx Dataframe
             df_load_table_fx = pd.DataFrame({
                 'TIME': list_of_all_time_points,
                 'T1': interface_dicts_full[interface_name]["T1"]})
-            df_load_table_fx.set_index('TIME', inplace=True)
+            #df_load_table_fx.set_index('TIME', inplace=True)
             # endregion
 
             # region Fy Dataframe
             df_load_table_fy = pd.DataFrame({
                 'TIME': list_of_all_time_points,
                 'T2': interface_dicts_full[interface_name]["T2"]})
-            df_load_table_fy.set_index('TIME', inplace=True)
+            #df_load_table_fy.set_index('TIME', inplace=True)
             # endregion
 
             # region Fz Dataframe
             df_load_table_fz = pd.DataFrame({
                 'TIME': list_of_all_time_points,
                 'T3': interface_dicts_full[interface_name]["T3"]})
-            df_load_table_fz.set_index('TIME', inplace=True)
+            #df_load_table_fz.set_index('TIME', inplace=True)
             # endregion
             # endregion
 
@@ -1612,40 +1653,85 @@ class WE_load_plotter(QWidget):
             df_load_table_mx = pd.DataFrame({
                 'TIME': list_of_all_time_points,
                 'R1': interface_dicts_full[interface_name]["R1"]})
-            df_load_table_mx.set_index('TIME', inplace=True)
+            #df_load_table_mx.set_index('TIME', inplace=True)
             # endregion
 
             # region My Dataframe
             df_load_table_my = pd.DataFrame({
                 'TIME': list_of_all_time_points,
                 'R2': interface_dicts_full[interface_name]["R2"]})
-            df_load_table_my.set_index('TIME', inplace=True)
+            #df_load_table_my.set_index('TIME', inplace=True)
             # endregion
 
             # region Mz Dataframe
             df_load_table_mz = pd.DataFrame({
                 'TIME': list_of_all_time_points,
                 'R3': interface_dicts_full[interface_name]["R3"]})
-            df_load_table_mz.set_index('TIME', inplace=True)
-            # endregion
+            #df_load_table_mz.set_index('TIME', inplace=True)
             # endregion
             # endregion
 
+            # region Partition force dataframes
+            print(f"Partitioning force data for {interface_name}...")
+
+            partitioned_df_load_table_fx = partition_dataframe_for_load_input(
+                df_load_table_fx, partition_size=100000)
+            partitioned_df_load_table_fy = partition_dataframe_for_load_input(
+                df_load_table_fy, partition_size=100000)
+            partitioned_df_load_table_fz = partition_dataframe_for_load_input(
+                df_load_table_fz, partition_size=100000)
+            # endregion
+
+            # region Partition moment dataFrames
+            print(f"Partitioning moment data for {interface_name}...")
+
+            partitioned_df_load_table_mx = partition_dataframe_for_load_input(
+                df_load_table_mx, partition_size=100000)
+            partitioned_df_load_table_my = partition_dataframe_for_load_input(
+                df_load_table_my, partition_size=100000)
+            partitioned_df_load_table_mz = partition_dataframe_for_load_input(
+                df_load_table_mz, partition_size=100000)
+            # endregion
+            # endregion
+
+            # region Define numerical values of loads as Quantity objects
+            def convert_partition_to_quantity(partitioned_dfs, key, unit):
+                partitioned_dfs_quantity = []
+                for df in partitioned_dfs:
+                    df_quantity = df.copy()
+                    # Convert the values from the column corresponding to the key (e.g., 'T1', 'R1')
+                    df_quantity[key] = [Quantity(value, unit) for value in df[key]]
+                    df_quantity['TIME'] = [Quantity(value, "sec") for value in df['TIME']]
+                    partitioned_dfs_quantity.append(df_quantity)
+                return partitioned_dfs_quantity
+
+            # Convert the partitioned DataFrames to quantity-based DataFrames
+            print('Converting partitioned force data into ANSYS Quantity objects...')
+            partitioned_df_load_table_fx_quantity = convert_partition_to_quantity(partitioned_df_load_table_fx, 'T1', "N")
+            partitioned_df_load_table_fy_quantity = convert_partition_to_quantity(partitioned_df_load_table_fy, 'T2', "N")
+            partitioned_df_load_table_fz_quantity = convert_partition_to_quantity(partitioned_df_load_table_fz, 'T3', "N")
+            print('Converting partitioned moment data into ANSYS Quantity objects...')
+            partitioned_df_load_table_mx_quantity = convert_partition_to_quantity(partitioned_df_load_table_mx, 'R1', "N mm")
+            partitioned_df_load_table_my_quantity = convert_partition_to_quantity(partitioned_df_load_table_my, 'R2', "N mm")
+            partitioned_df_load_table_mz_quantity = convert_partition_to_quantity(partitioned_df_load_table_mz, 'R3', "N mm")
+
+            # endregion
+
             # region Define T1,T2,T3 and R1, R2, R3 loads via Command Objects
-            print(f"Populating the input tabular data for {interface_name}...")
+            print(f"Populating the input tabular data for {interface_name} as APDL tables...")
             command_snippet_RF = analysis_TR.AddCommandSnippet()
             command_snippet_RM = analysis_TR.AddCommandSnippet()
             command_snippet_RF.Name = "Commands_RF_" + interface_name
             command_snippet_RM.Name = "Commands_RM_" + interface_name
 
 
-            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx,"table_X_" + remote_force_index_name)
-            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy, "table_Y_" + remote_force_index_name)
-            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz, "table_Z_" + remote_force_index_name)
+            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx,"table_X_" + force_TR_index_name)
+            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy, "table_Y_" + force_TR_index_name)
+            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz, "table_Z_" + force_TR_index_name)
 
-            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx,"table_X_" + moment_index_name)
-            apdl_lines_RMy = self.create_APDL_table(df_load_table_my, "table_Y_" + moment_index_name)
-            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz, "table_Z_" + moment_index_name)
+            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx,"table_X_" + moment_TR_index_name)
+            apdl_lines_RMy = self.create_APDL_table(df_load_table_my, "table_Y_" + moment_TR_index_name)
+            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz, "table_Z_" + moment_TR_index_name)
 
             command_snippet_RF.AppendText(''.join(apdl_lines_RFx))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFy))
@@ -1654,11 +1740,11 @@ class WE_load_plotter(QWidget):
             command_snippet_RF.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
 
             command_snippet_RF.AppendText(
-                f"f, all, fx, %{'table_X_' + remote_force_index_name}%\n")
+                f"f, all, fx, %{'table_X_' + force_TR_index_name}%\n")
             command_snippet_RF.AppendText(
-                f"f, all, fy, %{'table_Y_' + remote_force_index_name}%\n")
+                f"f, all, fy, %{'table_Y_' + force_TR_index_name}%\n")
             command_snippet_RF.AppendText(
-                f"f, all, fz, %{'table_Z_' + remote_force_index_name}%\n")
+                f"f, all, fz, %{'table_Z_' + force_TR_index_name}%\n")
             command_snippet_RF.AppendText("nsel,all\n")
 
             command_snippet_RM.AppendText(''.join(apdl_lines_RMx))
@@ -1668,12 +1754,65 @@ class WE_load_plotter(QWidget):
             command_snippet_RM.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
 
             command_snippet_RM.AppendText(
-                f"f, all, mx, %{'table_X_' + moment_index_name}%\n")
+                f"f, all, mx, %{'table_X_' + moment_TR_index_name}%\n")
             command_snippet_RM.AppendText(
-                f"f, all, my, %{'table_Y_' + moment_index_name}%\n")
+                f"f, all, my, %{'table_Y_' + moment_TR_index_name}%\n")
             command_snippet_RM.AppendText(
-                f"f, all, mz, %{'table_Z_' + moment_index_name}%\n")
+                f"f, all, mz, %{'table_Z_' + moment_TR_index_name}%\n")
             command_snippet_RM.AppendText("nsel,all\n")
+            # endregion
+
+            # region Define T1,T2,T3 and R1,R2,R3 loads as force and moment objects (partitioned)
+            print(f"Creating force & moment objects for {interface_name}...")
+
+            force_TR_index_name = "RF_" + str(interface_index_no) # Reserved for future implementation in APDL(not used)
+            moment_TR_index_name = "RM_" + str(interface_index_no)# Reserved for future implementation in APDL(not used)
+
+            force_TR_list_of_all_partitions = []  # List to collect all force_TR objects
+            moment_TR_list_of_all_partitions = []  # List to collect all moment_TR objects
+
+            for i in range(number_of_partitions):
+                # region Create remote force objects at each interface
+                force_TR = analysis_TR.AddRemoteForce()
+                force_TR.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
+                force_TR.Name = "RF_" + interface_name + "_Part_" + str(i+1)
+                force_TR.PropertyByName("GeometryDefineBy").InternalValue = 1  # Scoped to named selection
+                force_TR.Location = NS_interface
+                force_TR_list_of_all_partitions.append(force_TR)
+                # endregion
+
+                # region Create moments at each interface
+                moment_TR = analysis_TR.AddMoment()
+                moment_TR.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
+                moment_TR.Name = "RM_" + interface_name + "_Part_" + str(i+1)
+                moment_TR.PropertyByName("GeometryDefineBy").InternalValue = 1  # Scoped to named selection
+                moment_TR.Location = NS_interface
+                moment_TR_list_of_all_partitions.append(moment_TR)
+                # endregion
+
+                # region Populate load objects with numerical values obtained from each relevant interface
+                print(f"Populating the input tabular data for {interface_name}...")
+                # Define force time points for each partition
+                force_TR.XComponent.Inputs[0].DiscreteValues = partitioned_df_load_table_fx_quantity[i]['TIME'].tolist()
+                force_TR.YComponent.Inputs[0].DiscreteValues = partitioned_df_load_table_fy_quantity[i]['TIME'].tolist()
+                force_TR.ZComponent.Inputs[0].DiscreteValues = partitioned_df_load_table_fz_quantity[i]['TIME'].tolist()
+
+                # Assign force values (fx, fy, fz) for each partition
+                force_TR.XComponent.Output.DiscreteValues = partitioned_df_load_table_fx_quantity[i]['T1'].tolist()
+                force_TR.YComponent.Output.DiscreteValues = partitioned_df_load_table_fy_quantity[i]['T2'].tolist()
+                force_TR.ZComponent.Output.DiscreteValues = partitioned_df_load_table_fz_quantity[i]['T3'].tolist()
+
+                # Define moment time points for each partition
+                moment_TR.XComponent.Inputs[0].DiscreteValues = partitioned_df_load_table_mx_quantity[i]['TIME'].tolist()
+                moment_TR.YComponent.Inputs[0].DiscreteValues = partitioned_df_load_table_my_quantity[i]['TIME'].tolist()
+                moment_TR.ZComponent.Inputs[0].DiscreteValues = partitioned_df_load_table_mz_quantity[i]['TIME'].tolist()
+
+                # Assign moment values (mx, my, mz) for each partition
+                moment_TR.XComponent.Output.DiscreteValues = partitioned_df_load_table_mx_quantity[i]['R1'].tolist()
+                moment_TR.YComponent.Output.DiscreteValues = partitioned_df_load_table_my_quantity[i]['R2'].tolist()
+                moment_TR.ZComponent.Output.DiscreteValues = partitioned_df_load_table_mz_quantity[i]['R3'].tolist()
+                # endregion
+                # endregion
             # endregion
 
             # region Delete force or moment object if T1,T2,T3 or R1,R2,R3 components are all zero, making obj undefined
@@ -1684,13 +1823,13 @@ class WE_load_plotter(QWidget):
             if are_all_zeroes(interface_dicts_full[interface_name]["R1"],
                               interface_dicts_full[interface_name]["R2"],
                               interface_dicts_full[interface_name]["R3"]):
-                #moment.Delete()
+                [moment_TR.Delete() for moment_TR in moment_TR_list_of_all_partitions]
                 command_snippet_RM.Delete()
 
             if are_all_zeroes(interface_dicts_full[interface_name]["T1"],
                               interface_dicts_full[interface_name]["T2"],
                               interface_dicts_full[interface_name]["T3"]):
-                #remote_force.Delete()
+                [force_TR.Delete() for force_TR in force_TR_list_of_all_partitions]
                 command_snippet_RF.Delete()
             # endregion
 
