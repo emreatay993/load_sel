@@ -29,8 +29,6 @@ import plotly.io as pio
 from scipy.signal import butter, filtfilt
 
 print("Done.")
-
-
 # endregion
 
 # region Define global variables
@@ -50,9 +48,9 @@ def select_directory(title):
 def get_file_path(folder, file_suffix):
     return [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(file_suffix)]
 
-def read_max_pld_file(file_path):
+def read_pld_log_file(file_path):
     df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True)
-    df = df.iloc[:,1].dropna().to_frame()
+    df = df.iloc[:,5].dropna().str.strip().to_frame()
     return df.T
 
 def insert_phase_columns(df):
@@ -68,51 +66,12 @@ def insert_phase_columns(df):
     new_df = pd.concat(transformed_columns, axis=1)
     return new_df
 
-# LEGACY CODE - Delete if program runs read_pld_file successfully
-# def read_pld_file(file_path):
-#     with open(file_path, 'r') as file:
-#         lines = file.readlines()
-#         headers = [h.strip() for h in lines[0].strip().split('|')[1:-1]]
-#         processed_data = []
-#         for line in lines[2:]:
-#             line = line.strip()
-#             if not line.startswith('|'):
-#                 line = '|' + line
-#             if not line.endswith('|'):
-#                 line = line + '|'
-#             try:
-#                 data_cells = [float(re.sub('[^0-9.E-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
-#             except:
-#                 data_cells = [float(re.sub('[^0-9.e-]', '', cell.strip())) for cell in line.split('|')[1:-1]]
-#             processed_data.append(data_cells)
-#     return pd.DataFrame(processed_data, columns=headers)
-
 def read_pld_file(file_path):
-    # Read and process the file
-    with open(file_path, 'r') as file:
-        lines = file.readlines()
-        processed_data = []
-        for line in lines[0:]:
-            line = line.strip()
-            if not line.startswith('|'):
-                line = '|' + line
-            if not line.endswith('|'):
-                line = line + '|'
-            processed_data.append(line)
-
-    # Rewrite the modified file
-    with open(file_path, 'w') as file:
-        for line in processed_data:
-            file.write(line + '\n')  # Write processed lines
-
-    print(f"{file_path} has been rewritten to add any missing pipe column separator '|'. "
-          f"The program will now read the input PLD file(s) inside the folder of the specified dynamic event.")
-
-    df = pd.read_csv(file_path, sep='|', low_memory=False)
-    df.drop(df.index[0], inplace=True)
-    df.columns = df.columns.str.strip()
-    df.drop(df.columns[df.columns.str.contains('unnamed', case=False)], axis = 1, inplace = True)
-
+    df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True, comment='_', low_memeory=False)
+    df = df.apply(pd.to_numeric, errors='ignore')
+    df = df.dropna(how='all')
+    df = df.dropna(axis=1, how='all')
+    df.reset_index(drop=True, inplace=True)
     return df
 # endregion
 
@@ -132,7 +91,7 @@ def main():
             sys.exit()
 
         file_path_full_data = get_file_path(folder_selected_raw_data, 'full.pld')
-        file_path_headers_data = get_file_path(folder_selected_headers_data, 'max.pld')
+        file_path_headers_data = get_file_path(folder_selected_headers_data, '.log')
 
         if not file_path_full_data or not file_path_headers_data:
             QMessageBox.critical(None, 'Error', "No required files found! Exiting.")
@@ -141,7 +100,7 @@ def main():
         dfs = [read_pld_file(file_path) for file_path in file_path_full_data]
         df = pd.concat(dfs, ignore_index=True)
 
-        df_intf_before = read_max_pld_file(file_path_headers_data[0])
+        df_intf_before = read_pld_log_file(file_path_headers_data[0])
         if 'FREQ' in df.columns:
             df_intf = insert_phase_columns(df_intf_before)
             df_intf_labels = df_intf.iloc[0]
@@ -776,7 +735,7 @@ class WE_load_plotter(QWidget):
                 return
 
             file_path_full_data = get_file_path(folder_selected_raw_data, 'full.pld')
-            file_path_headers_data = get_file_path(folder_selected_headers_data, 'max.pld')
+            file_path_headers_data = get_file_path(folder_selected_headers_data, '.log')
 
             if not file_path_full_data or not file_path_headers_data:
                 QMessageBox.critical(None, 'Error', "No required files found! Exiting.")
@@ -793,7 +752,7 @@ class WE_load_plotter(QWidget):
                                      f"The X data columns of original and compared data are different:\nOriginal Data: {original_first_col}\nCompared Data: {compared_first_col}")
                 return
 
-            df_intf_before = read_max_pld_file(file_path_headers_data[0])
+            df_intf_before = read_pld_log_file(file_path_headers_data[0])
             if 'FREQ' in self.df.columns:
                 df_intf = insert_phase_columns(df_intf_before)
                 df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
