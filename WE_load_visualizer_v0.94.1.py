@@ -51,15 +51,8 @@ def get_file_path(folder, file_suffix):
     return [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(file_suffix)]
 
 def read_max_pld_file(file_path):
-    data = []
-    with open(file_path, 'r') as file:
-        reader = csv.reader(file, delimiter='|')
-        for row in reader:
-            cleaned_row = [cell.strip() for cell in row if cell.strip()]
-            if cleaned_row and not cleaned_row[0].startswith('_'):
-                if len(cleaned_row) >= 2:
-                    data.append([cleaned_row[0], cleaned_row[1]])
-    df = pd.DataFrame(data[1:])
+    df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True)
+    df = df.iloc[:,1].dropna().to_frame()
     return df.T
 
 def insert_phase_columns(df):
@@ -151,13 +144,13 @@ def main():
         df_intf_before = read_max_pld_file(file_path_headers_data[0])
         if 'FREQ' in df.columns:
             df_intf = insert_phase_columns(df_intf_before)
-            df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
-            new_columns = ['NO'] + ['FREQ'] + df_intf_labels.iloc[0].tolist()
+            df_intf_labels = df_intf.iloc[0]
+            new_columns = ['NO'] + ['FREQ'] + df_intf_labels.tolist()
             DATA_DOMAIN = 'FREQ'
         elif 'TIME' in df.columns:
             df_intf = df_intf_before
-            df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
-            new_columns = ['NO'] + ['TIME'] + df_intf_labels.iloc[0].tolist()
+            df_intf_labels = df_intf.iloc[0]
+            new_columns = ['NO'] + ['TIME'] + df_intf_labels.tolist()
             DATA_DOMAIN = 'TIME'
         additional_columns_needed = len(df.columns) - len(new_columns)
         if additional_columns_needed > 0:
