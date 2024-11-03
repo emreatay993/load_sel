@@ -1079,6 +1079,7 @@ class MSUPSmartSolverGUI(QWidget):
                 steady_sxy = None
                 steady_syz = None
                 steady_sxz = None
+                steady_node_ids = None
 
             # Check if modal node IDs are available
             if 'df_node_ids' not in globals() or df_node_ids is None:
@@ -1288,7 +1289,6 @@ class MainWindow(QMainWindow):
         # Set the central widget of the main window to the tab widget
         self.setCentralWidget(self.tab_widget)
 # endregion
-
 
 # region Run the main GUI
 if __name__ == '__main__':
