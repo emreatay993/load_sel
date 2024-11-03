@@ -127,24 +127,37 @@ class MSUPSmartSolverTransient(QObject):
 
         # Memory details
         self.total_memory = psutil.virtual_memory().total / (1024 ** 3)
-        self.available_memory = psutil.virtual_memory().available * self.RAM_PERCENT / (1024 ** 3)
+        self.available_memory = psutil.virtual_memory().available / (1024 ** 3)
+        self.allocated_memory = psutil.virtual_memory().available * self.RAM_PERCENT / (1024 ** 3)
         print(f"Total system RAM: {self.total_memory:.2f} GB")
         print(f"Available system RAM: {self.available_memory:.2f} GB")
+        print(f"Allocated system RAM: {self.allocated_memory:.2f} GB")
 
-    def get_chunk_size(self, num_nodes, num_time_points):
+    def get_chunk_size(self, num_nodes, num_time_points, calculate_von_mises, calculate_principal_stress,
+                       calculate_damage):
         """Calculate the optimal chunk size for processing based on available memory."""
-        available_memory = psutil.virtual_memory().available * self.RAM_PERCENT  # Use only 80% of available RAM
-        memory_per_node = (7 * num_time_points * self.ELEMENT_SIZE) + (num_time_points * self.ELEMENT_SIZE)
+        available_memory = psutil.virtual_memory().available * self.RAM_PERCENT
+        memory_per_node = self.get_memory_per_node(num_time_points, calculate_von_mises, calculate_principal_stress,
+                                                   calculate_damage)
         max_nodes_per_iteration = available_memory // memory_per_node
         return max(1, int(max_nodes_per_iteration))  # Ensure at least one node per chunk
 
-    @staticmethod
-    @njit
-    def estimate_ram_required_per_iteration(chunk_size, num_time_points, element_size):
-        """Estimate the total RAM required per iteration to compute von Mises stress."""
-        size_per_stress_matrix = chunk_size * num_time_points * element_size
-        total_stress_memory = 8 * size_per_stress_matrix
-        return total_stress_memory / (1024 ** 3)  # Convert to GB
+    def estimate_ram_required_per_iteration(self, chunk_size, memory_per_node):
+        """Estimate the total RAM required per iteration to compute stresses."""
+        total_memory = chunk_size * memory_per_node
+        return total_memory / (1024 ** 3)  # Convert bytes to GB
+
+    def get_memory_per_node(self, num_time_points, calculate_von_mises, calculate_principal_stress, calculate_damage):
+        num_arrays = 6  # For actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
+        if calculate_von_mises:
+            num_arrays += 1  # For sigma_vm
+        if calculate_principal_stress:
+            num_arrays += 3  # For s1, s2, s3
+        if calculate_damage:
+            num_arrays += 1  # For signed_von_mises
+        # Add any additional arrays used during calculations
+        memory_per_node = num_arrays * num_time_points * self.ELEMENT_SIZE
+        return memory_per_node
 
     @staticmethod
     def compute_normal_stresses(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord, start_idx,
@@ -178,7 +191,7 @@ class MSUPSmartSolverTransient(QObject):
         """Compute von Mises stress."""
         sigma_vm = np.sqrt(
             0.5 * ((actual_sx - actual_sy) ** 2 + (actual_sy - actual_sz) ** 2 + (actual_sz - actual_sx) ** 2) +
-            6 * (actual_sxy ** 2 + actual_syz ** 2 + actual_sxz ** 2)
+            3 * (actual_sxy ** 2 + actual_syz ** 2 + actual_sxz ** 2)
         )
         return sigma_vm
 
@@ -303,12 +316,19 @@ class MSUPSmartSolverTransient(QObject):
         num_nodes, num_modes = self.modal_sx.shape
         num_time_points = self.modal_coord.shape[1]
 
-        chunk_size = self.get_chunk_size(num_nodes, num_time_points)
+        # Get the chunk size based on selected options
+        chunk_size = self.get_chunk_size(
+            num_nodes, num_time_points,
+            calculate_von_mises, calculate_principal_stress, calculate_damage
+        )
+
         num_iterations = (num_nodes + chunk_size - 1) // chunk_size
         print(f"Estimated number of iterations to avoid memory overflow: {num_iterations}")
 
-        memory_required_per_iteration = self.estimate_ram_required_per_iteration(chunk_size, num_time_points,
-                                                                                 self.ELEMENT_SIZE)
+        memory_per_node = self.get_memory_per_node(
+            num_time_points, calculate_von_mises, calculate_principal_stress, calculate_damage
+        )
+        memory_required_per_iteration = self.estimate_ram_required_per_iteration(chunk_size, memory_per_node)
         print(f"Estimated RAM required per iteration: {memory_required_per_iteration:.2f} GB\n")
 
         if calculate_principal_stress:
@@ -404,7 +424,7 @@ class MSUPSmartSolverTransient(QObject):
             QApplication.processEvents()  # Keep UI responsive
 
             print(f"Iteration completed for nodes {start_idx} to {end_idx}. "
-                  f"Available RAM: {current_available_memory / (1024 ** 3):.2f} GB\n")
+                  f"Allocated system RAM: {current_available_memory / (1024 ** 3):.2f} GB\n")
 
         # Ensure all memmap files are flushed to disk
         if calculate_von_mises:
@@ -507,6 +527,8 @@ class Logger:
     def write(self, message):
         self.terminal.write(message)  # Keep writing to the original terminal
         self.log_stream.write(message)  # Save to internal buffer
+        self.log_stream.flush()  # Flush buffer to prevent any delay
+
         self.text_edit.moveCursor(QTextCursor.End)
         self.text_edit.insertPlainText(message)  # Add text to QTextEdit
         self.text_edit.moveCursor(QTextCursor.End)
@@ -523,6 +545,10 @@ class MSUPSmartSolverGUI(QWidget):
 
         # Initialize solver attribute
         self.solver = None
+
+        # Set up a single logger instance
+        self.logger = Logger(self.console_textbox)
+        sys.stdout = self.logger  # Redirect stdout to the logger
 
     def init_ui(self):
         # Set window background color
@@ -597,6 +623,24 @@ class MSUPSmartSolverGUI(QWidget):
         self.stress_file_path = QLineEdit()
         self.stress_file_path.setReadOnly(True)
         self.stress_file_path.setStyleSheet("background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
+
+        # Checkbox for "Include Steady-State Stress Field"
+        self.steady_state_checkbox = QCheckBox("Include Steady-State Stress Field")
+        self.steady_state_checkbox.setStyleSheet("margin: 10px 0;")
+        self.steady_state_checkbox.toggled.connect(self.toggle_steady_state_stress_inputs)
+
+        # Button and text box for steady-state stress file
+        self.steady_state_file_button = QPushButton('Read Vector Principal Stress File (.txt)')
+        self.steady_state_file_button.setStyleSheet(button_style)
+        self.steady_state_file_button.setFont(QFont('Arial', 8))
+        self.steady_state_file_button.clicked.connect(self.select_steady_state_file)
+        self.steady_state_file_button.setVisible(False)  # Initially hidden
+
+        self.steady_state_file_path = QLineEdit()
+        self.steady_state_file_path.setReadOnly(True)
+        self.steady_state_file_path.setStyleSheet(
+            "background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
+        self.steady_state_file_path.setVisible(False)  # Initially hidden
 
         # Checkbox for Time History Mode (Single Node)
         self.time_history_checkbox = QCheckBox('Time History Mode (Single Node)')
@@ -685,6 +729,9 @@ class MSUPSmartSolverGUI(QWidget):
         file_layout.addWidget(self.coord_file_path, 0, 1)
         file_layout.addWidget(self.stress_file_button, 1, 0)
         file_layout.addWidget(self.stress_file_path, 1, 1)
+        file_layout.addWidget(self.steady_state_checkbox, 2, 0, 1, 2)
+        file_layout.addWidget(self.steady_state_file_button, 3, 0)
+        file_layout.addWidget(self.steady_state_file_path, 3, 1)
 
         file_group.setLayout(file_layout)
 
@@ -699,7 +746,7 @@ class MSUPSmartSolverGUI(QWidget):
         self.output_group.setLayout(output_layout)
 
         # Group box for Single Node Solution (Node ID selection)
-        self.single_node_group = QGroupBox("Single Node Expansion")
+        self.single_node_group = QGroupBox("Scoping")
         self.single_node_group.setStyleSheet(group_box_style)
         self.single_node_label = QLabel("Select a node:")
         self.single_node_label.setFont(QFont('Arial', 8))
@@ -726,6 +773,11 @@ class MSUPSmartSolverGUI(QWidget):
         # Initially hide the "Calculate Damage Index" checkbox if "Calculate Von-Mises" is not checked
         self.toggle_damage_index_checkbox_visibility()
 
+    def toggle_steady_state_stress_inputs(self):
+        is_checked = self.steady_state_checkbox.isChecked()
+        self.steady_state_file_button.setVisible(is_checked)
+        self.steady_state_file_path.setVisible(is_checked)
+
     def toggle_damage_index_checkbox_visibility(self):
         if self.von_mises_checkbox.isChecked():
             self.damage_index_checkbox.setVisible(True)
@@ -735,18 +787,40 @@ class MSUPSmartSolverGUI(QWidget):
     def toggle_single_node_solution_group(self):
         try:
             if self.time_history_checkbox.isChecked():
+                # Enable mutual exclusivity for stress checkboxes in Time History Mode
+                self.principal_stress_checkbox.toggled.connect(self.on_principal_stress_toggled)
+                self.von_mises_checkbox.toggled.connect(self.on_von_mises_toggled)
+
+                # Show single node group and plot tab
                 self.single_node_group.setVisible(True)
-                self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_single_node_tab), True)
+                self.show_output_tab_widget.setTabVisible(
+                    self.show_output_tab_widget.indexOf(self.plot_single_node_tab), True)
             else:
+                # Remove mutual exclusivity when Time History Mode is off
+                self.principal_stress_checkbox.toggled.disconnect(self.on_principal_stress_toggled)
+                self.von_mises_checkbox.toggled.disconnect(self.on_von_mises_toggled)
+
+                # Hide single node group and plot tab
                 self.single_node_group.setVisible(False)
-                self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_single_node_tab), False)
+                self.show_output_tab_widget.setTabVisible(
+                    self.show_output_tab_widget.indexOf(self.plot_single_node_tab), False)
         except Exception as e:
             print(f"Error in toggling single node group visibility: {e}")
+
+    def on_principal_stress_toggled(self):
+        """Disable Von-Mises checkbox if Principal Stress checkbox is activated in Time History Mode."""
+        if self.time_history_checkbox.isChecked() and self.principal_stress_checkbox.isChecked():
+            self.von_mises_checkbox.setChecked(False)
+
+    def on_von_mises_toggled(self):
+        """Disable Principal Stress checkbox if Von-Mises checkbox is activated in Time History Mode."""
+        if self.time_history_checkbox.isChecked() and self.von_mises_checkbox.isChecked():
+            self.principal_stress_checkbox.setChecked(False)
 
     def update_single_node_plot(self):
         """Updates the placeholder plot inside the MatplotlibWidget."""
         x = np.linspace(0, 10, 100)
-        y = np.sin(x)
+        y = np.zeros(100)
         self.plot_single_node_tab.update_plot(x, y)
 
     def update_single_node_plot_based_on_checkboxes(self):
@@ -848,6 +922,61 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.append(f"Error processing modal stress file: {e}")
             self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
 
+    def select_steady_state_file(self):
+        file_name, _ = QFileDialog.getOpenFileName(self, 'Open Steady-State Stress File (Node numbers should be included)', '', 'Stress field exported from ANSYS Mechanical (*.txt)')
+        if file_name:
+            self.steady_state_file_path.setText(file_name)
+            self.process_steady_state_file(file_name)
+
+    def process_steady_state_file(self, filename):
+        try:
+            # Read the steady-state stress file into a DataFrame
+            df = pd.read_csv(filename, delimiter='\t', header=0)
+
+            # Log the success and shape of the DataFrame
+            self.console_textbox.append(f"Successfully processed steady-state stress file: {filename}\n")
+
+            # Extract columns if they exist
+            global steady_node_ids, steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz
+
+            # Attempt to retrieve node IDs if the column exists
+            if 'Node Number' in df.columns:
+                steady_node_ids = df['Node Number'].to_numpy().reshape(-1, 1)  # Reshape to (924, 1)
+                self.console_textbox.append(f"Number of node IDs extracted: {len(steady_node_ids)}")
+            else:
+                self.console_textbox.append("Error: 'Node Number' column not found in the file.\n")
+
+            self.console_textbox.append(f"Steady-state stress data shape (m x n): {df.shape}")
+
+            # Extract stress components by checking for exact column names
+            steady_sx = df['SX (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SX (MPa)' in df.columns else None
+            steady_sy = df['SY (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SY (MPa)' in df.columns else None
+            steady_sz = df['SZ (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SZ (MPa)' in df.columns else None
+            steady_sxy = df['SXY (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SXY (MPa)' in df.columns else None
+            steady_syz = df['SYZ (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SYZ (MPa)' in df.columns else None
+            steady_sxz = df['SXZ (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SXZ (MPa)' in df.columns else None
+
+            # Log extracted components and their shapes if they are present
+            stress_components = {
+                "SX": steady_sx, "SY": steady_sy, "SZ": steady_sz,
+                "SXY": steady_sxy, "SYZ": steady_syz, "SXZ": steady_sxz
+            }
+            self.console_textbox.append("Extracted steady-state stress components:")
+            for name, comp in stress_components.items():
+                if comp is not None:
+                    self.console_textbox.append(f"{name} shape: {comp.shape}")
+                else:
+                    self.console_textbox.append(f"{name} component not found in file.")
+
+            # Scroll to the bottom of the console output
+            self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
+
+        except Exception as e:
+            # Log error in console if the file cannot be read or processed
+            self.console_textbox.append(f"Error processing steady-state stress file: {filename}")
+            self.console_textbox.append(f"Error details: {e}")
+            self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
+
     def solve(self):
         try:
             # Ensure modal data are defined before proceeding
@@ -864,10 +993,6 @@ class MSUPSmartSolverGUI(QWidget):
             current_time = datetime.now()
 
             self.console_textbox.append(f"\n******************* BEGIN SOLVE ********************\nDatetime: {current_time}\n\n")
-
-            # Set up the logger to redirect print statements to the log terminal
-            logger = Logger(self.console_textbox)
-            sys.stdout = logger
 
             # Check if the checkboxes are checked
             calculate_damage = self.damage_index_checkbox.isChecked()
@@ -929,13 +1054,10 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.moveCursor(QTextCursor.End)  # Move cursor to the end
             self.console_textbox.ensureCursorVisible()  # Ensure the cursor is visible
 
-            # Reset stdout to default
-            sys.stdout = sys.__stdout__
         except Exception as e:
             self.console_textbox.append(f"Error during solving process: {e}, Datetime: {current_time}")
             self.console_textbox.moveCursor(QTextCursor.End)  # Move cursor to the end
             self.console_textbox.ensureCursorVisible()  # Ensure the cursor is visible
-            sys.stdout = sys.__stdout__
 
     @pyqtSlot(int)
     def update_progress_bar(self, value):
@@ -986,52 +1108,40 @@ class MatplotlibWidget(QWidget):
 
     def update_plot(self, x, y, node_id=None, is_principal_stress=False, is_von_mises=False):
         """Update the plot with new data and dynamically adjust the Y-axis label."""
-        self.ax.clear()  # Clear the existing plot
-        self.ax.plot(x, y)
 
-        # Turn on grid
-        # Enable major and minor grids
-        self.ax.grid(True, which='major', linestyle='-', linewidth=0.5)  # Major grid
-        self.ax.grid(True, which='minor', linestyle=':', linewidth=0.25, color='gray')  # Minor grid
+        # Clear the existing figure
+        self.figure.clear()
 
-        # Turn on the minor ticks
-        self.ax.minorticks_on()
+        # Create a single plot layout
+        ax = self.figure.add_subplot(1, 1, 1)
 
-        # Set the title with a smaller font size
-        if node_id:
-            self.ax.set_title(f"Node ID: {node_id}", fontsize=8)  # Decreased title font size
-        else:
-            self.ax.set_title("Plot", fontsize=8)  # Default title with smaller font size
-
-        # Set smaller font sizes for axis labels
-        self.ax.set_xlabel('Time [seconds]', fontsize=8)
-
-        # Dynamically adjust the Y-axis label based on the checkbox selection
+        # Determine which plot to create based on the active checkbox
         if is_principal_stress:
-            self.ax.set_ylabel(r'$\sigma_1$ [MPa]', fontsize=8)  # Principal Stress with LaTeX-style subscript
+            ax.plot(x, y, label=r'$\sigma_1$', color='red')
+            ax.set_title(f"Principal Stress (Node ID: {node_id})" if node_id else "Principal Stress", fontsize=8)
+            ax.set_ylabel(r'$\sigma_1$ [MPa]', fontsize=8)
         elif is_von_mises:
-            self.ax.set_ylabel(r'$\sigma_{VM}$ [MPa]', fontsize=8)  # Von Mises Stress with LaTeX-style subscript
-        else:
-            self.ax.set_ylabel('Y-Axis', fontsize=8)  # Default Y-Axis label
+            ax.plot(x, y, label=r'$\sigma_{VM}$', color='blue')
+            ax.set_title(f"Von-Mises Stress (Node ID: {node_id})" if node_id else "Von-Mises Stress", fontsize=8)
+            ax.set_ylabel(r'$\sigma_{VM}$ [MPa]', fontsize=8)
 
-        # Add a textbox to display the maximum Y value
+        # Set common properties
+        ax.set_xlabel('Time [seconds]', fontsize=8)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=5))  # Increase major ticks
+        ax.grid(True, which='both', linestyle='-', linewidth=0.5)  # Enable grid
+        ax.minorticks_on()
+        ax.tick_params(axis='both', which='major', labelsize=8)
+
+        # Add max value text
         max_y_value = np.max(y)
         textstr = f'Max Value: {max_y_value:.4f}'
-        self.ax.text(0.05, 0.95, textstr, transform=self.ax.transAxes,
-                     fontsize=8, verticalalignment='top', horizontalalignment='left',
-                     bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2'))
+        ax.text(0.05, 0.95, textstr, transform=ax.transAxes,
+                fontsize=8, verticalalignment='top', horizontalalignment='left',
+                bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2'))
 
-        # Adjust tick label font sizes
-        self.ax.tick_params(axis='both', which='major', labelsize=8)  # Decrease tick label size
-
-        # Manually adjust the margins to provide space for x-axis label
-        self.figure.subplots_adjust(bottom=0.2)  # Set bottom margin
-        self.canvas.draw()  # Redraw the canvas
-
-    def resizeEvent(self, event):
-        """Handle the resize event to make sure the plot fits the window."""
-        self.canvas.resize(event.size())  # Resize the canvas along with the widget
-        self.canvas.draw()  # Redraw the plot on resizing
+        # Adjust layout and redraw canvas
+        #self.figure.tight_layout()
+        self.canvas.draw()
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -1067,9 +1177,9 @@ class MainWindow(QMainWindow):
         """
         self.tab_widget.setStyleSheet(tab_style)
 
-        # Create the "Batch Solver" tab and add the MSUPSmartSolverGUI widget to it
+        # Create the "Main Window" tab and add the MSUPSmartSolverGUI widget to it
         self.batch_solver_tab = MSUPSmartSolverGUI()
-        self.tab_widget.addTab(self.batch_solver_tab, "Batch Solver")
+        self.tab_widget.addTab(self.batch_solver_tab, "Main Window")
 
         # Set the central widget of the main window to the tab widget
         self.setCentralWidget(self.tab_widget)
