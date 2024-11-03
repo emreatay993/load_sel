@@ -26,9 +26,9 @@ from matplotlib.ticker import MaxNLocator
 # endregion
 
 # region Define global variables
-NP_DTYPE = np.float64
-TORCH_DTYPE = torch.float64
-RESULT_DTYPE = 'float64'
+NP_DTYPE = np.float32
+TORCH_DTYPE = torch.float32
+RESULT_DTYPE = 'float32'
 
 IS_GPU_ACCELERATION_ENABLED = False
 
@@ -105,7 +105,9 @@ def get_node_index_from_id(node_id, node_ids):
 class MSUPSmartSolverTransient(QObject):
     progress_signal = pyqtSignal(int)
 
-    def __init__(self, modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord):
+    def __init__(self, modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord,
+                 steady_sx=None, steady_sy=None, steady_sz=None, steady_sxy=None, steady_syz=None, steady_sxz=None,
+                 steady_node_ids=None, modal_node_ids=None):
         super().__init__()
 
         # Global settings
@@ -124,6 +126,30 @@ class MSUPSmartSolverTransient(QObject):
         self.modal_syz = torch.tensor(modal_syz, dtype=TORCH_DTYPE).to(self.device)
         self.modal_sxz = torch.tensor(modal_sxz, dtype=TORCH_DTYPE).to(self.device)
         self.modal_coord = torch.tensor(modal_coord, dtype=TORCH_DTYPE).to(self.device)
+
+        # Store modal node IDs
+        self.modal_node_ids = modal_node_ids
+
+        # If steady-state stress data is provided, process it
+        if steady_sx is not None and steady_node_ids is not None:
+            self.is_steady_state_included = True
+            # Map steady-state stresses to modal nodes
+            self.steady_sx = self.map_steady_state_stresses(steady_sx, steady_node_ids, modal_node_ids)
+            self.steady_sy = self.map_steady_state_stresses(steady_sy, steady_node_ids, modal_node_ids)
+            self.steady_sz = self.map_steady_state_stresses(steady_sz, steady_node_ids, modal_node_ids)
+            self.steady_sxy = self.map_steady_state_stresses(steady_sxy, steady_node_ids, modal_node_ids)
+            self.steady_syz = self.map_steady_state_stresses(steady_syz, steady_node_ids, modal_node_ids)
+            self.steady_sxz = self.map_steady_state_stresses(steady_sxz, steady_node_ids, modal_node_ids)
+
+            # Convert to torch tensors and move to device
+            self.steady_sx = torch.tensor(self.steady_sx, dtype=TORCH_DTYPE).to(self.device)
+            self.steady_sy = torch.tensor(self.steady_sy, dtype=TORCH_DTYPE).to(self.device)
+            self.steady_sz = torch.tensor(self.steady_sz, dtype=TORCH_DTYPE).to(self.device)
+            self.steady_sxy = torch.tensor(self.steady_sxy, dtype=TORCH_DTYPE).to(self.device)
+            self.steady_syz = torch.tensor(self.steady_syz, dtype=TORCH_DTYPE).to(self.device)
+            self.steady_sxz = torch.tensor(self.steady_sxz, dtype=TORCH_DTYPE).to(self.device)
+        else:
+            self.is_steady_state_included = False
 
         # Memory details
         self.total_memory = psutil.virtual_memory().total / (1024 ** 3)
@@ -159,29 +185,51 @@ class MSUPSmartSolverTransient(QObject):
         memory_per_node = num_arrays * num_time_points * self.ELEMENT_SIZE
         return memory_per_node
 
-    @staticmethod
-    def compute_normal_stresses(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord, start_idx,
-                                   end_idx):
+    def map_steady_state_stresses(self, steady_stress, steady_node_ids, modal_node_ids):
+        """Map steady-state stress data to modal node IDs."""
+        # Create a mapping from steady_node_ids to steady_stress
+        steady_node_dict = dict(zip(steady_node_ids.flatten(), steady_stress.flatten()))
+        # Create an array for mapped steady stress
+        mapped_steady_stress = np.array([steady_node_dict.get(node_id, 0.0) for node_id in modal_node_ids], dtype=NP_DTYPE)
+        return mapped_steady_stress
+
+    def compute_normal_stresses(self, start_idx, end_idx):
         """Compute actual stresses using matrix multiplication."""
-        actual_sx = torch.matmul(modal_sx[start_idx:end_idx, :], modal_coord)
-        actual_sy = torch.matmul(modal_sy[start_idx:end_idx, :], modal_coord)
-        actual_sz = torch.matmul(modal_sz[start_idx:end_idx, :], modal_coord)
-        actual_sxy = torch.matmul(modal_sxy[start_idx:end_idx, :], modal_coord)
-        actual_syz = torch.matmul(modal_syz[start_idx:end_idx, :], modal_coord)
-        actual_sxz = torch.matmul(modal_sxz[start_idx:end_idx, :], modal_coord)
+        actual_sx = torch.matmul(self.modal_sx[start_idx:end_idx, :], self.modal_coord)
+        actual_sy = torch.matmul(self.modal_sy[start_idx:end_idx, :], self.modal_coord)
+        actual_sz = torch.matmul(self.modal_sz[start_idx:end_idx, :], self.modal_coord)
+        actual_sxy = torch.matmul(self.modal_sxy[start_idx:end_idx, :], self.modal_coord)
+        actual_syz = torch.matmul(self.modal_syz[start_idx:end_idx, :], self.modal_coord)
+        actual_sxz = torch.matmul(self.modal_sxz[start_idx:end_idx, :], self.modal_coord)
+
+        # Add steady-state stresses if included
+        if self.is_steady_state_included:
+            actual_sx += self.steady_sx[start_idx:end_idx].unsqueeze(1)
+            actual_sy += self.steady_sy[start_idx:end_idx].unsqueeze(1)
+            actual_sz += self.steady_sz[start_idx:end_idx].unsqueeze(1)
+            actual_sxy += self.steady_sxy[start_idx:end_idx].unsqueeze(1)
+            actual_syz += self.steady_syz[start_idx:end_idx].unsqueeze(1)
+            actual_sxz += self.steady_sxz[start_idx:end_idx].unsqueeze(1)
 
         return actual_sx.cpu().numpy(), actual_sy.cpu().numpy(), actual_sz.cpu().numpy(), actual_sxy.cpu().numpy(), actual_syz.cpu().numpy(), actual_sxz.cpu().numpy()
 
-    @staticmethod
-    def compute_normal_stresses_for_a_single_node(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
-                                                       modal_coord, selected_node_idx):
+    def compute_normal_stresses_for_a_single_node(self, selected_node_idx):
         """Compute actual stresses using matrix multiplication."""
-        actual_sx = torch.matmul(modal_sx[selected_node_idx: selected_node_idx +1, :], modal_coord)
-        actual_sy = torch.matmul(modal_sy[selected_node_idx: selected_node_idx +1, :], modal_coord)
-        actual_sz = torch.matmul(modal_sz[selected_node_idx: selected_node_idx +1, :], modal_coord)
-        actual_sxy = torch.matmul(modal_sxy[selected_node_idx: selected_node_idx +1, :], modal_coord)
-        actual_syz = torch.matmul(modal_syz[selected_node_idx: selected_node_idx +1, :], modal_coord)
-        actual_sxz = torch.matmul(modal_sxz[selected_node_idx: selected_node_idx +1, :], modal_coord)
+        actual_sx = torch.matmul(self.modal_sx[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
+        actual_sy = torch.matmul(self.modal_sy[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
+        actual_sz = torch.matmul(self.modal_sz[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
+        actual_sxy = torch.matmul(self.modal_sxy[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
+        actual_syz = torch.matmul(self.modal_syz[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
+        actual_sxz = torch.matmul(self.modal_sxz[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
+
+        # Add steady-state stresses if included
+        if self.is_steady_state_included:
+            actual_sx += self.steady_sx[selected_node_idx].unsqueeze(0)
+            actual_sy += self.steady_sy[selected_node_idx].unsqueeze(0)
+            actual_sz += self.steady_sz[selected_node_idx].unsqueeze(0)
+            actual_sxy += self.steady_sxy[selected_node_idx].unsqueeze(0)
+            actual_syz += self.steady_syz[selected_node_idx].unsqueeze(0)
+            actual_sxz += self.steady_sxz[selected_node_idx].unsqueeze(0)
 
         return actual_sx.cpu().numpy(), actual_sy.cpu().numpy(), actual_sz.cpu().numpy(), actual_sxy.cpu().numpy(), actual_syz.cpu().numpy(), actual_sxz.cpu().numpy()
 
@@ -354,8 +402,7 @@ class MSUPSmartSolverTransient(QObject):
             # Calculate normal stresses
             start_time = time.time()
             actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
-                self.compute_normal_stresses(self.modal_sx, self.modal_sy, self.modal_sz, self.modal_sxy,
-                                             self.modal_syz, self.modal_sxz, self.modal_coord, start_idx, end_idx)
+                self.compute_normal_stresses(start_idx, end_idx)
             print(f"Elapsed time for normal stresses: {(time.time() - start_time):.3f} seconds")
 
             if calculate_von_mises:
@@ -477,8 +524,7 @@ class MSUPSmartSolverTransient(QObject):
         """
         # Fetch stress data for the selected node
         actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
-            self.compute_normal_stresses_for_a_single_node(self.modal_sx, self.modal_sy, self.modal_sz, self.modal_sxy,
-                                         self.modal_syz, self.modal_sxz, self.modal_coord, selected_node_idx)
+            self.compute_normal_stresses_for_a_single_node(selected_node_idx)
 
         selected_node_id = df_node_ids[selected_node_idx]
 
@@ -630,7 +676,7 @@ class MSUPSmartSolverGUI(QWidget):
         self.steady_state_checkbox.toggled.connect(self.toggle_steady_state_stress_inputs)
 
         # Button and text box for steady-state stress file
-        self.steady_state_file_button = QPushButton('Read Vector Principal Stress File (.txt)')
+        self.steady_state_file_button = QPushButton('Read Full Stress Tensor File (.txt)')
         self.steady_state_file_button.setStyleSheet(button_style)
         self.steady_state_file_button.setFont(QFont('Arial', 8))
         self.steady_state_file_button.clicked.connect(self.select_steady_state_file)
@@ -777,6 +823,10 @@ class MSUPSmartSolverGUI(QWidget):
         is_checked = self.steady_state_checkbox.isChecked()
         self.steady_state_file_button.setVisible(is_checked)
         self.steady_state_file_path.setVisible(is_checked)
+
+        # Clear the file path text if the checkbox is unchecked
+        if not is_checked:
+            self.steady_state_file_path.clear()
 
     def toggle_damage_index_checkbox_visibility(self):
         if self.von_mises_checkbox.isChecked():
@@ -941,7 +991,7 @@ class MSUPSmartSolverGUI(QWidget):
 
             # Attempt to retrieve node IDs if the column exists
             if 'Node Number' in df.columns:
-                steady_node_ids = df['Node Number'].to_numpy().reshape(-1, 1)  # Reshape to (924, 1)
+                steady_node_ids = df['Node Number'].to_numpy().reshape(-1, 1)
                 self.console_textbox.append(f"Number of node IDs extracted: {len(steady_node_ids)}")
             else:
                 self.console_textbox.append("Error: 'Node Number' column not found in the file.\n")
@@ -981,7 +1031,8 @@ class MSUPSmartSolverGUI(QWidget):
         try:
             # Ensure modal data are defined before proceeding
             global modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord
-            if modal_sx is None or modal_sy is None or modal_sz is None or modal_sxy is None or modal_syz is None or modal_sxz is None or modal_coord is None:
+            if (modal_sx is None or modal_sy is None or modal_sz is None or modal_sxy is None
+                    or modal_syz is None or modal_sxz is None or modal_coord is None):
                 self.console_textbox.append("Please load the modal coordinate and stress files before solving.")
                 return
 
@@ -1002,6 +1053,39 @@ class MSUPSmartSolverGUI(QWidget):
             # Check if "Time History Mode" is enabled
             is_time_history_mode = self.time_history_checkbox.isChecked()
 
+            # Check for steady-state stress inclusion
+            is_include_steady_state = self.steady_state_checkbox.isChecked()
+
+            # # Initialize steady-state stress variables
+            global steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz, steady_node_ids
+
+            # If steady-state stress inclusion is requested
+            if is_include_steady_state:
+                if (steady_sx is None or
+                    steady_sy is None or
+                    steady_sz is None or
+                    steady_sxy is None or
+                    steady_syz is None or
+                    steady_sxz is None or
+                    steady_node_ids is None):
+                    self.console_textbox.append("Error: Steady-state stress data is not processed yet.")
+                    self.progress_bar.setVisible(False)
+                    return
+            else:
+                # Assign steady-state stress variables as empty
+                steady_sx = None
+                steady_sy = None
+                steady_sz = None
+                steady_sxy = None
+                steady_syz = None
+                steady_sxz = None
+
+            # Check if modal node IDs are available
+            if 'df_node_ids' not in globals() or df_node_ids is None:
+                self.console_textbox.append("Error: Modal node IDs are not available.")
+                self.progress_bar.setVisible(False)
+                return
+
             if is_time_history_mode:
                 # Process only the selected node for time history mode
                 selected_node_id = int(self.node_combo_box.currentText())  # Get selected node ID as index
@@ -1010,8 +1094,18 @@ class MSUPSmartSolverGUI(QWidget):
                 self.console_textbox.append(f"Time History Mode enabled for Node {selected_node_id}\n")
 
                 # Create an instance of the solver
-                self.solver = MSUPSmartSolverTransient(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
-                                                       modal_coord)
+                self.solver = MSUPSmartSolverTransient(
+                    modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                    modal_coord,
+                    steady_sx=steady_sx,
+                    steady_sy=steady_sy,
+                    steady_sz=steady_sz,
+                    steady_sxy=steady_sxy,
+                    steady_syz=steady_syz,
+                    steady_sxz=steady_sxz,
+                    steady_node_ids=steady_node_ids,
+                    modal_node_ids=df_node_ids
+                )
 
                 # Use the new method for single node processing
                 time_indices, stress_values = self.solver.process_results_for_a_single_node(
@@ -1027,11 +1121,21 @@ class MSUPSmartSolverGUI(QWidget):
                                                           is_von_mises=calculate_von_mises)
 
                 self.progress_bar.setVisible(False)  # Hide progress bar for single-node operation
-                return  # Exit early, no need to write files or calculate damage
+                return  # Exit early, no need to write files
 
             # Create an instance of MSUPSmartSolverTransient for batch solver
-            self.solver = MSUPSmartSolverTransient(modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
-                                                   modal_coord)
+            self.solver = MSUPSmartSolverTransient(
+                modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                modal_coord,
+                steady_sx=steady_sx,
+                steady_sy=steady_sy,
+                steady_sz=steady_sz,
+                steady_sxy=steady_sxy,
+                steady_syz=steady_syz,
+                steady_sxz=steady_sxz,
+                steady_node_ids=steady_node_ids,
+                modal_node_ids=df_node_ids
+            )
 
             # Connect the solver's progress signal to the progress bar update slot
             self.solver.progress_signal.connect(self.update_progress_bar)
@@ -1148,8 +1252,8 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.1')
-        self.setGeometry(100, 100, 600, 620)
+        self.setWindowTitle('MSUP Smart Solver - v0.5')
+        self.setGeometry(40, 40, 600, 670)
 
         # Create a QTabWidget
         self.tab_widget = QTabWidget()
