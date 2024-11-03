@@ -31,7 +31,7 @@ from scipy.signal import butter, filtfilt
 print("Done.")
 # endregion
 
-# region Define global variables
+# region Define global variables / functions
 
 # endregion
 
@@ -50,7 +50,7 @@ def get_file_path(folder, file_suffix):
 
 def read_pld_log_file(file_path):
     df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True)
-    df = df.iloc[:,5].dropna().str.strip().to_frame()
+    df = df.iloc[:,5].dropna().str.strip().to_frame() # set df.iloc[:,1]... for max.pld type header files
     return df.T
 
 def insert_phase_columns(df):
@@ -67,10 +67,11 @@ def insert_phase_columns(df):
     return new_df
 
 def read_pld_file(file_path):
-    df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True, comment='_', low_memeory=False)
+    df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True, comment='_', low_memory=False)
     df = df.apply(pd.to_numeric, errors='ignore')
     df = df.dropna(how='all')
     df = df.dropna(axis=1, how='all')
+    df.columns = df.columns.str.strip()
     df.reset_index(drop=True, inplace=True)
     return df
 # endregion
@@ -909,8 +910,6 @@ class WE_load_plotter(QWidget):
             QMessageBox.information(self, "Selection Required", "Please select a valid side.")
             return
         # endregion
-
-        # Otherwise,
         try:
             # region Extract the raw data to be used as inputs for interfaces in case user wants to take a look at them
             side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
@@ -1572,6 +1571,17 @@ class WE_load_plotter(QWidget):
             # endregion
 
             # region Create force and/or moment objects at each interface
+            # Add a reference coordinate system for each interface
+            CS_interface = Model.CoordinateSystems.AddCoordinateSystem()
+            CS_interface.Name = "CS_" + interface_name
+
+            # Create remote points for each interface
+            RP_interface = Model.AddRemotePoint()
+            RP_interface.Name = "RP_" + interface_name
+            RP_interface.CoordinateSystem = CS_interface
+            RP_interface.PilotNodeAPDLName = "RP_" + str(interface_index_no)
+            # endregion
+
             force_TR_index_name = "RF_" + str(interface_index_no)
             moment_TR_index_name = "RM_" + str(interface_index_no)
             # endregion
@@ -1627,22 +1637,22 @@ class WE_load_plotter(QWidget):
             print(f"Partitioning force data for {interface_name}...")
 
             partitioned_df_load_table_fx = partition_dataframe_for_load_input(
-                df_load_table_fx, partition_size=100000)
+                df_load_table_fx, partition_size=50000)
             partitioned_df_load_table_fy = partition_dataframe_for_load_input(
-                df_load_table_fy, partition_size=100000)
+                df_load_table_fy, partition_size=50000)
             partitioned_df_load_table_fz = partition_dataframe_for_load_input(
-                df_load_table_fz, partition_size=100000)
+                df_load_table_fz, partition_size=50000)
             # endregion
 
             # region Partition moment dataFrames
             print(f"Partitioning moment data for {interface_name}...")
 
             partitioned_df_load_table_mx = partition_dataframe_for_load_input(
-                df_load_table_mx, partition_size=100000)
+                df_load_table_mx, partition_size=50000)
             partitioned_df_load_table_my = partition_dataframe_for_load_input(
-                df_load_table_my, partition_size=100000)
+                df_load_table_my, partition_size=50000)
             partitioned_df_load_table_mz = partition_dataframe_for_load_input(
-                df_load_table_mz, partition_size=100000)
+                df_load_table_mz, partition_size=50000)
             # endregion
             # endregion
 
@@ -1724,12 +1734,14 @@ class WE_load_plotter(QWidget):
             moment_TR_list_of_all_partitions = []  # List to collect all moment_TR objects
 
             for i in range(number_of_partitions):
+                print(f"Applying the partitioned load: {i+1}/{number_of_partitions}")
                 # region Create remote force objects at each interface
                 force_TR = analysis_TR.AddRemoteForce()
                 force_TR.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
                 force_TR.Name = "RF_" + interface_name + "_Part_" + str(i+1)
                 force_TR.PropertyByName("GeometryDefineBy").InternalValue = 1  # Scoped to named selection
                 force_TR.Location = NS_interface
+                force_TR.CoordinateSystem = CS_interface
                 force_TR_list_of_all_partitions.append(force_TR)
                 # endregion
 
@@ -1737,8 +1749,8 @@ class WE_load_plotter(QWidget):
                 moment_TR = analysis_TR.AddMoment()
                 moment_TR.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
                 moment_TR.Name = "RM_" + interface_name + "_Part_" + str(i+1)
-                moment_TR.PropertyByName("GeometryDefineBy").InternalValue = 1  # Scoped to named selection
-                moment_TR.Location = NS_interface
+                moment_TR.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote_point
+                moment_TR.Location = RP_interface
                 moment_TR_list_of_all_partitions.append(moment_TR)
                 # endregion
 
@@ -2297,7 +2309,6 @@ class WE_load_plotter(QWidget):
         except Exception as e:
             print(f"Error in create_dataframes: {str(e)}")
             return None, None
-
     # endregion
 
     # region Main methods for updating the plots after a selection is made
@@ -2613,3 +2624,5 @@ if __name__ == "__main__":
     main.show()
     sys.exit(app.exec_())
 # endregion
+
+#TODO - The last time point of each partition should be the first time point of the following partition. Its data value should be zero.
