@@ -76,7 +76,7 @@ def insert_phase_columns(df):
 
 def read_pld_file(file_path):
     df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True, comment='_', low_memory=False)
-    df = df.apply(pd.to_numeric, errors='ignore')
+    df = df.apply(pd.to_numeric)
     df = df.dropna(how='all')
     df = df.dropna(axis=1, how='all')
     df.columns = df.columns.str.strip()
