@@ -4,7 +4,7 @@
 
 # Use the following command for building the main script for WE Plotter as an exe file:
 
-#pyinstaller we_plotter.spec --clean
+#pyinstaller we_plotter.spec --clean --noconfirm
 
 
 from PyInstaller.utils.hooks import collect_data_files
@@ -23,7 +23,7 @@ datas += copy_metadata('ansys-platform-instancemanagement')
 
 
 a = Analysis(
-    ['anan.py'],
+    ['we_mechload_viewer.py'],
     pathex=[],
     binaries=[],
     datas=datas,
@@ -41,9 +41,9 @@ exe = EXE(
     pyz,
     a.scripts,
     [],
-    exclude_binaries=True,
-    name='anan',
-    debug=False,
+    exclude_binaries=False,
+    name='WE Mechload Viewer',
+    debug=True,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
@@ -53,6 +53,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    onefile=True,
+    icon="icon.ico",
 )
 coll = COLLECT(
     exe,
