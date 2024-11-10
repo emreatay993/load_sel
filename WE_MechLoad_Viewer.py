@@ -54,18 +54,25 @@ def read_pld_log_file(file_path):
     df = df.iloc[:,1].dropna().str.strip().to_frame() # set df.iloc[:,1]... for max.pld type header files
     return df.T
 
+
 def insert_phase_columns(df):
-    transformed_columns = []
-    for i in range(len(df.columns)):
-        col_index = i * 2
-        phase_index = col_index + 1
-        original_col = df.iloc[:, i]
-        phase_label = f"Phase_{df.iloc[0, i]}"
-        phase_col = [phase_label] + ['deg'] * (len(df) - 1)
-        transformed_columns.append(pd.DataFrame({col_index: original_col}))
-        transformed_columns.append(pd.DataFrame({phase_index: phase_col}))
-    new_df = pd.concat(transformed_columns, axis=1)
-    return new_df
+    # Extract the Interface Label row
+    interface_labels = df.iloc[0, :].copy()
+
+    # Create a new list for the transformed labels
+    transformed_labels = []
+
+    for label in interface_labels:
+        # Add the original label
+        transformed_labels.append(label)
+
+        # Add the corresponding phase label
+        phase_label = f"Phase_{label}"
+        transformed_labels.append(phase_label)
+
+    # Replace the original Interface Label row with the transformed labels
+    df = pd.DataFrame([transformed_labels], index=["Interface Label"])
+    return df
 
 def read_pld_file(file_path):
     df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True, comment='_', low_memory=False)
