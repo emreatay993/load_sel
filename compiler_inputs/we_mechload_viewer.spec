@@ -20,7 +20,7 @@ datas += copy_metadata('ansys-tools-path')
 datas += copy_metadata('ansys-mechanical-core')
 datas += copy_metadata('ansys-api-mechanical')
 datas += copy_metadata('ansys-platform-instancemanagement')
-
+datas += [('icon.ico', 'icon.ico')]
 
 a = Analysis(
     ['we_mechload_viewer.py'],
@@ -42,8 +42,8 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=False,
-    name='WE Mechload Viewer',
-    debug=True,
+    name='WE MechLoad Viewer',
+    debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
@@ -53,7 +53,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    onefile=True,
+    onefile=False,
     icon="icon.ico",
 )
 coll = COLLECT(
@@ -63,5 +63,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='anan',
+    name='WE_MechLoad_Viewer',
 )
