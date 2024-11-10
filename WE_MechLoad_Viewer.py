@@ -1,4 +1,6 @@
 # region Import libraries
+import os
+os.system('color F0')
 print("Importing libraries...")
 import sys
 import csv
@@ -13,7 +15,6 @@ from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QT
                              QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox, QGroupBox)
 from PyQt5.QtGui import QFont, QIcon
 import plotly.graph_objects as go
-import os
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
 import traceback
