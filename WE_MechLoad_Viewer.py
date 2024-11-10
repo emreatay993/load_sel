@@ -11,7 +11,7 @@ from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
 from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QLineEdit, QSpinBox,
                              QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox, QGroupBox)
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QIcon
 import plotly.graph_objects as go
 import os
 import numpy as np
@@ -41,7 +41,8 @@ print("Done.")
 def select_directory(title):
     folder = QFileDialog.getExistingDirectory(None, title)
     if not folder:
-        QMessageBox.critical(None, 'Error', f"No folder selected for {title.lower()}! Exiting.")
+        QMessageBox.critical(None, 'Error', f"No folder is selected for input files\n(*.full.pld and *.log files)\n\nExiting the program.")
+        sys.exit(1)
         return None
     return folder
 
@@ -50,7 +51,7 @@ def get_file_path(folder, file_suffix):
 
 def read_pld_log_file(file_path):
     df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True)
-    df = df.iloc[:,5].dropna().str.strip().to_frame() # set df.iloc[:,1]... for max.pld type header files
+    df = df.iloc[:,1].dropna().str.strip().to_frame() # set df.iloc[:,1]... for max.pld type header files
     return df.T
 
 def insert_phase_columns(df):
@@ -92,7 +93,7 @@ def main():
             sys.exit()
 
         file_path_full_data = get_file_path(folder_selected_raw_data, 'full.pld')
-        file_path_headers_data = get_file_path(folder_selected_headers_data, '.log')
+        file_path_headers_data = get_file_path(folder_selected_headers_data, 'max.pld')
 
         if not file_path_full_data or not file_path_headers_data:
             QMessageBox.critical(None, 'Error', "No required files found! Exiting.")
@@ -250,8 +251,25 @@ class WE_load_plotter(QWidget):
 
         main_layout.addWidget(tab_widget)
         self.setLayout(main_layout)
-        self.setWindowTitle("WE Load Visualizer - v0.94")
+        self.setWindowTitle("WE MechLoad Viewer - v0.94")
+
+        # Dynamically locate the icon
+        icon_path = self.get_resource_path("icon.ico")
+
+        # Set the window icon
+        self.setWindowIcon(QIcon(icon_path))
+
         self.showMaximized()
+
+    def get_resource_path(self, relative_path):
+        """Get the absolute path to a resource."""
+        # Check if running in a PyInstaller bundle
+        if hasattr(sys, "_MEIPASS"):
+            # Running in a bundled environment
+            return os.path.join(sys._MEIPASS, relative_path)
+        else:
+            # Running in a development environment
+            return os.path.join(os.path.dirname(__file__), relative_path)
 
     def create_tab(self, name, setup_method):
         tab = QWidget()
@@ -360,7 +378,7 @@ class WE_load_plotter(QWidget):
 
         self.setupSideFilterSelector(upper_layout)
 
-        self.exclude_checkbox = QCheckBox(r"Filter out T2/T3, R2/R3 components from graphs")
+        self.exclude_checkbox = QCheckBox(r"Filter out T2, T3, R2, and R3 from graphs")
         self.exclude_checkbox.stateChanged.connect(self.update_plots_tab3)
         upper_layout.addWidget(self.exclude_checkbox)
 
@@ -394,14 +412,14 @@ class WE_load_plotter(QWidget):
         # Display the buttons designed specifically for time or frequency domain based data
         if 'FREQ' in self.df.columns:
             self.extract_data_button = QPushButton("Extract Data for Selected Frequency")
-            self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part")
+            self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part (ANSYS)")
             self.extract_data_button.clicked.connect(self.extract_single_frequency_data_point)
             data_point_selector_tab3_layout.addWidget(self.extract_data_button)
             self.extract_all_data_button.clicked.connect(self.extract_all_data_points_in_frequency_domain)
             data_point_selector_tab3_layout.addWidget(self.extract_all_data_button)
         if 'TIME' in self.df.columns:
-            self.extract_data_button = QPushButton("Extract Data for Selected Time")
-            self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part")
+            self.extract_data_button = QPushButton("Extract Data for Selected Time (Not Active)")
+            self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part (ANSYS)")
             self.extract_all_data_button.clicked.connect(self.extract_all_data_points_in_time_domain)
             self.extract_data_button.setStyleSheet("color: gray;")
             data_point_selector_tab3_layout.addWidget(self.extract_data_button)
@@ -576,7 +594,7 @@ class WE_load_plotter(QWidget):
         # Hover Mode
         hover_mode_layout = QHBoxLayout()
         hover_mode_label = QLabel("Hover Mode")
-        hover_mode_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        #hover_mode_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         self.hover_mode_selector = QComboBox()
         self.hover_mode_selector.addItems(['closest', 'x', 'y', 'x unified', 'y unified'])
         self.hover_mode_selector.setCurrentText(self.hover_mode)
@@ -590,7 +608,7 @@ class WE_load_plotter(QWidget):
 
         # Add a contact label at the bottom
         contact_label = QLabel(
-            "Please reach K. Emre Atay (Compressor Module: Stationary Parts Team) for bug reports / feature requests.")
+            "Please reach K. Emre Atay (Compressor Module: Stationary Parts Team) for bug reports or feature requests.")
         layout.addWidget(contact_label, alignment=QtCore.Qt.AlignBottom)
 
         # Apply stylesheet to group boxes
@@ -1092,13 +1110,13 @@ class WE_load_plotter(QWidget):
             force_HR.Name = "RF_" + interface_name
             force_HR.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to a remote point
             force_HR.Location = RP_interface
-            force_HR.Suppressed = True
+            force_HR.Suppressed = False
             force_HR_index_name = "RF_" + str(interface_index_no)
 
             # Create moments at each interface
             moment_HR = analysis_HR.AddMoment()
             moment_HR.DefineBy = Ansys.Mechanical.DataModel.Enums.LoadDefineBy.Components
-            moment_HR.Name = "RM_" + interface_name
+            moment_HR.Name = "RM_" + interface_name + "_(For Visualization Purposes Only, Delete it or Keep it Suppressed)"
             moment_HR.PropertyByName("GeometryDefineBy").InternalValue = 2  # Scoped to remote point
             moment_HR.Location = RP_interface
             moment_HR.Suppressed = True
@@ -1313,11 +1331,6 @@ class WE_load_plotter(QWidget):
             # endregion
 
             # region Define T1,T2,T3 and R1, R2, R3 loads via Command Objects
-            command_snippet_RF = analysis_HR.AddCommandSnippet()
-            command_snippet_RM = analysis_HR.AddCommandSnippet()
-            command_snippet_RF.Name = "Commands_RF_" + interface_name
-            command_snippet_RM.Name = "Commands_RM_" + interface_name
-
             apdl_lines_RFx = self.create_APDL_table(df_load_table_fx_real,"table_X_" + force_HR_index_name)
             apdl_lines_RFy = self.create_APDL_table(df_load_table_fy_real, "table_Y_" + force_HR_index_name)
             apdl_lines_RFz = self.create_APDL_table(df_load_table_fz_real, "table_Z_" + force_HR_index_name)
@@ -1332,15 +1345,20 @@ class WE_load_plotter(QWidget):
             apdl_lines_RMyi = self.create_APDL_table(df_load_table_my_imag, "table_Yi_" + moment_HR_index_name)
             apdl_lines_RMzi = self.create_APDL_table(df_load_table_mz_imag, "table_Zi_" + moment_HR_index_name)
 
+            # region Create APDL command snippet for force loads (only intended for APDL users)
+            command_snippet_RF = analysis_HR.AddCommandSnippet()
+            command_snippet_RF.Name = "Commands_RF_" + interface_name
+
             command_snippet_RF.AppendText(''.join(apdl_lines_RFx))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFy))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFz))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFxi))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFyi))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFzi))
+
+            # region Apply load as a nodal force directly from the APDL table defined for RF
             command_snippet_RF.AppendText("\n\n"+ f"! Apply the load on the remote point specified for the interface\n")
             command_snippet_RF.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
-
             command_snippet_RF.AppendText(
                 f"f, all, fx, %{'table_X_' + force_HR_index_name}%, %{'table_Xi_' + force_HR_index_name}%\n")
             command_snippet_RF.AppendText(
@@ -1349,6 +1367,19 @@ class WE_load_plotter(QWidget):
                 f"f, all, fz, %{'table_Z_' + force_HR_index_name}%, %{'table_Zi_' + force_HR_index_name}%\n")
             command_snippet_RF.AppendText("nsel,all\n")
 
+            command_snippet_RF.AppendText(
+                "\n\n"
+                + (
+                    "! The above APDL code is intended for ANSYS Classic / APDL users only.\n "
+                    "! Please delete it or keep this command snippet suppressed if you "
+                    "intend to only use native force and moment objects from ANSYS Mechanical\n"
+                ))
+            # endregion
+
+            # region Create APDL command snippet for moment loads
+            command_snippet_RM = analysis_HR.AddCommandSnippet()
+            command_snippet_RM.Name = "Commands_RM_" + interface_name
+
             command_snippet_RM.AppendText(''.join(apdl_lines_RMx))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMy))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMz))
@@ -1356,8 +1387,9 @@ class WE_load_plotter(QWidget):
             command_snippet_RM.AppendText(''.join(apdl_lines_RMyi))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMzi))
             command_snippet_RM.AppendText("\n\n"+ f"! Apply the load on the remote point specified for the interface\n")
-            command_snippet_RM.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
 
+            # Apply load as a nodal moment directly from the APDL table defined for RM
+            command_snippet_RM.AppendText("nsel,s,node,," + "RP_" + str(interface_index_no) + "\n")
             command_snippet_RM.AppendText(
                 f"f, all, mx, %{'table_X_' + moment_HR_index_name}%, %{'table_Xi_' + moment_HR_index_name}%\n")
             command_snippet_RM.AppendText(
@@ -1365,6 +1397,23 @@ class WE_load_plotter(QWidget):
             command_snippet_RM.AppendText(
                 f"f, all, mz, %{'table_Z_' + moment_HR_index_name}%, %{'table_Zi_' + moment_HR_index_name}%\n")
             command_snippet_RM.AppendText("nsel,all\n")
+
+            command_snippet_RM.AppendText(
+                "\n\n"
+                + (
+                    "! The above APDL code is intended to be used for both ANSYS Mechanical & Classical Users.\n"
+                    "! DO NOT DELETE IT!\n"
+                ))
+            # endregion
+            # endregion
+
+            # region Make the command snippet objects for loads to be initially suppressed in the tree if they are not used
+            command_snippet_RF.Suppressed = True
+            #command_snippet_RM.Suppressed = True
+            # endregion
+
+            # region Suppress moment objects as they are only used for debugging/visualization purposes
+            moment_HR.Suppressed = True
             # endregion
 
             # region Delete force or moment object if T1,T2,T3 or R1,R2,R3 components are all zero, making obj undefined
@@ -1383,6 +1432,10 @@ class WE_load_plotter(QWidget):
                               interface_dicts_full[interface_name]["T3"]):
                 force_HR.Delete()
                 command_snippet_RF.Delete()
+            # endregion
+
+            # region Delete command snippet for force (obsolete code)
+            command_snippet_RF.Delete()
             # endregion
 
             # Increase the interface index counter by 1
@@ -1686,7 +1739,6 @@ class WE_load_plotter(QWidget):
             command_snippet_RF.Name = "Commands_RF_" + interface_name
             command_snippet_RM.Name = "Commands_RM_" + interface_name
 
-
             apdl_lines_RFx = self.create_APDL_table(df_load_table_fx,"table_X_" + force_TR_index_name)
             apdl_lines_RFy = self.create_APDL_table(df_load_table_fy, "table_Y_" + force_TR_index_name)
             apdl_lines_RFz = self.create_APDL_table(df_load_table_fz, "table_Z_" + force_TR_index_name)
@@ -1709,6 +1761,14 @@ class WE_load_plotter(QWidget):
                 f"f, all, fz, %{'table_Z_' + force_TR_index_name}%\n")
             command_snippet_RF.AppendText("nsel,all\n")
 
+            command_snippet_RF.AppendText(
+                "\n\n"
+                + (
+                    "! The above APDL code is intended for ANSYS Classic / APDL users only.\n "
+                    "! Please delete it or keep this command snippet suppressed if you "
+                    "intend to only use native force and moment objects from ANSYS Mechanical\n"
+                ))
+
             command_snippet_RM.AppendText(''.join(apdl_lines_RMx))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMy))
             command_snippet_RM.AppendText(''.join(apdl_lines_RMz))
@@ -1722,6 +1782,14 @@ class WE_load_plotter(QWidget):
             command_snippet_RM.AppendText(
                 f"f, all, mz, %{'table_Z_' + moment_TR_index_name}%\n")
             command_snippet_RM.AppendText("nsel,all\n")
+
+            command_snippet_RF.AppendText(
+                "\n\n"
+                + (
+                    "! The above APDL code is intended for ANSYS Classic / APDL users only.\n "
+                    "! Please delete it or keep this command snippet suppressed if you "
+                    "intend to only use native force and moment objects from ANSYS Mechanical\n"
+                ))
             # endregion
 
             # region Define T1,T2,T3 and R1,R2,R3 loads as force and moment objects (partitioned)
@@ -1779,6 +1847,11 @@ class WE_load_plotter(QWidget):
                 # endregion
             # endregion
 
+            # region Suppress command snippets for forces and moments as they are not used in transient analysis
+            command_snippet_RF.Suppressed = True
+            command_snippet_RM.Suppressed = True
+            # endregion
+
             # region Delete force or moment object if T1,T2,T3 or R1,R2,R3 components are all zero, making obj undefined
             # Check whether input lists are all zero for a set of lists
             def are_all_zeroes(*lists):
@@ -1795,6 +1868,11 @@ class WE_load_plotter(QWidget):
                               interface_dicts_full[interface_name]["T3"]):
                 [force_TR.Delete() for force_TR in force_TR_list_of_all_partitions]
                 command_snippet_RF.Delete()
+            # endregion
+
+            # region Delete command snippet for force and moment (obsolete code)
+            command_snippet_RF.Delete()
+            command_snippet_RM.Delete()
             # endregion
 
             # Increase the interface index counter by 1
@@ -2296,15 +2374,15 @@ class WE_load_plotter(QWidget):
     # region Helper methods for creating and modifying the dataframes for plots
     def create_dataframes(self, x_data, x_label, y_data_dict):
         try:
-            # Ensure x_data and y_data_dict have the same length
-            if len(x_data) == len(list(y_data_dict.values())[0]):
+            # Ensure x_data and y_data_dict have the same length and make if y_data_dict is not empty
+            if y_data_dict and len(x_data) == len(list(y_data_dict.values())[0]):
                 y_data_dict[x_label] = x_data
                 original_df = pd.DataFrame(y_data_dict)
                 original_df.set_index(x_label, inplace=True)
                 working_df = original_df.copy()
                 return original_df, working_df
             else:
-                print("Length mismatch between x_data and y_data_dict values")
+                print("Warning: Length mismatch between X and Y data values.")
                 return None, None
         except Exception as e:
             print(f"Error in create_dataframes: {str(e)}")
