@@ -1878,11 +1878,6 @@ class WE_load_plotter(QWidget):
                 command_snippet_RF.Delete()
             # endregion
 
-            # region Delete command snippet for force and moment (obsolete code)
-            command_snippet_RF.Delete()
-            command_snippet_RM.Delete()
-            # endregion
-
             # Increase the interface index counter by 1
             interface_index_no += 1
 
