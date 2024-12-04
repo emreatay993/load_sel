@@ -1,3 +1,12 @@
+'''
+Author: Kamil Emre Atay (k5483)
+Version: 0.94
+Script Name: we_mechload_viewer.py
+
+Tested in Python version 3.10.
+Please use "requirements.txt file" supplied with this code to be able to compile it in the future by using pyinstaller.
+'''
+
 # region Import libraries
 import os
 os.system('color F0')
@@ -33,7 +42,7 @@ print("Done.")
 # endregion
 
 # region Define global variables / functions
-
+DATA_DOMAIN = None
 # endregion
 
 # region Read input file
@@ -52,9 +61,8 @@ def get_file_path(folder, file_suffix):
 
 def read_pld_log_file(file_path):
     df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True)
-    df = df.iloc[:,1].dropna().str.strip().to_frame() # set df.iloc[:,1]... for max.pld type header files
+    df = df.iloc[:,5].dropna().str.strip().to_frame() # set df.iloc[:,1]... for max.pld type header files and df.iloc[:,5] for log type files
     return df.T
-
 
 def insert_phase_columns(df):
     # Extract the Interface Label row
@@ -101,7 +109,7 @@ def main():
             sys.exit()
 
         file_path_full_data = get_file_path(folder_selected_raw_data, 'full.pld')
-        file_path_headers_data = get_file_path(folder_selected_headers_data, 'max.pld')
+        file_path_headers_data = get_file_path(folder_selected_headers_data, '.log')
 
         if not file_path_full_data or not file_path_headers_data:
             QMessageBox.critical(None, 'Error', "No required files found! Exiting.")
