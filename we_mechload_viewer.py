@@ -1,6 +1,6 @@
 '''
 Author: Kamil Emre Atay (k5483)
-Version: 0.94
+Version: 0.95
 Script Name: we_mechload_viewer.py
 
 Tested in Python version 3.10.
@@ -21,7 +21,8 @@ from collections import OrderedDict
 from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
 from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QLineEdit, QSpinBox,
-                             QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox, QGroupBox)
+                             QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox, QGroupBox,
+                             QDialog, QListWidget, QListWidgetItem)
 from PyQt5.QtGui import QFont, QIcon
 import plotly.graph_objects as go
 import numpy as np
@@ -61,7 +62,7 @@ def get_file_path(folder, file_suffix):
 
 def read_pld_log_file(file_path):
     df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True)
-    df = df.iloc[:,5].dropna().str.strip().to_frame() # set df.iloc[:,1]... for max.pld type header files and df.iloc[:,5] for log type files
+    df = df.iloc[:,1].dropna().str.strip().to_frame() # set df.iloc[:,1]... for max.pld type header files and df.iloc[:,5] for log type files
     return df.T
 
 def insert_phase_columns(df):
@@ -109,7 +110,7 @@ def main():
             sys.exit()
 
         file_path_full_data = get_file_path(folder_selected_raw_data, 'full.pld')
-        file_path_headers_data = get_file_path(folder_selected_headers_data, '.log')
+        file_path_headers_data = get_file_path(folder_selected_headers_data, 'max.pld')
 
         if not file_path_full_data or not file_path_headers_data:
             QMessageBox.critical(None, 'Error', "No required files found! Exiting.")
@@ -174,7 +175,7 @@ class WE_load_plotter(QWidget):
         self.current_legend_position = 1
         self.df = pd.read_csv('full_data.csv')
         self.df_compare = None
-        self.result_df_full_part_load = None
+        self.df_extracted_loads_for_ansys = None
         self.side_filter_selector_for_compare = QComboBox()
         self.current_plot_data = {}
         self.app_ansys = None
@@ -267,7 +268,7 @@ class WE_load_plotter(QWidget):
 
         main_layout.addWidget(tab_widget)
         self.setLayout(main_layout)
-        self.setWindowTitle("WE MechLoad Viewer - v0.94")
+        self.setWindowTitle("WE MechLoad Viewer - v0.95")
 
         # Dynamically locate the icon
         icon_path = self.get_resource_path("icon.ico")
@@ -428,14 +429,14 @@ class WE_load_plotter(QWidget):
         # Display the buttons designed specifically for time or frequency domain based data
         if 'FREQ' in self.df.columns:
             self.extract_data_button = QPushButton("Extract Data for Selected Frequency")
-            self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part (ANSYS)")
+            self.extract_all_data_button = QPushButton("Extract Part Loads as FEA Input (ANSYS)")
             self.extract_data_button.clicked.connect(self.extract_single_frequency_data_point)
             data_point_selector_tab3_layout.addWidget(self.extract_data_button)
             self.extract_all_data_button.clicked.connect(self.extract_all_data_points_in_frequency_domain)
             data_point_selector_tab3_layout.addWidget(self.extract_all_data_button)
         if 'TIME' in self.df.columns:
             self.extract_data_button = QPushButton("Extract Data for Selected Time (Not Active)")
-            self.extract_all_data_button = QPushButton("Extract Load Input for Selected Part (ANSYS)")
+            self.extract_all_data_button = QPushButton("Extract Part Loads as FEA Input (ANSYS)")
             self.extract_all_data_button.clicked.connect(self.extract_all_data_points_in_time_domain)
             self.extract_data_button.setStyleSheet("color: gray;")
             data_point_selector_tab3_layout.addWidget(self.extract_data_button)
@@ -731,22 +732,6 @@ class WE_load_plotter(QWidget):
         splitter.addWidget(self.compare_r_series_plot)
         splitter.setSizes([self.height() // 2, self.height() // 2])
         layout.addWidget(splitter)
-
-    def setupSideFilterSelector(self, layout):
-        side_filter_layout = QHBoxLayout()
-        self.side_filter_selector = QComboBox()
-        self.side_filter_selector.setEditable(True)
-        self.populate_side_filter_selector()
-        self.side_filter_selector.currentIndexChanged.connect(self.update_plots_tab3)
-
-        layout.addLayout(side_filter_layout)
-
-    def setupSideFilterSelectorForCompare(self, layout):
-        self.side_filter_selector_for_compare = QComboBox()
-        self.side_filter_selector_for_compare.setEditable(True)
-        self.populate_side_filter_selector()
-        self.side_filter_selector_for_compare.currentIndexChanged.connect(self.update_compare_part_loads_plots)
-        layout.addWidget(self.side_filter_selector_for_compare)
     # endregion
 
     # region Setting up the canvas of each plot area of each tab
@@ -770,7 +755,7 @@ class WE_load_plotter(QWidget):
                 return
 
             file_path_full_data = get_file_path(folder_selected_raw_data, 'full.pld')
-            file_path_headers_data = get_file_path(folder_selected_headers_data, '.log')
+            file_path_headers_data = get_file_path(folder_selected_headers_data, 'max.pld')
 
             if not file_path_full_data or not file_path_headers_data:
                 QMessageBox.critical(None, 'Error', "No required files found! Exiting.")
@@ -858,6 +843,67 @@ class WE_load_plotter(QWidget):
                 nmm_data[col] = nmm_data[col].astype(float) * 1000
         nmm_data.to_csv("extracted_time_data_values_in_Nmm_units.csv", index=False)
 
+    def get_selected_sides(self):
+        # Get the currently selected side from the side_filter_selector
+        current_side = self.side_filter_selector.currentText()
+
+        # Get all available sides
+        all_sides = [self.side_filter_selector.itemText(i) for i in range(self.side_filter_selector.count())]
+
+        # Create and configure the dialog
+        dialog = QDialog(self)  # Create a QDialog
+        dialog.setWindowTitle("Select Parts to Extract Interface Loads")  # Set dialog title
+        list_widget = QListWidget()  # Create the QListWidget
+        list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)  # Allow multiple selections
+        for side in all_sides:
+            item = QListWidgetItem(side)
+            list_widget.addItem(item)
+            if side == current_side:
+                item.setSelected(True)  # Select the currently active side by default
+
+        # Add the list widget and buttons to the dialog
+        # Add the list widget and buttons to the dialog
+        confirm_button = QPushButton("Confirm")
+        confirm_button.clicked.connect(dialog.accept)
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(dialog.reject)
+        help_button = QPushButton("Help")
+
+        # Add help functionality
+        help_button.clicked.connect(lambda: QMessageBox.information(
+            dialog,
+            "Help",
+            (
+                "<p style=\"text-align: justify;\">"
+                "- Only the T1, T2, T3 (force) and R1, R2, R3 (moment) components are extracted. Resultant load vectors "
+                "such as T2/T3 or R2/R3 are not included in the export.</p>"
+                "<p style=\"text-align: justify;\">"
+                "- All the components are multiplied by 1000 to convert them to SI units (N and N.mm), assuming they are "
+                "given in kN (for force components) and kN.mm (for moment components), respectively. Please check whether "
+                "these units are correct.</p>"
+                "<p style=\"text-align: justify;\">"
+                "- All extracted part loads are treated as either force or moment types. After generating the FEA template, "
+                "please manually review and remove any loads that you don't need or that have incorrect types.</p>"
+            )
+        ))
+
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(confirm_button)
+        button_layout.addWidget(cancel_button)
+        button_layout.addWidget(help_button)
+        layout = QVBoxLayout()
+        layout.addWidget(list_widget)
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+
+        # Show the dialog and get the results
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            selected_sides = [list_widget.item(i).text() for i in range(list_widget.count()) if
+                              list_widget.item(i).isSelected()]
+            return selected_sides
+        else:
+            return None  # User canceled the dialog
+
     def extract_single_frequency_data_point(self):
         selected_frequency_tab3 = self.data_point_selector_tab3.currentText()
         selected_side = self.side_filter_selector.currentText()
@@ -896,40 +942,53 @@ class WE_load_plotter(QWidget):
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
     def extract_all_data_points_in_frequency_domain(self):
-        # region Handle the case where no valid selection of part loads is not yet made and displayed on screen.
-        selected_side = self.side_filter_selector.currentText()
-        if not selected_side:
-            QMessageBox.information(self, "Selection Required", "Please select a valid side.")
+        selected_sides = self.get_selected_sides()
+        if not selected_sides:
+            QMessageBox.information(self, "Selection Required", "Please select valid sides.")
             return
-        # endregion
 
-        # Otherwise,
         try:
-            # region Extract the raw data to be used as inputs for interfaces in case user wants to take a look at them
-            side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
-            columns = ['FREQ']
-            columns += [col for col in self.df.columns
-                        if side_pattern.search(col)
-                        and col != 'FREQ'
-                        and "T2/T3" not in col
-                        and "R2/R3" not in col]
+            df_selected_parts_combined = pd.DataFrame()
 
-            self.result_df_full_part_load = self.df[columns]
+            for selected_side in selected_sides:
+                side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
+                columns = ['FREQ'] + [col for col in self.df.columns if side_pattern.search(
+                    col) and col != 'FREQ' and 'T2/T3' not in col and 'R2/R3' not in col]
 
-            original_file_path = f"extracted_data_for_{selected_side}_all_frequencies.csv"
-            self.result_df_full_part_load.to_csv(original_file_path, index=False)
+                df_selected_part = self.df[columns]
 
-            for col in self.result_df_full_part_load.columns:
-                if not col.startswith('Phase_') and col != 'FREQ':
-                    self.result_df_full_part_load[col] = self.result_df_full_part_load[col] * 1000
+                # Ensure no duplicate FREQ column in the combined DataFrame
+                if 'FREQ' in df_selected_parts_combined.columns:
+                    df_selected_part = df_selected_part.drop(columns=['FREQ'], errors='ignore')
 
-            converted_file_path = f"extracted_data_for_{selected_side}_all_frequencies_multiplied_in_Nmm_units.csv"
-            self.result_df_full_part_load.to_csv(converted_file_path, index=False)
+                df_selected_parts_combined = pd.concat([df_selected_parts_combined, df_selected_part], axis=1)
 
+                original_file_path = f"extracted_data_for_{selected_side}_in_original_units.csv"
+                df_selected_part.to_csv(original_file_path, index=False)
+
+                # Perform unit conversion
+                df_selected_part_converted = df_selected_part.copy()
+                for col in df_selected_part_converted.columns:
+                    if col != 'FREQ' and not col.startswith('Phase_'):
+                        df_selected_part_converted[col] *= 1000
+                # Perform unit conversion for combined data
+                df_selected_parts_combined_converted = df_selected_parts_combined.copy()
+                for col in df_selected_parts_combined_converted.columns:
+                    if col != 'FREQ' and not col.startswith('Phase_'):
+                        df_selected_parts_combined_converted[col] *= 1000
+
+                file_path_selected_part_converted = f"extracted_data_for_{selected_side}_multiplied_by_1000.csv"
+                df_selected_part_converted.to_csv(file_path_selected_part_converted, index=False)
+
+                QMessageBox.information(self, "Extraction Complete",
+                                        f"Data for {selected_side} has been extracted and converted.\n\nOriginal data saved to: {original_file_path}\nConverted data saved to: {file_path_selected_part_converted}.")
+
+            combined_file_path = "extracted_loads_of_all_selected_parts_in_converted_units.csv"
+            df_selected_parts_combined.to_csv(combined_file_path, index=False)
             QMessageBox.information(self, "Extraction Complete",
-                                    f"Data has been extracted and converted. \n\nOriginal data is saved to: \n\n{original_file_path}. \n\nConverted data is saved to: \n\n{converted_file_path}.")
-            # endregion
+                                    f"Combined data for all sides has been saved to {combined_file_path}.")
 
+            self.df_extracted_loads_for_ansys = df_selected_parts_combined
             self.create_ansys_mechanical_input_template_harmonic()
 
         except Exception as e:
@@ -938,38 +997,53 @@ class WE_load_plotter(QWidget):
             QMessageBox.critical(None, 'Error', f"An error occurred during the execution of this button: {str(e)}")
 
     def extract_all_data_points_in_time_domain(self):
-        # region Handle the case where no valid selection of part loads is not yet made and displayed on screen.
-        selected_side = self.side_filter_selector.currentText()
-        if not selected_side:
-            QMessageBox.information(self, "Selection Required", "Please select a valid side.")
+        selected_sides = self.get_selected_sides()
+        if not selected_sides:
+            QMessageBox.information(self, "Selection Required", "Please select valid sides.")
             return
-        # endregion
+
         try:
-            # region Extract the raw data to be used as inputs for interfaces in case user wants to take a look at them
-            side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
-            columns = ['TIME']
-            columns += [col for col in self.df.columns
-                        if side_pattern.search(col)
-                        and col != 'TIME'
-                        and "T2/T3" not in col
-                        and "R2/R3" not in col]
+            df_selected_parts_combined = pd.DataFrame()
 
-            self.result_df_full_part_load = self.df[columns]
+            for selected_side in selected_sides:
+                side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
+                columns = ['TIME'] + [col for col in self.df.columns if side_pattern.search(
+                    col) and col != 'TIME' and 'T2/T3' not in col and 'R2/R3' not in col]
 
-            original_file_path = f"extracted_data_for_{selected_side}_all_time_points.csv"
-            self.result_df_full_part_load.to_csv(original_file_path, index=False)
+                df_selected_part = self.df[columns]
 
-            for col in self.result_df_full_part_load.columns:
-                if col != 'TIME':
-                    self.result_df_full_part_load[col] = self.result_df_full_part_load[col] * 1000
+                # Ensure no duplicate TIME column in the combined DataFrame
+                if 'TIME' in df_selected_parts_combined.columns:
+                    df_selected_part = df_selected_part.drop(columns=['TIME'], errors='ignore')
 
-            converted_file_path = f"extracted_data_for_{selected_side}_all_time_points_multiplied_in_Nmm_units.csv"
-            self.result_df_full_part_load.to_csv(converted_file_path, index=False)
+                df_selected_parts_combined = pd.concat([df_selected_parts_combined, df_selected_part], axis=1)
 
+                original_file_path = f"extracted_data_for_{selected_side}_in_original_units.csv"
+                df_selected_part.to_csv(original_file_path, index=False)
+
+                # Perform unit conversion
+                df_selected_part_converted = df_selected_part.copy()
+                for col in df_selected_part_converted.columns:
+                    if col != 'TIME' and not col.startswith('Phase_'):
+                        df_selected_part_converted[col] *= 1000
+                # Perform unit conversion for combined data
+                df_selected_parts_combined_converted = df_selected_parts_combined.copy()
+                for col in df_selected_parts_combined_converted.columns:
+                    if col != 'TIME':
+                        df_selected_parts_combined_converted[col] *= 1000
+
+                file_path_selected_part_converted = f"extracted_{selected_side}_loads_multiplied_by_1000.csv"
+                df_selected_part_converted.to_csv(file_path_selected_part_converted, index=False)
+
+                QMessageBox.information(self, "Extraction Complete",
+                                        f"Data for {selected_side} has been extracted and converted.\n\nOriginal data saved to: {original_file_path}\nConverted data saved to: {file_path_selected_part_converted}.")
+
+            file_path_selected_parts_combined = "extracted_loads_of_all_selected_parts_in_converted_units.csv"
+            df_selected_parts_combined.to_csv(file_path_selected_parts_combined, index=False)
             QMessageBox.information(self, "Extraction Complete",
-                                    f"Data has been extracted and converted. \n\nOriginal data is saved to: \n\n{original_file_path}. \n\nConverted data is saved to: \n\n{converted_file_path}.")
-            # endregion
+                                    f"Combined data for all sides has been saved to {file_path_selected_parts_combined}.")
 
+            self.df_extracted_loads_for_ansys = df_selected_parts_combined
             self.create_ansys_mechanical_input_template_transient()
 
         except Exception as e:
@@ -1023,7 +1097,7 @@ class WE_load_plotter(QWidget):
 
         # Identify unique interfaces and their corresponding columns, including phase angles
         full_interfaces = OrderedDict()
-        for col in self.result_df_full_part_load.columns:
+        for col in self.df_extracted_loads_for_ansys.columns:
             if col != "FREQ":
                 interface_name = get_full_interface_name(col)
                 if interface_name not in full_interfaces:
@@ -1044,7 +1118,7 @@ class WE_load_plotter(QWidget):
             return interface_dict
 
         # Create full dictionaries for each unique interface
-        interface_dicts_full = {interface: create_full_interface_dict(self.result_df_full_part_load, cols) for
+        interface_dicts_full = {interface: create_full_interface_dict(self.df_extracted_loads_for_ansys, cols) for
                                 interface, cols in
                                 full_interfaces.items()}
 
@@ -1071,7 +1145,7 @@ class WE_load_plotter(QWidget):
 
         # region Initialize the list of frequency points extracted
         # Create a separate list for FREQ
-        list_of_all_frequencies = self.result_df_full_part_load["FREQ"].tolist()
+        list_of_all_frequencies = self.df_extracted_loads_for_ansys["FREQ"].tolist()
 
         # Convert list of frequencies to a list of frequencies as quantities (in Hz)
         list_of_all_frequencies_as_quantity = []
@@ -1087,6 +1161,24 @@ class WE_load_plotter(QWidget):
         # region Create a static analysis environment template for pre-stressed solution
         print("Creating the static analysis environment...")
         analysis_static = Model.AddStaticStructuralAnalysis()
+        analysis_settings_static = analysis_static.AnalysisSettings
+        analysis_settings_static.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
+        analysis_settings_static.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
+        # endregion
+
+        # region Create a modal analysis environment template for MSUP based solution
+        print("Creating the modal analysis environment...")
+        analysis_modal = Model.AddModalAnalysis()
+        analysis_settings_modal = analysis_modal.AnalysisSettings
+        analysis_settings_modal_IC = DataModel.GetObjectsByName("Pre-Stress (None)")[0]
+        analysis_settings_modal_IC.PreStressICEnvironment = analysis_static
+        analysis_settings_modal.PropertyByName("NumModesToFind").InternalValue = 100
+        analysis_settings_modal.PropertyByName("RangeSearch").InternalValue = 1  # Limit Search to Range: On
+        analysis_settings_modal.PropertyByName("MaxFrequency").InternalValue = \
+            self.df_extracted_loads_for_ansys['FREQ'].max()*1.5  # Max Freq. to find is 1.5x the max freq. of interest
+        analysis_settings_modal.PropertyByName("MSUPSkipExpansion").InternalValue = 1  # On-Demand Expansion Option: Yes
+        analysis_settings_modal.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
+        analysis_settings_modal.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
         # endregion
 
         # region Create tree objects in Mechanical for harmonic analysis and initialize analysis settings
@@ -1094,12 +1186,16 @@ class WE_load_plotter(QWidget):
         analysis_HR = Model.AddHarmonicResponseAnalysis()
         analysis_settings_HR = analysis_HR.AnalysisSettings
         analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyMax").InternalValue = \
-        self.result_df_full_part_load['FREQ'].max()
+            self.df_extracted_loads_for_ansys['FREQ'].max()
+        analysis_settings_HR_IC = DataModel.GetObjectsByName("Pre-Stress/Modal (None)")[0]
+        analysis_settings_HR_IC.PreStressICEnvironment = analysis_modal
+        analysis_settings_HR.PropertyByName("MSUPSkipExpansion").InternalValue = 1  # On-Demand Expansion Option: Yes
+        analysis_settings_HR.PropertyByName("CombineDistResultFile").InternalValue = 1
+        analysis_settings_HR.PropertyByName("ExpandResultFrom").InternalValue = 1  # Expand from Modal Solution
         analysis_settings_HR.PropertyByName("HarmonicForcingFrequencyIntervals").InternalValue = 1
         analysis_settings_HR.PropertyByName("HarmonicSolutionMethod").InternalValue = 1
+        analysis_settings_HR.PropertyByName("ConstantDampingValue").InternalValue = 0.02  # 2% damping by default
 
-        analysis_settings_HR_IC = DataModel.GetObjectsByName("Pre-Stress/Modal (None)")[0]
-        analysis_settings_HR_IC.PreStressICEnvironment = analysis_static
         # endregion
 
         # region Create load objects and their dependent objects for each interface
@@ -1497,7 +1593,7 @@ class WE_load_plotter(QWidget):
 
         # Identify unique interfaces and their corresponding columns
         full_interfaces = OrderedDict()
-        for col in self.result_df_full_part_load.columns:
+        for col in self.df_extracted_loads_for_ansys.columns:
             if col != "TIME":
                 interface_name = get_full_interface_name(col)
                 if interface_name not in full_interfaces:
@@ -1514,7 +1610,7 @@ class WE_load_plotter(QWidget):
             return interface_dict
 
         # Create full dictionaries for each unique interface
-        interface_dicts_full = {interface: create_full_interface_dict(self.result_df_full_part_load, cols) for
+        interface_dicts_full = {interface: create_full_interface_dict(self.df_extracted_loads_for_ansys, cols) for
                                 interface, cols in
                                 full_interfaces.items()}
 
@@ -1574,7 +1670,7 @@ class WE_load_plotter(QWidget):
 
         # region Initialize the list of time points extracted
         # Create a separate list for FREQ
-        list_of_all_time_points = self.result_df_full_part_load["TIME"].tolist()
+        list_of_all_time_points = self.df_extracted_loads_for_ansys["TIME"].tolist()
 
         # Convert list of time points to a list of time points as quantities (in seconds)
         list_of_all_time_points_as_quantity = []
@@ -1602,6 +1698,11 @@ class WE_load_plotter(QWidget):
         analysis_settings_modal = analysis_modal.AnalysisSettings
         analysis_settings_modal_IC = DataModel.GetObjectsByName("Pre-Stress (None)")[0]
         analysis_settings_modal_IC.PreStressICEnvironment = analysis_static
+        analysis_settings_modal.PropertyByName("NumModesToFind").InternalValue = 100
+        analysis_settings_modal.PropertyByName("RangeSearch").InternalValue = 1  # Limit Search to Range: On
+        analysis_settings_modal.PropertyByName("MaxFrequency").InternalValue = \
+            self.sample_rate  # Max Freq. to find is 1.5x the average sampling rate of the time points
+        #analysis_settings_modal.PropertyByName("MSUPSkipExpansion").InternalValue = 1  # On-Demand Expansion Option: Yes
         analysis_settings_modal.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
         analysis_settings_modal.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
         # endregion
@@ -1616,7 +1717,8 @@ class WE_load_plotter(QWidget):
         analysis_settings_TR.PropertyByName("NumberOfSubSteps").InternalValue = len(list_of_all_time_points)
         analysis_settings_TR.PropertyByName("EndTime").InternalValue = max(list_of_all_time_points)
         analysis_settings_TR.PropertyByName("MSUPSkipExpansion").InternalValue = 1  # Yes
-        analysis_settings_TR.PropertyByName("ExpandResultFrom").InternalValue = 1  # Modal Solution
+        analysis_settings_TR.PropertyByName("CombineDistResultFile").InternalValue = 1  # Yes
+        analysis_settings_TR.PropertyByName("ExpandResultFrom").InternalValue = 1  # Expand from Modal Solution
         analysis_settings_TR.PropertyByName("ConstantDampingValue").InternalValue = 0.02  # 2% damping by default
         analysis_settings_TR.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
         analysis_settings_TR.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
@@ -1964,13 +2066,23 @@ class WE_load_plotter(QWidget):
             self.side_filter_selector.currentIndexChanged.connect(self.update_plots_tab3)
         layout.addWidget(self.side_filter_selector)
 
+    def setupSideFilterSelectorForCompare(self, layout):
+        self.side_filter_selector_for_compare = QComboBox()
+        self.side_filter_selector_for_compare.setEditable(True)
+        self.side_filter_selector_for_compare.currentIndexChanged.connect(self.update_compare_part_loads_plots)
+        layout.addWidget(self.side_filter_selector_for_compare)
+
     def populate_side_filter_selector(self):
         pattern = re.compile(r'(?<=\s-)(.*?)(?=\s*\()')
         sides = set()
         for col in self.df.columns:
+            # Skip columns starting with 'Phase_'
+            if col.startswith('Phase_'):
+                continue
             match = pattern.search(col)
             if match:
                 sides.add(match.group(1).strip())
+
         self.side_filter_selector.addItems(sorted(sides))
         self.side_filter_selector_for_compare.addItems(sorted(sides))
 
@@ -2715,3 +2827,4 @@ if __name__ == "__main__":
 # endregion
 
 #TODO - The last time point of each partition should be the first time point of the following partition. Its data value should be zero.
+#TODO - Modallar için limit search to range aç, 1.5 katına ayarla.
