@@ -1,6 +1,6 @@
 '''
 Author: Kamil Emre Atay (k5483)
-Version: 0.95
+Version: 0.96
 Script Name: we_mechload_viewer.py
 
 Tested in Python version 3.10.
@@ -22,7 +22,8 @@ from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
 from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QLineEdit, QSpinBox,
                              QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox, QGroupBox,
-                             QDialog, QListWidget, QListWidgetItem)
+                             QDialog, QListWidget, QListWidgetItem, QMenuBar, QMenu, QAction,
+                             QDockWidget, QTreeView, QFileSystemModel, QMainWindow)
 from PyQt5.QtGui import QFont, QIcon
 import plotly.graph_objects as go
 import numpy as np
@@ -141,7 +142,7 @@ def main():
 
         print(df)
 
-        return df, DATA_DOMAIN
+        return df, DATA_DOMAIN, folder_selected_raw_data
     except Exception as e:
         QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
         sys.exit()
@@ -149,7 +150,7 @@ def main():
 
 # region Run the file reader
 if __name__ == "__main__":
-    data, DATA_DOMAIN = main()
+    data, DATA_DOMAIN, selected_folder = main()
 
     # Write the raw data with correct headers inside the solution directory
     data.to_csv("full_data.csv", index=False)
@@ -160,13 +161,61 @@ if __name__ == "__main__":
 # endregion
 
 # region Set up the main GUI and its functions
-class WE_load_plotter(QWidget):
+class WE_load_plotter(QMainWindow):
 #######################################
     # region Initialize main window & tabs
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, raw_data_folder=None):
         super(WE_load_plotter, self).__init__(parent)
+        self.raw_data_folder = raw_data_folder  # Store the raw data folder path
         self.init_variables()
         self.init_ui()
+
+    def create_directory_tree_dock(self):
+        # Create a dock widget titled "Data Folders"
+        dock = QDockWidget("Data Folders", self)
+        dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+
+        self.tree_view = QTreeView(dock)
+        self.file_model = QFileSystemModel()
+        self.file_model.setFilter(QtCore.QDir.NoDotAndDotDot | QtCore.QDir.AllDirs)
+
+        parent_folder = os.path.dirname(self.raw_data_folder) if self.raw_data_folder else os.getcwd()
+        self.file_model.setRootPath(parent_folder)
+        self.tree_view.setModel(self.file_model)
+        self.tree_view.setRootIndex(self.file_model.index(parent_folder))
+
+        # Hide extra columns so that only the folder names show.
+        self.tree_view.setColumnHidden(1, True)
+        self.tree_view.setColumnHidden(2, True)
+        self.tree_view.setColumnHidden(3, True)
+
+        # Optionally, hide the header for a minimalist look.
+        self.tree_view.header().setVisible(False)
+
+        # Apply a custom stylesheet for a modern look.
+        self.tree_view.setStyleSheet("""
+                QTreeView {
+                    background-color: #f7f7f7;
+                    border: none;
+                }
+                QTreeView::item {
+                    padding: 5px;
+                }
+                QTreeView::item:selected {
+                    background-color: #00838f;
+                    color: white;
+                }
+            """)
+
+        # Enable multi-selection using Ctrl/Shift.
+        self.tree_view.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+
+        dock.setWidget(self.tree_view)
+        self.tree_view.selectionModel().selectionChanged.connect(self.on_directory_selected)
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, dock)
+
+        # Store the dock widget for later use (like toggle actions)
+        self.tree_dock = dock
 
     def init_variables(self):
 
@@ -220,8 +269,32 @@ class WE_load_plotter(QWidget):
         self.number_limit_of_data_points_shown_for_each_trace = 10000
 
     def init_ui(self):
-        tab_widget = QTabWidget(self)
+        # Create a menu bar and add the File menu with an Open action.
+        menu_bar = QMenuBar(self)
+        file_menu = QMenu("File", self)
+        menu_bar.addMenu(file_menu)
+        open_action = QAction("Open", self)
+        open_action.triggered.connect(self.open_new_data)
+        file_menu.addAction(open_action)
 
+        # Create and add the directory tree dock.
+        self.create_directory_tree_dock()
+
+        # Create a View menu to toggle the directory dock.
+        view_menu = QMenu("View", self)
+        # Add the toggle action for the dock widget.
+        view_menu.addAction(self.tree_dock.toggleViewAction())
+        menu_bar.addMenu(view_menu)
+
+        # Set the menu bar for the QMainWindow.
+        self.setMenuBar(menu_bar)
+
+        # Create a central widget with a vertical layout.
+        central_widget = QWidget(self)
+        central_layout = QVBoxLayout(central_widget)
+
+        # Create the tab widget and add your tabs.
+        tab_widget = QTabWidget(central_widget)
         tab_widget.setStyleSheet("""
             QTabBar::tab {
                 background: #00838f;
@@ -245,9 +318,6 @@ class WE_load_plotter(QWidget):
                 padding: 5px;
             }
         """)
-
-        main_layout = QVBoxLayout(self)
-
         self.tab1 = self.create_tab("Single Data", self.setupTab1)
         self.tab2 = self.create_tab("Interface Data", self.setupTab2)
         self.tab3 = self.create_tab("Part Loads", self.setupTab3)
@@ -266,16 +336,17 @@ class WE_load_plotter(QWidget):
         tab_widget.addTab(compare_part_loads_tab, "Compare Data (Part Loads)")
         tab_widget.addTab(settings_tab, "Settings")
 
-        main_layout.addWidget(tab_widget)
-        self.setLayout(main_layout)
-        self.setWindowTitle("WE MechLoad Viewer - v0.95")
+        # Add the tab widget to the central layout.
+        central_layout.addWidget(tab_widget)
+        # Set the central widget of the QMainWindow.
+        self.setCentralWidget(central_widget)
 
-        # Dynamically locate the icon
+        # Update the window title and icon.
+        folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
+        parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
+        self.setWindowTitle(f"WE MechLoad Viewer - v0.96 | ParentFolder: {parent_folder} / {folder_name}")
         icon_path = self.get_resource_path("icon.ico")
-
-        # Set the window icon
         self.setWindowIcon(QIcon(icon_path))
-
         self.showMaximized()
 
     def get_resource_path(self, relative_path):
@@ -2017,6 +2088,133 @@ class WE_load_plotter(QWidget):
         app_ansys.close()
         # endregion
         ############################################################################
+
+    def open_new_data(self):
+        try:
+            folder_selected_raw_data = select_directory('Please select a directory for raw data')
+            folder_selected_headers_data = select_directory('Please select a directory for data headers')
+            if not folder_selected_raw_data or not folder_selected_headers_data:
+                return
+
+            file_path_full_data = get_file_path(folder_selected_raw_data, 'full.pld')
+            file_path_headers_data = get_file_path(folder_selected_headers_data, 'max.pld')
+            if not file_path_full_data or not file_path_headers_data:
+                QMessageBox.critical(self, 'Error', "No required files found! Exiting.")
+                return
+
+            dfs = [read_pld_file(file_path) for file_path in file_path_full_data]
+            new_df = pd.concat(dfs, ignore_index=True)
+
+            # --- NEW: Determine the new data domain ---
+            if 'FREQ' in new_df.columns:
+                new_domain = 'FREQ'
+            elif 'TIME' in new_df.columns:
+                new_domain = 'TIME'
+            else:
+                QMessageBox.critical(self, "Error", "Data does not contain a recognized domain ('FREQ' or 'TIME').")
+                return
+
+            # --- NEW: Compare with the current domain ---
+            global DATA_DOMAIN
+            if new_domain != DATA_DOMAIN:
+                QMessageBox.warning(self, "Domain Mismatch",
+                                    f"Cannot load new data. Current domain is '{DATA_DOMAIN}' while new data domain is '{new_domain}'.")
+                return
+
+            # --- Continue as before ---
+            df_intf_before = read_pld_log_file(file_path_headers_data[0])
+            if new_domain == 'FREQ':
+                df_intf = insert_phase_columns(df_intf_before)
+                df_intf_labels = df_intf.iloc[0]
+                new_columns = ['NO', 'FREQ'] + df_intf_labels.tolist()
+            elif new_domain == 'TIME':
+                df_intf = df_intf_before
+                df_intf_labels = df_intf.iloc[0]
+                new_columns = ['NO', 'TIME'] + df_intf_labels.tolist()
+
+            additional_columns_needed = len(new_df.columns) - len(new_columns)
+            if additional_columns_needed > 0:
+                extended_new_columns = new_columns + [f"Extra_Column_{i}" for i in range(1, additional_columns_needed + 1)]
+                new_df.columns = extended_new_columns
+            else:
+                new_df.columns = new_columns[:len(new_df.columns)]
+
+            self.df = new_df
+            self.df.to_csv("full_data.csv", index=False)
+
+            # Optionally update UI elements (e.g. repopulate selectors) here...
+            QMessageBox.information(self, "File Opened", "New data loaded successfully!")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open new data: {str(e)}")
+
+    def on_directory_selected(self, selected, deselected):
+        indexes = self.tree_view.selectionModel().selectedIndexes()
+        if indexes:
+            index = indexes[0]
+            selected_path = self.file_model.filePath(index)
+            if not os.path.isdir(selected_path):
+                return
+            files = os.listdir(selected_path)
+            # Check that the folder contains both "full.pld" and "max.pld" files.
+            has_full = any(f.endswith("full.pld") for f in files)
+            has_max = any(f.endswith("max.pld") for f in files)
+            if not (has_full and has_max):
+                # You may show a message if desired.
+                return
+
+            try:
+                # Load the "full.pld" files from the selected folder.
+                dfs = [read_pld_file(os.path.join(selected_path, f))
+                       for f in files if f.endswith("full.pld")]
+                new_df = pd.concat(dfs, ignore_index=True)
+
+                # Determine new data domain.
+                if 'FREQ' in new_df.columns:
+                    new_domain = 'FREQ'
+                elif 'TIME' in new_df.columns:
+                    new_domain = 'TIME'
+                else:
+                    QMessageBox.critical(self, "Error",
+                                         "Data does not contain a recognized domain ('FREQ' or 'TIME').")
+                    return
+
+                global DATA_DOMAIN
+                if new_domain != DATA_DOMAIN:
+                    QMessageBox.warning(self, "Domain Mismatch",
+                                        f"Cannot load new data. Current domain is '{DATA_DOMAIN}' while new data domain is '{new_domain}'.")
+                    return
+
+                # Process header file from one of the "max.pld" files.
+                max_files = [os.path.join(selected_path, f) for f in files if f.endswith("max.pld")]
+                if not max_files:
+                    QMessageBox.critical(self, "Error", "No header file (max.pld) found in selected folder.")
+                    return
+                df_intf_before = read_pld_log_file(max_files[0])
+                if new_domain == 'FREQ':
+                    df_intf = insert_phase_columns(df_intf_before)
+                    df_intf_labels = df_intf.iloc[0]
+                    new_columns = ['NO', 'FREQ'] + df_intf_labels.tolist()
+                else:
+                    df_intf = df_intf_before
+                    df_intf_labels = df_intf.iloc[0]
+                    new_columns = ['NO', 'TIME'] + df_intf_labels.tolist()
+
+                additional_columns_needed = len(new_df.columns) - len(new_columns)
+                if additional_columns_needed > 0:
+                    extended_new_columns = new_columns + [f"Extra_Column_{i}" for i in
+                                                          range(1, additional_columns_needed + 1)]
+                    new_df.columns = extended_new_columns
+                else:
+                    new_df.columns = new_columns[:len(new_df.columns)]
+
+                self.df = new_df
+                self.df.to_csv("full_data.csv", index=False)
+
+                QMessageBox.information(self, "Data Loaded", f"Data from\n{selected_path}\nloaded successfully!")
+                # Refresh your plots/UI as needed.
+                self.update_all_transient_data_plots()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load data from selected folder: {str(e)}")
     # endregion
 
     # region Define the logic for each combobox
@@ -2821,7 +3019,7 @@ class WE_load_plotter(QWidget):
 if __name__ == "__main__":
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
-    main = WE_load_plotter()
+    main = WE_load_plotter(raw_data_folder=selected_folder)
     main.show()
     sys.exit(app.exec_())
 # endregion
