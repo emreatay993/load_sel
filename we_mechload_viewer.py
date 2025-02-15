@@ -1786,7 +1786,7 @@ class WE_load_plotter(QMainWindow):
         analysis_settings_modal.PropertyByName("NumModesToFind").InternalValue = 100
         analysis_settings_modal.PropertyByName("RangeSearch").InternalValue = 1  # Limit Search to Range: On
         analysis_settings_modal.PropertyByName("MaxFrequency").InternalValue = \
-            self.sample_rate  # Max Freq. to find is 1.5x the average sampling rate of the time points
+            self.sample_rate  # Max Freq. to find is 2x the freq of the time points, calculated from average sampling rate (since nyquist frequency is about 2x or more)
         #analysis_settings_modal.PropertyByName("MSUPSkipExpansion").InternalValue = 1  # On-Demand Expansion Option: Yes
         analysis_settings_modal.PropertyByName("SolverUnitsControl").InternalValue = 1  # Manual
         analysis_settings_modal.PropertyByName("SelectedSolverUnitSystem").InternalValue  # nmm unit system
@@ -3227,4 +3227,3 @@ if __name__ == "__main__":
 # endregion
 
 #TODO - The last time point of each partition should be the first time point of the following partition. Its data value should be zero.
-#TODO - Modallar için limit search to range aç, 1.5 katına ayarla.
