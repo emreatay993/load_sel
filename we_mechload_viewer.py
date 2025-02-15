@@ -104,14 +104,13 @@ def main():
         if app is None:
             app = QApplication(sys.argv)
 
-        folder_selected_raw_data = select_directory('Please select a directory for raw data')
-        folder_selected_headers_data = select_directory('Please select a directory for data headers')
+        folder_selected = select_directory('Please select a directory for raw data and headers')
 
-        if not folder_selected_raw_data or not folder_selected_headers_data:
+        if not folder_selected:
             sys.exit()
 
-        file_path_full_data = get_file_path(folder_selected_raw_data, 'full.pld')
-        file_path_headers_data = get_file_path(folder_selected_headers_data, 'max.pld')
+        file_path_full_data = get_file_path(folder_selected, 'full.pld')
+        file_path_headers_data = get_file_path(folder_selected, 'max.pld')
 
         if not file_path_full_data or not file_path_headers_data:
             QMessageBox.critical(None, 'Error', "No required files found! Exiting.")
@@ -142,7 +141,7 @@ def main():
 
         print(df)
 
-        return df, DATA_DOMAIN, folder_selected_raw_data
+        return df, DATA_DOMAIN, folder_selected
     except Exception as e:
         QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
         sys.exit()
@@ -344,7 +343,7 @@ class WE_load_plotter(QMainWindow):
         # Update the window title and icon.
         folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
         parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
-        self.setWindowTitle(f"WE MechLoad Viewer - v0.96 | ParentFolder: {parent_folder} / {folder_name}")
+        self.setWindowTitle(f"WE MechLoad Viewer - v0.96    |    (Directory Folder: {parent_folder})")
         icon_path = self.get_resource_path("icon.ico")
         self.setWindowIcon(QIcon(icon_path))
         self.showMaximized()
@@ -819,19 +818,19 @@ class WE_load_plotter(QMainWindow):
     # region Define the logics to be executed behind each button
     def select_compare_data(self):
         try:
-            folder_selected_raw_data = select_directory('Please select a directory for raw data (Comparison)')
-            folder_selected_headers_data = select_directory('Please select a directory for data headers (Comparison)')
-
-            if not folder_selected_raw_data or not folder_selected_headers_data:
+            # Ask for one folder containing both comparison full.pld and max.pld files
+            folder_selected = select_directory('Please select a directory for raw data and headers (Comparison)')
+            if not folder_selected:
                 return
 
-            file_path_full_data = get_file_path(folder_selected_raw_data, 'full.pld')
-            file_path_headers_data = get_file_path(folder_selected_headers_data, 'max.pld')
+            file_path_full_data = get_file_path(folder_selected, 'full.pld')
+            file_path_headers_data = get_file_path(folder_selected, 'max.pld')
 
             if not file_path_full_data or not file_path_headers_data:
                 QMessageBox.critical(None, 'Error', "No required files found! Exiting.")
                 return
 
+            # Load the 'full.pld' data
             dfs = [read_pld_file(file_path) for file_path in file_path_full_data]
             df_compare = pd.concat(dfs, ignore_index=True)
 
@@ -839,11 +838,19 @@ class WE_load_plotter(QMainWindow):
             original_first_col = self.df.columns[1]
             compared_first_col = df_compare.columns[1]
             if original_first_col != compared_first_col:
-                QMessageBox.critical(None, 'Error',
-                                     f"The X data columns of original and compared data are different:\nOriginal Data: {original_first_col}\nCompared Data: {compared_first_col}")
+                QMessageBox.critical(
+                    None,
+                    'Error',
+                    f"The X data columns of original and compared data are different:\n"
+                    f"Original Data: {original_first_col}\nCompared Data: {compared_first_col}"
+                )
                 return
 
+            # Load headers (max.pld)
             df_intf_before = read_pld_log_file(file_path_headers_data[0])
+
+            # Figure out the domain from the current data (self.df)
+            # and build new_columns accordingly
             if 'FREQ' in self.df.columns:
                 df_intf = insert_phase_columns(df_intf_before)
                 df_intf_labels = pd.DataFrame(df_intf.iloc[0]).T
@@ -855,8 +862,9 @@ class WE_load_plotter(QMainWindow):
 
             additional_columns_needed = len(df_compare.columns) - len(new_columns)
             if (additional_columns_needed > 0):
-                extended_new_columns = new_columns + [f"Extra_Column_{i}" for i in
-                                                      range(1, additional_columns_needed + 1)]
+                extended_new_columns = new_columns + [
+                    f"Extra_Column_{i}" for i in range(1, additional_columns_needed + 1)
+                ]
                 df_compare.columns = extended_new_columns
             else:
                 df_compare.columns = new_columns[:len(df_compare.columns)]
@@ -869,12 +877,18 @@ class WE_load_plotter(QMainWindow):
             # Align columns with the main dataframe
             self.df_compare = df_compare.reindex(columns=self.df.columns, fill_value=np.nan)
 
+            # Also store it in df_compare in case you need it raw
             self.df_compare = df_compare
+
+            # Update compare_column_selector with columns from the new data
             self.compare_column_selector.clear()
-            compare_columns = [col for col in self.df_compare.columns if
-                               'Phase_' not in col and col != 'FREQ' and col != 'TIME' and col != 'NO']
+            compare_columns = [
+                col for col in self.df_compare.columns
+                if 'Phase_' not in col and col not in ['FREQ', 'TIME', 'NO']
+            ]
             self.compare_column_selector.addItems(compare_columns)
             self.compare_column_selector.currentIndexChanged.connect(self.update_compare_plots)
+
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred: {str(e)}")
 
@@ -2091,21 +2105,23 @@ class WE_load_plotter(QMainWindow):
 
     def open_new_data(self):
         try:
-            folder_selected_raw_data = select_directory('Please select a directory for raw data')
-            folder_selected_headers_data = select_directory('Please select a directory for data headers')
-            if not folder_selected_raw_data or not folder_selected_headers_data:
+            # Ask for one folder containing both raw data and header files
+            folder_selected = select_directory('Please select a directory for raw data and headers')
+            if not folder_selected:
                 return
 
-            file_path_full_data = get_file_path(folder_selected_raw_data, 'full.pld')
-            file_path_headers_data = get_file_path(folder_selected_headers_data, 'max.pld')
+            file_path_full_data = get_file_path(folder_selected, 'full.pld')
+            file_path_headers_data = get_file_path(folder_selected, 'max.pld')
+
             if not file_path_full_data or not file_path_headers_data:
-                QMessageBox.critical(self, 'Error', "No required files found! Exiting.")
+                QMessageBox.critical(self, 'Error', "No required files found!")
                 return
 
+            # Read and combine all full.pld files in that folder
             dfs = [read_pld_file(file_path) for file_path in file_path_full_data]
             new_df = pd.concat(dfs, ignore_index=True)
 
-            # --- NEW: Determine the new data domain ---
+            # Determine the new data domain
             if 'FREQ' in new_df.columns:
                 new_domain = 'FREQ'
             elif 'TIME' in new_df.columns:
@@ -2114,14 +2130,17 @@ class WE_load_plotter(QMainWindow):
                 QMessageBox.critical(self, "Error", "Data does not contain a recognized domain ('FREQ' or 'TIME').")
                 return
 
-            # --- NEW: Compare with the current domain ---
+            # Compare with the current domain
             global DATA_DOMAIN
             if new_domain != DATA_DOMAIN:
-                QMessageBox.warning(self, "Domain Mismatch",
-                                    f"Cannot load new data. Current domain is '{DATA_DOMAIN}' while new data domain is '{new_domain}'.")
+                QMessageBox.warning(
+                    self,
+                    "Domain Mismatch",
+                    f"Cannot load new data. Current domain is '{DATA_DOMAIN}' while new data domain is '{new_domain}'."
+                )
                 return
 
-            # --- Continue as before ---
+            # Continue as before
             df_intf_before = read_pld_log_file(file_path_headers_data[0])
             if new_domain == 'FREQ':
                 df_intf = insert_phase_columns(df_intf_before)
@@ -2143,54 +2162,100 @@ class WE_load_plotter(QMainWindow):
             self.df.to_csv("full_data.csv", index=False)
 
             # Optionally update UI elements (e.g. repopulate selectors) here...
+            # ---
+
+            self.raw_data_folder = folder_selected  # store the newly selected folder
+            folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
+            parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
+            # Rename the windows title so that directory is updated
+            self.setWindowTitle(f"WE MechLoad Viewer - v0.96    |    (Directory Folder: {parent_folder})")
+
+            self.refresh_directory_tree()
+
             QMessageBox.information(self, "File Opened", "New data loaded successfully!")
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open new data: {str(e)}")
 
+    def refresh_directory_tree(self, new_folder=None):
+        """
+        Recompute and set the root path for self.file_model and update
+        the tree view's root index. If new_folder is given, use that.
+        Otherwise, default to self.raw_data_folder.
+        """
+        if not new_folder:
+            new_folder = self.raw_data_folder
+
+        if not new_folder:
+            return
+
+        # If you want to show the parent folder in the tree:
+        parent_folder = os.path.dirname(new_folder)
+        # Or, if you prefer the folder itself to be the root, you can do:
+        # parent_folder = new_folder
+
+        # Update the file model's root path
+        self.file_model.setRootPath(parent_folder)
+
+        # Retrieve the matching index in the model
+        new_index = self.file_model.index(parent_folder)
+        if new_index.isValid():
+            self.tree_view.setRootIndex(new_index)
+
     def on_directory_selected(self, selected, deselected):
-        indexes = self.tree_view.selectionModel().selectedIndexes()
-        if indexes:
-            index = indexes[0]
-            selected_path = self.file_model.filePath(index)
-            if not os.path.isdir(selected_path):
-                return
-            files = os.listdir(selected_path)
-            # Check that the folder contains both "full.pld" and "max.pld" files.
+        indexes = self.tree_view.selectionModel().selectedRows()
+        if not indexes:
+            return
+
+        combined_dfs = []
+        loaded_indexes = []
+
+        for index in indexes:
+            folder = self.file_model.filePath(index)
+            if not os.path.isdir(folder):
+                continue
+            files = os.listdir(folder)
             has_full = any(f.endswith("full.pld") for f in files)
             has_max = any(f.endswith("max.pld") for f in files)
             if not (has_full and has_max):
-                # You may show a message if desired.
-                return
+                QMessageBox.warning(
+                    self,
+                    "Invalid Folder",
+                    f"Folder '{os.path.basename(folder)}' does not contain the input files required."
+                    f"\n\nSkipping this folder."
+                )
+                continue
 
             try:
-                # Load the "full.pld" files from the selected folder.
-                dfs = [read_pld_file(os.path.join(selected_path, f))
+                dfs = [read_pld_file(os.path.join(folder, f))
                        for f in files if f.endswith("full.pld")]
-                new_df = pd.concat(dfs, ignore_index=True)
+                if not dfs:
+                    continue
+                df_temp = pd.concat(dfs, ignore_index=True)
 
-                # Determine new data domain.
-                if 'FREQ' in new_df.columns:
-                    new_domain = 'FREQ'
-                elif 'TIME' in new_df.columns:
-                    new_domain = 'TIME'
+                if 'FREQ' in df_temp.columns:
+                    folder_data_type = 'FREQ'
+                elif 'TIME' in df_temp.columns:
+                    folder_data_type = 'TIME'
                 else:
-                    QMessageBox.critical(self, "Error",
-                                         "Data does not contain a recognized domain ('FREQ' or 'TIME').")
-                    return
+                    continue
 
+                # Compare with the program's domain
                 global DATA_DOMAIN
-                if new_domain != DATA_DOMAIN:
-                    QMessageBox.warning(self, "Domain Mismatch",
-                                        f"Cannot load new data. Current domain is '{DATA_DOMAIN}' while new data domain is '{new_domain}'.")
-                    return
+                if folder_data_type != DATA_DOMAIN:
+                    QMessageBox.warning(
+                        self,
+                        "Domain Mismatch",
+                        f"Folder '{os.path.basename(folder)}' has data type '{folder_data_type}', but the program is initialized as '{DATA_DOMAIN}'."
+                        f"\nSkipping this folder. Restart the program if you would like to read the data type '{folder_data_type}'."
+                    )
+                    continue
 
-                # Process header file from one of the "max.pld" files.
-                max_files = [os.path.join(selected_path, f) for f in files if f.endswith("max.pld")]
-                if not max_files:
-                    QMessageBox.critical(self, "Error", "No header file (max.pld) found in selected folder.")
-                    return
-                df_intf_before = read_pld_log_file(max_files[0])
-                if new_domain == 'FREQ':
+                header_files = [os.path.join(folder, f) for f in files if f.endswith("max.pld")]
+                if not header_files:
+                    continue
+                df_intf_before = read_pld_log_file(header_files[0])
+                if 'FREQ' in df_temp.columns:
                     df_intf = insert_phase_columns(df_intf_before)
                     df_intf_labels = df_intf.iloc[0]
                     new_columns = ['NO', 'FREQ'] + df_intf_labels.tolist()
@@ -2199,22 +2264,40 @@ class WE_load_plotter(QMainWindow):
                     df_intf_labels = df_intf.iloc[0]
                     new_columns = ['NO', 'TIME'] + df_intf_labels.tolist()
 
-                additional_columns_needed = len(new_df.columns) - len(new_columns)
+                additional_columns_needed = len(df_temp.columns) - len(new_columns)
                 if additional_columns_needed > 0:
                     extended_new_columns = new_columns + [f"Extra_Column_{i}" for i in
                                                           range(1, additional_columns_needed + 1)]
-                    new_df.columns = extended_new_columns
+                    df_temp.columns = extended_new_columns
                 else:
-                    new_df.columns = new_columns[:len(new_df.columns)]
+                    df_temp.columns = new_columns[:len(df_temp.columns)]
 
-                self.df = new_df
-                self.df.to_csv("full_data.csv", index=False)
+                df_temp['DataFolder'] = os.path.basename(folder)
+                combined_dfs.append(df_temp)
 
-                QMessageBox.information(self, "Data Loaded", f"Data from\n{selected_path}\nloaded successfully!")
-                # Refresh your plots/UI as needed.
-                self.update_all_transient_data_plots()
+                # This folder was loaded successfully; store its index
+                loaded_indexes.append(index)
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load data from selected folder: {str(e)}")
+                QMessageBox.critical(self, "Error", f"Failed to load data from {folder}: {str(e)}")
+                return
+
+        if not combined_dfs:
+            return
+
+        new_df = pd.concat(combined_dfs, ignore_index=True)
+        self.df = new_df
+        self.df.to_csv("full_data.csv", index=False)
+
+        # Clear the current selection, then select only the loaded folders
+        self.tree_view.selectionModel().clearSelection()
+
+        # Re‑select each loaded index
+        for loaded_index in loaded_indexes:
+            select = QtCore.QItemSelection(loaded_index, loaded_index)
+            self.tree_view.selectionModel().select(select, QtCore.QItemSelectionModel.Select)
+
+        QMessageBox.information(self, "Data Loaded", "Data from selected folders loaded successfully!")
+        self.update_all_transient_data_plots()
     # endregion
 
     # region Define the logic for each combobox
@@ -2711,7 +2794,7 @@ class WE_load_plotter(QMainWindow):
     # endregion
 
     # region Main methods for updating the plots after a selection is made
-    def update_plots_tab1(self):
+    def update_plots_tab1_Yedek(self):
         selected_column = self.column_selector.currentText()
         if selected_column:
             x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
@@ -2756,6 +2839,125 @@ class WE_load_plotter(QMainWindow):
                 y_data_dict = {phase_column: self.df[phase_column]}
                 self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
                                                                                                  y_data_dict)
+
+    def update_plots_tab1(self):
+        selected_column = self.column_selector.currentText()
+        if not selected_column:
+            return
+
+        # Determine the x-axis data and label.
+        if 'FREQ' in self.df.columns:
+            x_data = self.df['FREQ']
+            x_label = 'Freq [Hz]'
+        else:
+            x_data = self.df['TIME']
+            x_label = 'Time [s]'
+
+        # Define a custom hover template that we want applied to all traces.
+        custom_hover = (
+                '%{fullData.name}<br>' +
+                ('Hz: ' if 'FREQ' in self.df.columns else 'Time: ') +
+                '%{x}<br>Value: %{y:.3f}<extra></extra>'
+        )
+
+        # Build the magnitude plot.
+        fig = go.Figure()
+        # Check if multiple data folders are present.
+        if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() > 1:
+            # Loop through each group (each data folder) and add a trace.
+            for folder, group in self.df.groupby('DataFolder'):
+                # Apply Butterworth filter if in TIME domain and filtering is enabled.
+                if 'TIME' in self.df.columns and self.filter_checkbox.isChecked():
+                    y_vals = self.apply_butterworth_filter(group[selected_column])
+                else:
+                    y_vals = group[selected_column]
+                fig.add_trace(go.Scatter(
+                    x=group[x_data.name],
+                    y=y_vals,
+                    mode='lines',
+                    name=folder,
+                    hovertemplate=custom_hover
+                ))
+        else:
+            # Single data source: use the combined data.
+            y_vals = self.df[selected_column]
+            if 'TIME' in self.df.columns and self.filter_checkbox.isChecked():
+                y_vals = self.apply_butterworth_filter(y_vals)
+            fig.add_trace(go.Scatter(
+                x=x_data,
+                y=y_vals,
+                mode='lines',
+                name=selected_column,
+                hovertemplate=custom_hover
+            ))
+        # Use the same legend and hover settings as used in the Part Loads tab.
+        legend_position = self.get_legend_position()
+        fig.update_layout(
+            margin=dict(l=20, r=20, t=35, b=35),
+            legend=dict(
+                font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                x=legend_position['x'],
+                y=legend_position['y'],
+                xanchor=legend_position.get('xanchor', 'auto'),
+                yanchor=legend_position.get('yanchor', 'top'),
+                bgcolor='rgba(255,255,255,0.5)'
+            ),
+            hovermode=self.hover_mode,
+            hoverlabel=dict(
+                bgcolor='rgba(255,255,255,0.8)',
+                font=dict(family='Open Sans', size=self.hover_font_size, color='black')
+            ),
+            font=dict(family='Open Sans', size=self.default_font_size, color='black'),
+            showlegend=self.legend_visible,
+            yaxis_title="Data"
+        )
+        self.regular_plot.setHtml(
+            fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+        )
+
+        # Build the phase plot (only applicable for frequency domain).
+        if 'FREQ' in self.df.columns:
+            phase_column = 'Phase_' + selected_column
+            fig_phase = go.Figure()
+            if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() > 1:
+                for folder, group in self.df.groupby('DataFolder'):
+                    fig_phase.add_trace(go.Scatter(
+                        x=group[x_data.name],
+                        y=group[phase_column],
+                        mode='lines',
+                        name=folder,
+                        hovertemplate=custom_hover
+                    ))
+            else:
+                fig_phase.add_trace(go.Scatter(
+                    x=x_data,
+                    y=self.df[phase_column],
+                    mode='lines',
+                    name=phase_column,
+                    hovertemplate=custom_hover
+                ))
+            fig_phase.update_layout(
+                margin=dict(l=20, r=20, t=35, b=35),
+                legend=dict(
+                    font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                    x=legend_position['x'],
+                    y=legend_position['y'],
+                    xanchor=legend_position.get('xanchor', 'auto'),
+                    yanchor=legend_position.get('yanchor', 'top'),
+                    bgcolor='rgba(255,255,255,0.5)'
+                ),
+                hovermode=self.hover_mode,
+                hoverlabel=dict(
+                    bgcolor='rgba(255,255,255,0.8)',
+                    font=dict(family='Open Sans', size=self.hover_font_size, color='black')
+                ),
+                font=dict(family='Open Sans', size=self.default_font_size, color='black'),
+                showlegend=self.legend_visible,
+                yaxis_title="Phase"
+            )
+            self.phase_plot.setHtml(
+                fig_phase.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+            )
 
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
