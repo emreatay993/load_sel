@@ -1,6 +1,6 @@
 '''
 Author: Kamil Emre Atay (k5483)
-Version: 0.96
+Version: 0.96.1
 Script Name: we_mechload_viewer.py
 
 Tested in Python version 3.10.
@@ -2202,13 +2202,14 @@ class WE_load_plotter(QMainWindow):
         if new_index.isValid():
             self.tree_view.setRootIndex(new_index)
 
+
     def on_directory_selected(self, selected, deselected):
         indexes = self.tree_view.selectionModel().selectedRows()
         if not indexes:
             return
 
         combined_dfs = []
-        loaded_indexes = []
+        valid_indexes = []  # To store indexes that pass validation
 
         for index in indexes:
             folder = self.file_model.filePath(index)
@@ -2221,18 +2222,15 @@ class WE_load_plotter(QMainWindow):
                 QMessageBox.warning(
                     self,
                     "Invalid Folder",
-                    f"Folder '{os.path.basename(folder)}' does not contain the input files required."
-                    f"\n\nSkipping this folder."
+                    f"Folder '{os.path.basename(folder)}' does not contain the required input files.\n\nSkipping this folder."
                 )
                 continue
 
             try:
-                dfs = [read_pld_file(os.path.join(folder, f))
-                       for f in files if f.endswith("full.pld")]
+                dfs = [read_pld_file(os.path.join(folder, f)) for f in files if f.endswith("full.pld")]
                 if not dfs:
                     continue
                 df_temp = pd.concat(dfs, ignore_index=True)
-
                 if 'FREQ' in df_temp.columns:
                     folder_data_type = 'FREQ'
                 elif 'TIME' in df_temp.columns:
@@ -2240,14 +2238,12 @@ class WE_load_plotter(QMainWindow):
                 else:
                     continue
 
-                # Compare with the program's domain
                 global DATA_DOMAIN
                 if folder_data_type != DATA_DOMAIN:
                     QMessageBox.warning(
                         self,
                         "Domain Mismatch",
-                        f"Folder '{os.path.basename(folder)}' has data type '{folder_data_type}', but the program is initialized as '{DATA_DOMAIN}'."
-                        f"\nSkipping this folder. Restart the program if you would like to read the data type '{folder_data_type}'."
+                        f"Folder '{os.path.basename(folder)}' has data type '{folder_data_type}', but the program is initialized as '{DATA_DOMAIN}'.\nSkipping this folder."
                     )
                     continue
 
@@ -2272,11 +2268,10 @@ class WE_load_plotter(QMainWindow):
                 else:
                     df_temp.columns = new_columns[:len(df_temp.columns)]
 
+                # Tag the DataFrame with the folder name.
                 df_temp['DataFolder'] = os.path.basename(folder)
                 combined_dfs.append(df_temp)
-
-                # This folder was loaded successfully; store its index
-                loaded_indexes.append(index)
+                valid_indexes.append(index)
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load data from {folder}: {str(e)}")
                 return
@@ -2288,13 +2283,8 @@ class WE_load_plotter(QMainWindow):
         self.df = new_df
         self.df.to_csv("full_data.csv", index=False)
 
-        # Clear the current selection, then select only the loaded folders
-        self.tree_view.selectionModel().clearSelection()
-
-        # Re‑select each loaded index
-        for loaded_index in loaded_indexes:
-            select = QtCore.QItemSelection(loaded_index, loaded_index)
-            self.tree_view.selectionModel().select(select, QtCore.QItemSelectionModel.Select)
+        # Instead of clearing and resetting the selection, let the valid selections remain.
+        # If needed, you might selectively remove invalid selections without overriding the user’s multi‑selection.
 
         QMessageBox.information(self, "Data Loaded", "Data from selected folders loaded successfully!")
         self.update_all_transient_data_plots()
