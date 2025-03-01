@@ -1314,7 +1314,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.5')
+        self.setWindowTitle('MSUP Smart Solver - v0.55')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
