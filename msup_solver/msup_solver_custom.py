@@ -12,9 +12,10 @@ from datetime import datetime
 
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
-                             QTextEdit, QTabWidget, QComboBox)
+                             QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
+                             QFileSystemModel)
 from PyQt5.QtGui import QPalette, QColor, QFont, QTextCursor
-from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl
+from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths
 import sys
 from io import StringIO
 import os
@@ -1254,7 +1255,54 @@ class MainWindow(QMainWindow):
 
         # Window title and dimensions
         self.setWindowTitle('MSUP Smart Solver - v0.5')
-        self.setGeometry(40, 40, 600, 670)
+        self.setGeometry(40, 40, 800, 670)
+
+        # Create a menu bar
+        menu_bar_style = """
+            QMenuBar {
+                background-color: #ffffff;  /* White background */
+                color: #000000;             /* Black text */
+                padding: 2px;               /* Reduced padding */
+                font-family: Arial;
+                font-size: 12px;            /* Smaller font size */
+            }
+            QMenuBar::item {
+                background-color: #ffffff;
+                color: #000000;
+                padding: 2px 5px;           /* Reduced padding */
+                margin: 0px;                /* Removed margin */
+            }
+            QMenuBar::item:selected {
+                background-color: #e0e0e0;  /* Light gray for hover effect */
+                border-radius: 2px;         /* Slightly rounded corners */
+            }
+            QMenu {
+                background-color: #ffffff;
+                color: #000000;
+                padding: 2px;
+                border: 1px solid #d0d0d0;  /* Light gray border */
+            }
+            QMenu::item {
+                background-color: transparent;
+                padding: 2px 10px;          /* Reduced padding */
+            }
+            QMenu::item:selected {
+                background-color: #e0e0e0;
+                border-radius: 2px;
+            }
+        """
+
+        self.menu_bar = QMenuBar(self)
+        self.setMenuBar(self.menu_bar)
+        self.menu_bar.setStyleSheet(menu_bar_style)
+
+        # Add "File" menu
+        file_menu = self.menu_bar.addMenu("File")
+
+        # Add "Select Project Directory" action
+        select_dir_action = QAction("Select Project Directory", self)
+        select_dir_action.triggered.connect(self.select_project_directory)
+        file_menu.addAction(select_dir_action)
 
         # Create a QTabWidget
         self.tab_widget = QTabWidget()
@@ -1288,6 +1336,120 @@ class MainWindow(QMainWindow):
 
         # Set the central widget of the main window to the tab widget
         self.setCentralWidget(self.tab_widget)
+
+        # Variable to store selected project directory
+        self.project_directory = None
+
+        # Create the Navigator (File Explorer)
+        self.create_navigator()
+
+    def create_navigator(self):
+        """Create a dockable navigator showing project directory contents."""
+        self.navigator_dock = QDockWidget("Navigator", self)
+        self.navigator_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.navigator_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+
+        # Get the Desktop path dynamically
+        desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+
+        # Create file system model
+        self.file_model = QFileSystemModel()
+        self.file_model.setRootPath(desktop_path)  # Initially Desktop, updates when project directory is selected
+        self.file_model.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)  # Show all files & folders
+
+        # Create Tree View
+        self.tree_view = QTreeView()
+        self.tree_view.setModel(self.file_model)
+        self.tree_view.setRootIndex(self.file_model.index(desktop_path))  # Start at Desktop
+        self.tree_view.setHeaderHidden(False)  # Show headers for resizing
+        self.tree_view.setMinimumWidth(240)  # Set a reasonable width
+        self.tree_view.setSortingEnabled(True)  # Allow sorting of files/folders
+
+        # Hide unwanted columns: 1 = Size, 2 = Type
+        self.tree_view.setColumnHidden(1, True)
+        self.tree_view.setColumnHidden(2, True)
+
+        # Adjust column width to fit content
+        self.tree_view.setColumnWidth(0, 250)  # Set a reasonable default width for file names
+        self.tree_view.header().setSectionResizeMode(0,
+                                                     self.tree_view.header().ResizeToContents)  # Auto-resize name column
+
+        # Apply style to match main buttons
+        navigator_title_style = """
+            QDockWidget::title {
+                background-color: #e7f0fd;  /* Match button background */
+                color: black;  /* Match button text color */
+                font-weight: bold;
+                font-size: 9px;
+                padding-top: 2px;
+                padding-bottom: 2px;
+                padding-left: 8px;
+                padding-right: 8px;
+                text-align: center;
+                border-bottom: 2px solid #5b9bd5;  /* Match button border */
+            }
+        """
+
+        # Tree View Styling (for Navigator contents)
+        tree_view_style = """
+            QTreeView {
+                font-size: 7.5pt;  /* Smaller font for tree contents */
+                background-color: #ffffff;  /* Keep it clean */
+                alternate-background-color: #f5f5f5;  /* Slight alternation for readability */
+                border: none;
+            }
+            QTreeView::item:hover {
+                background-color: #d0e4ff;  /* Subtle hover effect */
+            }
+            QTreeView::item:selected {
+                background-color: #5b9bd5;  /* Active selection color */
+                color: #ffffff;  /* White text when selected */
+            }
+            QHeaderView::section {
+                background-color: #e7f0fd;  /* Match the navigator title */
+                padding: 3px;
+                border: none;
+                font-weight: bold;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #f0f0f0;
+                width: 8px;
+            }
+            QScrollBar::handle:vertical {
+                background: #5b9bd5;
+                min-height: 20px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: none;
+            }
+        """
+
+        self.navigator_dock.setStyleSheet(navigator_title_style)
+        self.tree_view.setStyleSheet(tree_view_style)
+
+        # Set Tree View as the dock widget's main content
+        self.navigator_dock.setWidget(self.tree_view)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.navigator_dock)  # Add it to the left
+
+        # Add a "View" menu option to show/hide Navigator
+        view_menu = self.menu_bar.addMenu("View")
+        toggle_navigator_action = self.navigator_dock.toggleViewAction()
+        toggle_navigator_action.setText("Navigator")  # Rename action
+        view_menu.addAction(toggle_navigator_action)
+
+    def select_project_directory(self):
+        """Open a dialog to select a project directory and update the Navigator."""
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Project Directory")
+        if dir_path:
+            self.project_directory = dir_path
+            print(f"Project directory selected: {self.project_directory}")
+
+            # Update the navigator with the selected directory
+            self.file_model.setRootPath(self.project_directory)
+            self.tree_view.setRootIndex(self.file_model.index(self.project_directory))
+
 # endregion
 
 # region Run the main GUI
