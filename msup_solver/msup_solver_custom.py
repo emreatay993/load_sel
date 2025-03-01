@@ -597,6 +597,35 @@ class MSUPSmartSolverGUI(QWidget):
         self.logger = Logger(self.console_textbox)
         sys.stdout = self.logger  # Redirect stdout to the logger
 
+        #region Enable drag-and-drop for file selection buttons and text fields
+        self.coord_file_button.dragEnterEvent = self.dragEnterEvent
+        self.coord_file_button.dropEvent = self.dropEvent
+
+        self.coord_file_path.dragEnterEvent = self.dragEnterEvent
+        self.coord_file_path.dropEvent = self.dropEvent
+
+        self.stress_file_button.dragEnterEvent = self.dragEnterEvent
+        self.stress_file_button.dropEvent = self.dropEvent
+
+        self.stress_file_path.dragEnterEvent = self.dragEnterEvent
+        self.stress_file_path.dropEvent = self.dropEvent
+
+        self.steady_state_file_button.dragEnterEvent = self.dragEnterEvent
+        self.steady_state_file_button.dropEvent = self.dropEvent
+
+        self.steady_state_file_path.dragEnterEvent = self.dragEnterEvent
+        self.steady_state_file_path.dropEvent = self.dropEvent
+
+        self.coord_file_button.setAcceptDrops(True)
+        self.coord_file_path.setAcceptDrops(True)
+
+        self.stress_file_button.setAcceptDrops(True)
+        self.stress_file_path.setAcceptDrops(True)
+
+        self.steady_state_file_button.setAcceptDrops(True)
+        self.steady_state_file_path.setAcceptDrops(True)
+        #endregion
+
     def init_ui(self):
         # Set window background color
         palette = self.palette()
@@ -1195,6 +1224,37 @@ class MSUPSmartSolverGUI(QWidget):
         except Exception as e:
             print(f"Error updating plot with selected node: {e}")
 
+    #region Handle mouse-based UI functionality
+    def dragEnterEvent(self, event):
+        """Allow file drag into the UI only for supported widgets."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        """Handle dropped files based on which widget received the drop."""
+        for url in event.mimeData().urls():
+            file_path = url.toLocalFile()
+            self.handle_dropped_file(event.source(), file_path)
+
+    def handle_dropped_file(self, source_widget, file_path):
+        """Process the dropped file based on the target widget."""
+        if file_path.endswith('.csv') and source_widget in [self.stress_file_button, self.stress_file_path]:
+            self.stress_file_path.setText(file_path)
+            self.process_modal_stress_file(file_path)
+
+        elif file_path.endswith('.mcf') and source_widget in [self.coord_file_button, self.coord_file_path]:
+            self.coord_file_path.setText(file_path)
+            self.process_modal_coordinate_file(file_path)
+
+        elif file_path.endswith('.txt') and source_widget in [self.steady_state_file_button,
+                                                              self.steady_state_file_path]:
+            self.steady_state_file_path.setText(file_path)
+            self.process_steady_state_file(file_path)
+
+        else:
+            self.console_textbox.append(f"Unsupported file type or incorrect drag-drop target: {file_path}")
+    #endregion
+
 class MatplotlibWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1438,6 +1498,13 @@ class MainWindow(QMainWindow):
         toggle_navigator_action = self.navigator_dock.toggleViewAction()
         toggle_navigator_action.setText("Navigator")  # Rename action
         view_menu.addAction(toggle_navigator_action)
+
+        #Enable drag and drop on the TreeView
+        self.tree_view.setDragEnabled(True)
+        self.tree_view.setAcceptDrops(True)
+        self.tree_view.setDropIndicatorShown(True)
+        self.tree_view.setSelectionMode(QTreeView.SingleSelection)
+        self.tree_view.setDragDropMode(QTreeView.DragDrop)
 
     def select_project_directory(self):
         """Open a dialog to select a project directory and update the Navigator."""
