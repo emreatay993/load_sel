@@ -108,7 +108,7 @@ class MSUPSmartSolverTransient(QObject):
 
     def __init__(self, modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord,
                  steady_sx=None, steady_sy=None, steady_sz=None, steady_sxy=None, steady_syz=None, steady_sxz=None,
-                 steady_node_ids=None, modal_node_ids=None):
+                 steady_node_ids=None, modal_node_ids=None, output_directory=None):
         super().__init__()
 
         # Use selected output directory or fallback to script location
@@ -593,6 +593,9 @@ class MSUPSmartSolverGUI(QWidget):
         super().__init__(parent)
         self.init_ui()
 
+        # Ensure project_directory exists
+        self.project_directory = None  # Default to None if not set
+
         # Initialize solver attribute
         self.solver = None
 
@@ -1036,6 +1039,10 @@ class MSUPSmartSolverGUI(QWidget):
 
     def solve(self):
         try:
+            # Determine the output location
+            output_directory = self.project_directory if self.project_directory else os.path.dirname(
+                os.path.abspath(__file__))
+
             # Ensure modal data are defined before proceeding
             global modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord
             if (modal_sx is None or modal_sy is None or modal_sz is None or modal_sxy is None
@@ -1113,8 +1120,7 @@ class MSUPSmartSolverGUI(QWidget):
                     steady_sxz=steady_sxz,
                     steady_node_ids=steady_node_ids,
                     modal_node_ids=df_node_ids,
-                    output_directory=self.parent().project_directory if self.parent().project_directory else os.path.dirname(
-                        os.path.abspath(__file__))
+                    output_directory=output_directory
                 )
 
                 # Use the new method for single node processing
@@ -1144,7 +1150,8 @@ class MSUPSmartSolverGUI(QWidget):
                 steady_syz=steady_syz,
                 steady_sxz=steady_sxz,
                 steady_node_ids=steady_node_ids,
-                modal_node_ids=df_node_ids
+                modal_node_ids=df_node_ids,
+                output_directory = output_directory
             )
 
             # Connect the solver's progress signal to the progress bar update slot
@@ -1315,7 +1322,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.55.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.55.2')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
@@ -1512,6 +1519,9 @@ class MainWindow(QMainWindow):
         if dir_path:
             self.project_directory = dir_path
             print(f"Project directory selected: {self.project_directory}")
+
+            # Update the solver GUI's project_directory
+            self.batch_solver_tab.project_directory = self.project_directory  # <-- Ensures solver GUI gets updated
 
             # Update the navigator with the selected directory
             self.file_model.setRootPath(self.project_directory)
