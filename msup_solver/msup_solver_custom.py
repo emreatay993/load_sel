@@ -111,6 +111,9 @@ class MSUPSmartSolverTransient(QObject):
                  steady_node_ids=None, modal_node_ids=None):
         super().__init__()
 
+        # Use selected output directory or fallback to script location
+        self.output_directory = output_directory if output_directory else os.path.dirname(os.path.abspath(__file__))
+
         # Global settings
         self.NP_DTYPE = NP_DTYPE
         self.TORCH_DTYPE = TORCH_DTYPE
@@ -388,14 +391,14 @@ class MSUPSmartSolverTransient(QObject):
 
         if calculate_von_mises:
             # Create memmap files for storing the maximum von Mises stresses per node
-            von_mises_max_memmap = np.memmap('max_von_mises_stress.dat', dtype=RESULT_DTYPE, mode='w+',
-                                             shape=(num_nodes,))
-            von_mises_max_time_memmap = np.memmap('time_of_max_von_mises_stress.dat', dtype=RESULT_DTYPE, mode='w+',
-                                                  shape=(num_nodes,))
+            von_mises_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_von_mises_stress.dat'),
+                                             dtype=RESULT_DTYPE, mode='w+',shape=(num_nodes,))
+            von_mises_max_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_von_mises_stress.dat'),
+                                                  dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
 
         if calculate_damage:
-            potential_damage_memmap = np.memmap('potential_damage_results.dat', dtype=RESULT_DTYPE,
-                                                mode='w+', shape=(num_nodes,))
+            potential_damage_memmap = np.memmap(os.path.join(self.output_directory,'potential_damage_results.dat'),
+                                                dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
 
         for start_idx in range(0, num_nodes, chunk_size):
             end_idx = min(start_idx + chunk_size, num_nodes)
@@ -487,26 +490,26 @@ class MSUPSmartSolverTransient(QObject):
         # region Convert the .dat files to .csv
         if calculate_von_mises:
             self.convert_dat_to_csv(df_node_ids, num_nodes,
-                                    "max_von_mises_stress.dat",
-                                    "max_von_mises_stress.csv",
-                                    "SVM_Max")
+                                    os.path.join(self.output_directory, "max_von_mises_stress.dat"),
+                                    os.path.join(self.output_directory, "max_von_mises_stress.csv"),
+                                    "SVM_Max.csv")
             self.convert_dat_to_csv(df_node_ids, num_nodes,
-                                    "time_of_max_von_mises_stress.dat",
-                                    "time_of_max_von_mises_stress.csv",
-                                    "Time_of_SVM_Max")
+                                    os.path.join(self.output_directory, "time_of_max_von_mises_stress.dat"),
+                                    os.path.join(self.output_directory, "time_of_max_von_mises_stress.csv"),
+                                    "Time_of_SVM_Max.csv")
         if calculate_principal_stress:
             self.convert_dat_to_csv(df_node_ids, num_nodes,
-                                    "max_s1_stress.dat",
-                                    "max_s1_stress.csv",
-                                    "S1_Max")
+                                    os.path.join(self.output_directory, "max_s1_stress.dat"),
+                                    os.path.join(self.output_directory, "max_s1_stress.csv"),
+                                    "S1_Max.csv")
             self.convert_dat_to_csv(df_node_ids, num_nodes,
-                                    "time_of_max_s1_stress.dat",
-                                    "time_of_max_s1_stress.csv",
+                                    os.path.join(self.output_directory, "time_of_max_s1_stress.dat"),
+                                    os.path.join(self.output_directory, "time_of_max_s1_stress.csv"),
                                     "Time_of_S1_Max")
         if calculate_damage:
             self.convert_dat_to_csv(df_node_ids, num_nodes,
-                                    "potential_damage_results.dat",
-                                    "potential_damage_results.csv",
+                                    os.path.join(self.output_directory, "potential_damage_results.dat"),
+                                    os.path.join(self.output_directory, "potential_damage_results.csv"),
                                     "Potential Damage (Damage Index)")
         # endregion
 
@@ -1109,7 +1112,9 @@ class MSUPSmartSolverGUI(QWidget):
                     steady_syz=steady_syz,
                     steady_sxz=steady_sxz,
                     steady_node_ids=steady_node_ids,
-                    modal_node_ids=df_node_ids
+                    modal_node_ids=df_node_ids,
+                    output_directory=self.parent().project_directory if self.parent().project_directory else os.path.dirname(
+                        os.path.abspath(__file__))
                 )
 
                 # Use the new method for single node processing
@@ -1441,7 +1446,6 @@ class MainWindow(QMainWindow):
                 padding-bottom: 2px;
                 padding-left: 8px;
                 padding-right: 8px;
-                text-align: center;
                 border-bottom: 2px solid #5b9bd5;  /* Match button border */
             }
         """
