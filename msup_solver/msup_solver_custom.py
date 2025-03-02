@@ -33,11 +33,11 @@ RESULT_DTYPE = 'float32'
 
 IS_GPU_ACCELERATION_ENABLED = False
 
-IS_WRITE_TO_DISK_STRESS_S1_MAX_AT_ALL_TIME_POINTS = False
-IS_WRITE_TO_DISK_TIMES_OF_MAX_STRESS_S1 = False
+IS_WRITE_TO_DISK_STRESS_S1_MAX_AT_ALL_TIME_POINTS = True
+IS_WRITE_TO_DISK_TIMES_OF_MAX_STRESS_S1 = True
 
-IS_WRITE_TO_DISK_VON_MISES_MAX_AT_ALL_TIME_POINTS = False
-IS_WRITE_TO_DISK_TIMES_OF_MAX_VON_STRESS_AT_EACH_NODE = False
+IS_WRITE_TO_DISK_VON_MISES_MAX_AT_ALL_TIME_POINTS = True
+IS_WRITE_TO_DISK_TIMES_OF_MAX_VON_STRESS_AT_EACH_NODE = True
 
 # Set OpenBLAS to use all available CPU cores
 os.environ["OPENBLAS_NUM_THREADS"] = str(os.cpu_count())
@@ -597,34 +597,8 @@ class MSUPSmartSolverGUI(QWidget):
         self.logger = Logger(self.console_textbox)
         sys.stdout = self.logger  # Redirect stdout to the logger
 
-        #region Enable drag-and-drop for file selection buttons and text fields
-        self.coord_file_button.dragEnterEvent = self.dragEnterEvent
-        self.coord_file_button.dropEvent = self.dropEvent
-
-        self.coord_file_path.dragEnterEvent = self.dragEnterEvent
-        self.coord_file_path.dropEvent = self.dropEvent
-
-        self.stress_file_button.dragEnterEvent = self.dragEnterEvent
-        self.stress_file_button.dropEvent = self.dropEvent
-
-        self.stress_file_path.dragEnterEvent = self.dragEnterEvent
-        self.stress_file_path.dropEvent = self.dropEvent
-
-        self.steady_state_file_button.dragEnterEvent = self.dragEnterEvent
-        self.steady_state_file_button.dropEvent = self.dropEvent
-
-        self.steady_state_file_path.dragEnterEvent = self.dragEnterEvent
-        self.steady_state_file_path.dropEvent = self.dropEvent
-
-        self.coord_file_button.setAcceptDrops(True)
-        self.coord_file_path.setAcceptDrops(True)
-
-        self.stress_file_button.setAcceptDrops(True)
-        self.stress_file_path.setAcceptDrops(True)
-
-        self.steady_state_file_button.setAcceptDrops(True)
-        self.steady_state_file_path.setAcceptDrops(True)
-        #endregion
+        # Enable drag-and-drop for file selection buttons and text fields
+        self.setAcceptDrops(True)
 
     def init_ui(self):
         # Set window background color
@@ -1226,33 +1200,55 @@ class MSUPSmartSolverGUI(QWidget):
 
     #region Handle mouse-based UI functionality
     def dragEnterEvent(self, event):
-        """Allow file drag into the UI only for supported widgets."""
+        """Accept the drag event if it contains URLs."""
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def dropEvent(self, event):
-        """Handle dropped files based on which widget received the drop."""
+        """Handle dropped files by finding the target widget under the cursor."""
+        pos = event.pos()  # Position relative to the main widget
+        target_widget = self.childAt(pos)  # Correct widget under cursor
+
         for url in event.mimeData().urls():
             file_path = url.toLocalFile()
-            self.handle_dropped_file(event.source(), file_path)
+            self.handle_dropped_file(target_widget, file_path)
+            break  # Process only the first file
 
-    def handle_dropped_file(self, source_widget, file_path):
-        """Process the dropped file based on the target widget."""
-        if file_path.endswith('.csv') and source_widget in [self.stress_file_button, self.stress_file_path]:
-            self.stress_file_path.setText(file_path)
-            self.process_modal_stress_file(file_path)
+    def handle_dropped_file(self, target_widget, file_path):
+        """Process the dropped file based on the target widget hierarchy."""
+        # Check for stress file drop targets (button or path field)
+        if self.is_target_in_widgets(target_widget, [self.stress_file_button, self.stress_file_path]):
+            if file_path.endswith('.csv'):
+                self.stress_file_path.setText(file_path)
+                self.process_modal_stress_file(file_path)
+                return
 
-        elif file_path.endswith('.mcf') and source_widget in [self.coord_file_button, self.coord_file_path]:
-            self.coord_file_path.setText(file_path)
-            self.process_modal_coordinate_file(file_path)
+        # Check for coordinate file drop targets
+        if self.is_target_in_widgets(target_widget, [self.coord_file_button, self.coord_file_path]):
+            if file_path.endswith('.mcf'):
+                self.coord_file_path.setText(file_path)
+                self.process_modal_coordinate_file(file_path)
+                return
 
-        elif file_path.endswith('.txt') and source_widget in [self.steady_state_file_button,
-                                                              self.steady_state_file_path]:
-            self.steady_state_file_path.setText(file_path)
-            self.process_steady_state_file(file_path)
+        # Check for steady-state file drop targets
+        if self.is_target_in_widgets(target_widget, [self.steady_state_file_button, self.steady_state_file_path]):
+            if file_path.endswith('.txt'):
+                self.steady_state_file_path.setText(file_path)
+                self.process_steady_state_file(file_path)
+                return
 
-        else:
-            self.console_textbox.append(f"Unsupported file type or incorrect drag-drop target: {file_path}")
+        # Unsupported file or target
+        self.console_textbox.append(f"Unsupported file or drop target: {file_path}")
+
+    def is_target_in_widgets(self, target_widget, widgets):
+        """Check if the target widget is part of the allowed widgets or their children."""
+        while target_widget is not None:
+            if target_widget in widgets:
+                return True
+            target_widget = target_widget.parent()  # Move up the parent hierarchy
+        return False
     #endregion
 
 class MatplotlibWidget(QWidget):
@@ -1314,7 +1310,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.55')
+        self.setWindowTitle('MSUP Smart Solver - v0.55.1')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
