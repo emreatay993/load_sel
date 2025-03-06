@@ -26,6 +26,7 @@ import matplotlib.ticker as ticker
 from matplotlib.ticker import MaxNLocator
 import pyvista as pv
 from pyvistaqt import QtInteractor
+import vtk
 # endregion
 
 # region Define global variables
@@ -597,6 +598,7 @@ class DisplayTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_mesh = None  # Track current mesh for memory management
+        self.hover_annotation = None
         self.init_ui()
 
     def init_ui(self):
@@ -643,7 +645,7 @@ class DisplayTab(QWidget):
 
         # Visualization controls
         control_layout = QHBoxLayout()
-        control_layout.addWidget(QLabel("Point Settings:"))
+        control_layout.addWidget(QLabel("Node Point Size:"))
         control_layout.addWidget(self.point_size)
         control_layout.addStretch()
 
@@ -701,6 +703,10 @@ class DisplayTab(QWidget):
             if self.data_column:
                 self.current_mesh[self.data_column] = df[self.data_column].values
 
+            # Store NodeID if available
+            if 'NodeID' in df.columns:
+                self.current_mesh['NodeID'] = df['NodeID'].values
+
             # Initial visualization
             self.update_visualization()
 
@@ -727,7 +733,38 @@ class DisplayTab(QWidget):
                 'fmt': '%.2f'  # Format scalar bar labels with 2 decimal places
             }
         )
+        self.setup_hover_annotation()
         #self.plotter.reset_camera()
+
+    def setup_hover_annotation(self):
+        """Set up hover callback to display node ID and value"""
+        if not self.current_mesh or 'NodeID' not in self.current_mesh.array_names:
+            return
+
+        # Add text actor for hover info
+        self.hover_annotation = self.plotter.add_text(
+            "", position='upper_right', font_size=10, color='black', name='hover_annotation'
+        )
+
+        # Create a point picker with tolerance
+        picker = vtk.vtkPointPicker()
+        picker.SetTolerance(0.01)
+
+        def hover_callback(obj, event):
+            iren = obj
+            pos = iren.GetEventPosition()
+            picker.Pick(pos[0], pos[1], 0, self.plotter.renderer)
+            point_id = picker.GetPointId()
+
+            if point_id != -1 and point_id < self.current_mesh.n_points:
+                node_id = self.current_mesh['NodeID'][point_id]
+                value = self.current_mesh[self.data_column][point_id]
+                self.hover_annotation.SetText(2,f"Node ID: {node_id}\n{self.data_column}: {value:.2f}")
+            else:
+                self.hover_annotation.SetText(2,"")
+            iren.GetRenderWindow().Render()
+
+        self.plotter.iren.add_observer('MouseMoveEvent', hover_callback)
 
     def update_point_size(self):
         """Handle dynamic point size updates"""
