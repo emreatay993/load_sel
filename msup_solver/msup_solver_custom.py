@@ -13,7 +13,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
                              QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
-                             QFileSystemModel)
+                             QFileSystemModel, QMessageBox, QSpinBox)
 from PyQt5.QtGui import QPalette, QColor, QFont, QTextCursor
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths
 import sys
@@ -24,6 +24,8 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.ticker import MaxNLocator
+import pyvista as pv
+from pyvistaqt import QtInteractor
 # endregion
 
 # region Define global variables
@@ -492,16 +494,16 @@ class MSUPSmartSolverTransient(QObject):
             self.convert_dat_to_csv(df_node_ids, num_nodes,
                                     os.path.join(self.output_directory, "max_von_mises_stress.dat"),
                                     os.path.join(self.output_directory, "max_von_mises_stress.csv"),
-                                    "SVM_Max.csv")
+                                    "SVM_Max")
             self.convert_dat_to_csv(df_node_ids, num_nodes,
                                     os.path.join(self.output_directory, "time_of_max_von_mises_stress.dat"),
                                     os.path.join(self.output_directory, "time_of_max_von_mises_stress.csv"),
-                                    "Time_of_SVM_Max.csv")
+                                    "Time_of_SVM_Max")
         if calculate_principal_stress:
             self.convert_dat_to_csv(df_node_ids, num_nodes,
                                     os.path.join(self.output_directory, "max_s1_stress.dat"),
                                     os.path.join(self.output_directory, "max_s1_stress.csv"),
-                                    "S1_Max.csv")
+                                    "S1_Max")
             self.convert_dat_to_csv(df_node_ids, num_nodes,
                                     os.path.join(self.output_directory, "time_of_max_s1_stress.dat"),
                                     os.path.join(self.output_directory, "time_of_max_s1_stress.csv"),
@@ -551,19 +553,21 @@ class MSUPSmartSolverTransient(QObject):
         return None, None
 
     def convert_dat_to_csv(self, node_ids, num_nodes, dat_filename, csv_filename, header):
-        """Converts a .dat file to a .csv file with NodeID as the first column and an appropriate header for the results."""
+        """Converts a .dat file to a .csv file with NodeID and, if available, X,Y,Z coordinates."""
         try:
             # Read the memmap file as a NumPy array
             data = np.memmap(dat_filename, dtype=RESULT_DTYPE, mode='r', shape=(num_nodes,))
-
-            # Combine NodeID and data into a single DataFrame
-            df = pd.DataFrame({
-                'NodeID': node_ids,  # First column is NodeID
-                header: data  # Second column is the result with appropriate header
+            # Create a DataFrame for NodeID and the computed stress data
+            df_out = pd.DataFrame({
+                'NodeID': node_ids,
+                header: data
             })
-
+            # If node_coords is available, include the X, Y, Z coordinates
+            if 'node_coords' in globals() and node_coords is not None:
+                df_coords = pd.DataFrame(node_coords, columns=['X', 'Y', 'Z'])
+                df_out = pd.concat([df_out, df_coords], axis=1)
             # Save to CSV
-            df.to_csv(csv_filename, index=False)
+            df_out.to_csv(csv_filename, index=False)
             print(f"Successfully converted {dat_filename} to {csv_filename}.")
         except Exception as e:
             print(f"Error converting {dat_filename} to {csv_filename}: {e}")
@@ -587,6 +591,160 @@ class Logger:
 
     def flush(self):
         pass
+
+
+class DisplayTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_mesh = None  # Track current mesh for memory management
+        self.init_ui()
+
+    def init_ui(self):
+        # Style settings
+        button_style = """
+            QPushButton {
+                background-color: #e7f0fd;
+                border: 1px solid #5b9bd5;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #cce4ff;
+            }
+        """
+
+        # Create file selection components
+        self.file_button = QPushButton('Load Visualization File')
+        self.file_button.setStyleSheet(button_style)
+        self.file_button.clicked.connect(self.load_file)
+
+        self.file_path = QLineEdit()
+        self.file_path.setReadOnly(True)
+        self.file_path.setStyleSheet("background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
+
+        # Visualization controls
+        self.point_size = QSpinBox()
+        self.point_size.setRange(1, 100)
+        self.point_size.setValue(40)
+        self.point_size.setPrefix("Size: ")
+        self.point_size.valueChanged.connect(self.update_point_size)
+
+        # Create PyVista widget
+        self.plotter = QtInteractor(parent=self)
+        self.plotter.set_background('#FFFFFF')
+
+        # Layout
+        layout = QVBoxLayout()
+
+        # File controls
+        file_layout = QHBoxLayout()
+        file_layout.addWidget(self.file_button)
+        file_layout.addWidget(self.file_path)
+
+        # Visualization controls
+        control_layout = QHBoxLayout()
+        control_layout.addWidget(QLabel("Point Settings:"))
+        control_layout.addWidget(self.point_size)
+        control_layout.addStretch()
+
+        layout.addLayout(file_layout)
+        layout.addLayout(control_layout)
+        layout.addWidget(self.plotter)
+        self.setLayout(layout)
+
+    def load_file(self):
+        """Load and visualize new data file"""
+        try:
+            # Clear previous data
+            self.clear_visualization()
+
+            file_name, _ = QFileDialog.getOpenFileName(
+                self, 'Open Visualization File', '', 'CSV Files (*.csv)'
+            )
+            if not file_name:
+                return
+
+            self.file_path.setText(file_name)
+            self.visualize_data(file_name)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Loading Error", f"Failed to load file: {str(e)}")
+
+    def visualize_data(self, filename):
+        """Handle data visualization with validation"""
+        try:
+            # Load and validate data
+            df = pd.read_csv(filename)
+
+            # Recommendation 1: Data validation
+            if df.empty:
+                raise ValueError("Selected file is empty")
+
+            if len(df) > 1e6:
+                QMessageBox.warning(
+                    self,
+                    "Performance Warning",
+                    "Large dataset (>{:,} points) may affect performance".format(len(df))
+                )
+
+            # Validate coordinates
+            required_cols = {'X', 'Y', 'Z'}
+            if not required_cols.issubset(df.columns.str.strip()):
+                raise ValueError("CSV file must contain x, y, z columns (case insensitive)")
+
+            # Get coordinates and values
+            coords = df[['X', 'Y', 'Z']].values
+            self.data_column = df.columns[1]
+
+            # Create and store mesh
+            self.current_mesh = pv.PolyData(coords)
+            if self.data_column:
+                self.current_mesh[self.data_column] = df[self.data_column].values
+
+            # Initial visualization
+            self.update_visualization()
+
+        except Exception as e:
+            self.clear_visualization()
+            QMessageBox.critical(self, "Visualization Error", f"Error visualizing data: {str(e)}")
+
+    def update_visualization(self):
+        """Update plotter with current settings"""
+        if not self.current_mesh:
+            return
+
+        self.plotter.clear()
+        self.data_column = self.current_mesh.array_names[0] if self.current_mesh.array_names else None
+
+        self.plotter.add_mesh(
+            self.current_mesh,
+            scalars=self.data_column,
+            cmap='jet',  # Changed colormap to 'jet' to mimic ANSYS Mechanical
+            point_size=self.point_size.value(),
+            render_points_as_spheres=True,
+            scalar_bar_args={
+                'title': self.data_column,
+                'fmt': '%.2f'  # Format scalar bar labels with 2 decimal places
+            }
+        )
+        #self.plotter.reset_camera()
+
+    def update_point_size(self):
+        """Handle dynamic point size updates"""
+        if self.current_mesh:
+            self.update_visualization()
+
+    def clear_visualization(self):
+        """Properly clear existing visualization"""
+        self.plotter.clear()
+        if self.current_mesh:
+            self.current_mesh.clear_data()
+            self.current_mesh = None
+
+    def __del__(self):
+        """Ensure proper cleanup"""
+        self.clear_visualization()
+
 
 class MSUPSmartSolverGUI(QWidget):
     def __init__(self, parent=None):
@@ -958,6 +1116,13 @@ class MSUPSmartSolverGUI(QWidget):
             self.node_combo_box.clear()  # Clear any existing items
             self.node_combo_box.addItems([str(node_id) for node_id in df_node_ids])  # Add new node IDs
 
+            # If the file contains X, Y, and Z columns, store them
+            if {'X', 'Y', 'Z'}.issubset(df.columns):
+                global node_coords
+                node_coords = df[['X', 'Y', 'Z']].to_numpy()
+            else:
+                node_coords = None
+
             # Drop the 'Node ID' column from the original DataFrame
             df = df.drop(columns=['NodeID'])
 
@@ -1322,7 +1487,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.55.2')
+        self.setWindowTitle('MSUP Smart Solver - v0.6')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
@@ -1401,6 +1566,10 @@ class MainWindow(QMainWindow):
         # Create the "Main Window" tab and add the MSUPSmartSolverGUI widget to it
         self.batch_solver_tab = MSUPSmartSolverGUI()
         self.tab_widget.addTab(self.batch_solver_tab, "Main Window")
+
+        # Create and add Display tab
+        self.display_tab = DisplayTab()
+        self.tab_widget.addTab(self.display_tab, "Display")
 
         # Set the central widget of the main window to the tab widget
         self.setCentralWidget(self.tab_widget)
