@@ -16,6 +16,7 @@ from System.Drawing import Size, Point
 # region Global functions and classes
 # Function to handle the ComboBox selection
 def on_select(combo, event):
+    global selected_NS  # Declare selected_NS as a global variable
     selected_NS = combo.SelectedItem
     print("Selected Named Selection: %s" % selected_NS)
     global obj_of_NS_of_selected_nodes
@@ -106,14 +107,6 @@ try:
     print("My number sets" + str(number_sets))
     time_scoping.Ids = range(1, number_sets + 1)
     # endregion
-    
-    # # region Define scoping on a named selection (should exist inside rst already)
-    # scoping_on_ns = dpf.operators.scoping.on_named_selection()
-    # scoping_on_ns.inputs.requested_location.Connect('Nodal')
-    # scoping_on_ns.inputs.named_selection_name.Connect('NS_Modal_Stress')
-    # scoping_on_ns.inputs.data_sources.Connect(dataSources)
-    # my_mesh_scoping = scoping_on_ns.outputs.mesh_scoping.GetData()
-    # # endregion
     
     # Get the list of nodal named selections that exist in the model
     list_of_obj_of_all_NS = DataModel.Project.GetChildren(DataModelObjectCategory.NamedSelection,True)
@@ -218,104 +211,34 @@ try:
             stress_data_per_node_SYZ[node_id].append(stress_value_SYZ)
             stress_data_per_node_SXZ[node_id].append(stress_value_SXZ)
     # endregion
-    
-    # region Create output files
-    # Prepare CSV header: 'NodeID', 'Mode1', 'Mode2', ..., 'ModeN'
-    header_SX = ['NodeID'] + ['Mode%d_SX' % field_no for field_no in time_scoping.Ids]
-    header_SY = ['NodeID'] + ['Mode%d_SY' % field_no for field_no in time_scoping.Ids]
-    header_SZ = ['NodeID'] + ['Mode%d_SZ' % field_no for field_no in time_scoping.Ids]
-    header_SXY = ['NodeID'] + ['Mode%d_SXY' % field_no for field_no in time_scoping.Ids]
-    header_SYZ = ['NodeID'] + ['Mode%d_SYZ' % field_no for field_no in time_scoping.Ids]
-    header_SXZ = ['NodeID'] + ['Mode%d_SXZ' % field_no for field_no in time_scoping.Ids]
-    
-    # Path to save the CSV file
-    filename_output_csv_SX  = "modal_stress_SX.csv"
-    filename_output_csv_SY  = "modal_stress_SY.csv"
-    filename_output_csv_SZ  = "modal_stress_SZ.csv"
-    filename_output_csv_SXY = "modal_stress_SXY.csv"
-    filename_output_csv_SYZ = "modal_stress_SYZ.csv"
-    filename_output_csv_SXZ = "modal_stress_SXZ.csv"
-    
-    filepath_output_csv_SX  = os.path.join(folder, filename_output_csv_SX)
-    filepath_output_csv_SY  = os.path.join(folder, filename_output_csv_SY)
-    filepath_output_csv_SZ  = os.path.join(folder, filename_output_csv_SZ)
-    filepath_output_csv_SXY = os.path.join(folder, filename_output_csv_SXY)
-    filepath_output_csv_SYZ = os.path.join(folder, filename_output_csv_SYZ)
-    filepath_output_csv_SXZ = os.path.join(folder, filename_output_csv_SXZ)
-    
-    # Write data to CSV file
-    with open(filepath_output_csv_SX, 'wb') as csvfile:
-        csvwriter = csv.writer(csvfile)
-        # Write the header
-        csvwriter.writerow(header_SX)
-    
-        # Write data rows
+
+    # region Extract node coordinates
+    node_coords = {}
+    try:
+        model = dpf.Model(dataSources)
+        mesh = model.Mesh
         for node_id in node_ids:
-            row = [node_id] + stress_data_per_node_SX[node_id]
-            csvwriter.writerow(row)
-            
-    with open(filepath_output_csv_SY, 'wb') as csvfile:
-        csvwriter = csv.writer(csvfile)
-        # Write the header
-        csvwriter.writerow(header_SY)
-    
-        # Write data rows
-        for node_id in node_ids:
-            row = [node_id] + stress_data_per_node_SY[node_id]
-            csvwriter.writerow(row)
-            
-    with open(filepath_output_csv_SZ, 'wb') as csvfile:
-        csvwriter = csv.writer(csvfile)
-        # Write the header
-        csvwriter.writerow(header_SZ)
-    
-        # Write data rows
-        for node_id in node_ids:
-            row = [node_id] + stress_data_per_node_SZ[node_id]
-            csvwriter.writerow(row)
-    
-    with open(filepath_output_csv_SXY, 'wb') as csvfile:
-        csvwriter = csv.writer(csvfile)
-        # Write the header
-        csvwriter.writerow(header_SXY)
-    
-        # Write data rows
-        for node_id in node_ids:
-            row = [node_id] + stress_data_per_node_SXY[node_id]
-            csvwriter.writerow(row)
-    
-    with open(filepath_output_csv_SYZ, 'wb') as csvfile:
-        csvwriter = csv.writer(csvfile)
-        # Write the header
-        csvwriter.writerow(header_SYZ)
-    
-        # Write data rows
-        for node_id in node_ids:
-            row = [node_id] + stress_data_per_node_SYZ[node_id]
-            csvwriter.writerow(row)
-    
-    with open(filepath_output_csv_SXZ, 'wb') as csvfile:
-        csvwriter = csv.writer(csvfile)
-        # Write the header
-        csvwriter.writerow(header_SXZ)
-    
-        # Write data rows
-        for node_id in node_ids:
-            row = [node_id] + stress_data_per_node_SXZ[node_id]
-            csvwriter.writerow(row)
-    
-    # Path to save the merged CSV file
-    filename_output_csv_merged = "modal_stress.csv"
-    filepath_output_csv_merged = os.path.join(folder, filename_output_csv_merged)
-    
-    # Prepare the merged CSV header
-    merged_header = ['NodeID']
+            node = mesh.NodeById(node_id)
+            node_coords[node_id] = (node.X, node.Y, node.Z)
+        print("Successfully extracted coordinates for all nodes.")
+    except Exception as e:
+        print("Error extracting node coordinates: ", e)
+        node_coords = None
+    # endregion
+
+    # region Create output files for stress data
+    # Prepare CSV header: 'NodeID', 'X', 'Y', 'Z', 'Mode1_SX', 'Mode2_SX', ..., 'ModeN_SX', etc.
+    merged_header = ['NodeID', 'X', 'Y', 'Z']
     merged_header += ['sx_Mode%s' % mode for mode in time_scoping.Ids]
     merged_header += ['sy_Mode%s' % mode for mode in time_scoping.Ids]
     merged_header += ['sz_Mode%s' % mode for mode in time_scoping.Ids]
     merged_header += ['sxy_Mode%s' % mode for mode in time_scoping.Ids]
     merged_header += ['syz_Mode%s' % mode for mode in time_scoping.Ids]
     merged_header += ['sxz_Mode%s' % mode for mode in time_scoping.Ids]
+    
+    # Path to save the merged CSV file
+    filename_output_csv_merged = "modal_stress.csv"
+    filepath_output_csv_merged = os.path.join(folder, filename_output_csv_merged)
     
     # Write merged data to CSV file
     with open(filepath_output_csv_merged, 'wb') as csvfile:
@@ -324,9 +247,14 @@ try:
         csvwriter.writerow(merged_header)
     
         # Write data rows
-        # Write data rows
         for node_id in node_ids:
             row = [node_id]
+            # Add coordinates if available
+            if node_coords and node_id in node_coords:
+                row.extend(node_coords[node_id])
+            else:
+                row.extend([None, None, None])
+            # Add stress data
             row.extend(stress_data_per_node_SX[node_id])
             row.extend(stress_data_per_node_SY[node_id])
             row.extend(stress_data_per_node_SZ[node_id])
@@ -337,13 +265,7 @@ try:
     
     show_message_box("Modal stress data has been successfully saved to \n %s" % filepath_output_csv_merged)
     
-    # Delete output files temporarily created
-    os.remove(filepath_output_csv_SX)
-    os.remove(filepath_output_csv_SY)
-    os.remove(filepath_output_csv_SZ)
-    os.remove(filepath_output_csv_SXY)
-    os.remove(filepath_output_csv_SYZ)
-    os.remove(filepath_output_csv_SXZ)
-
 except:
     show_exception_in_message_box()
+
+'''NOTE : All workflows will not be recorded, as recording is under development.'''
