@@ -598,7 +598,11 @@ class DisplayTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_mesh = None  # Track current mesh for memory management
+        self.camera_state = None
+        self.camera_widget = None
+        self.last_hover_time = 0  # For frame rate throttling
         self.hover_annotation = None
+        self.hover_observer = None  # Track hover callback observer
         self.init_ui()
 
     def init_ui(self):
@@ -634,6 +638,7 @@ class DisplayTab(QWidget):
         # Create PyVista widget
         self.plotter = QtInteractor(parent=self)
         self.plotter.set_background('#FFFFFF')
+
 
         # Layout
         layout = QVBoxLayout()
@@ -702,13 +707,20 @@ class DisplayTab(QWidget):
             self.current_mesh = pv.PolyData(coords)
             if self.data_column:
                 self.current_mesh[self.data_column] = df[self.data_column].values
+                # After creating mesh:
+                self.current_mesh.set_active_scalars(self.data_column)
 
             # Store NodeID if available
             if 'NodeID' in df.columns:
                 self.current_mesh['NodeID'] = df['NodeID'].values
 
             # Initial visualization
+            if not self.camera_widget:
+                self.camera_widget = self.plotter.add_camera_orientation_widget()
+                self.camera_widget.EnabledOn()
+            #self.plotter.enable_point_picking(point_size=self.point_size.value())
             self.update_visualization()
+            self.plotter.reset_camera()
 
         except Exception as e:
             self.clear_visualization()
@@ -718,6 +730,14 @@ class DisplayTab(QWidget):
         """Update plotter with current settings"""
         if not self.current_mesh:
             return
+
+        # Store current camera state before clearing
+        self.camera_state = {
+            'position': self.plotter.camera.position,
+            'focal_point': self.plotter.camera.focal_point,
+            'view_up': self.plotter.camera.up,
+            'view_angle': self.plotter.camera.view_angle
+        }
 
         self.plotter.clear()
         self.data_column = self.current_mesh.array_names[0] if self.current_mesh.array_names else None
@@ -730,10 +750,35 @@ class DisplayTab(QWidget):
             render_points_as_spheres=True,
             scalar_bar_args={
                 'title': self.data_column,
-                'fmt': '%.2f'  # Format scalar bar labels with 2 decimal places
+                'fmt': '%.2f',
+                'position_x': 0.02,  # Left edge (5% from left)
+                'position_y': 0.35,  # Vertical position (25% from bottom)
+                'width': 0.08,  # Width of the scalar bar (8% of window)
+                'height': 0.5,  # Height of the scalar bar (50% of window)
+                'vertical': True,  # Force vertical orientation
+                'title_font_size': 12,
+                'label_font_size': 10,
+                'shadow': True,  # Optional: Add shadow for readability
+                'n_labels': 5  # Number of labels to display
             }
         )
         self.setup_hover_annotation()
+
+        # Restore camera state if available
+        if self.camera_state:
+            self.plotter.camera.position = self.camera_state['position']
+            self.plotter.camera.focal_point = self.camera_state['focal_point']
+            self.plotter.camera.up = self.camera_state['view_up']
+            self.plotter.camera.view_angle = self.camera_state['view_angle']
+
+        # self.plotter.add_axes(
+        #     line_width=2,  # Reduced complexity
+        #     color='black',  # Simpler color
+        #     xlabel='X',
+        #     ylabel='Y',
+        #     zlabel='Z',
+        #     interactive=False  # Disable dynamic updates
+        # )
         #self.plotter.reset_camera()
 
     def setup_hover_annotation(self):
@@ -741,16 +786,24 @@ class DisplayTab(QWidget):
         if not self.current_mesh or 'NodeID' not in self.current_mesh.array_names:
             return
 
-        # Add text actor for hover info
+        # Clean up previous hover elements
+        self.clear_hover_elements()
+
+        # Create new annotation
         self.hover_annotation = self.plotter.add_text(
-            "", position='upper_right', font_size=10, color='black', name='hover_annotation'
+            "", position='upper_right', font_size=8,
+            color='black', name='hover_annotation'
         )
 
-        # Create a point picker with tolerance
+        # Create picker and callback with throttling
         picker = vtk.vtkPointPicker()
         picker.SetTolerance(0.01)
 
         def hover_callback(obj, event):
+            now = time.time()
+            if (now - self.last_hover_time) < 0.033:  # 30 FPS throttle
+                return
+
             iren = obj
             pos = iren.GetEventPosition()
             picker.Pick(pos[0], pos[1], 0, self.plotter.renderer)
@@ -759,20 +812,41 @@ class DisplayTab(QWidget):
             if point_id != -1 and point_id < self.current_mesh.n_points:
                 node_id = self.current_mesh['NodeID'][point_id]
                 value = self.current_mesh[self.data_column][point_id]
-                self.hover_annotation.SetText(2,f"Node ID: {node_id}\n{self.data_column}: {value:.2f}")
+                self.hover_annotation.SetText(2, f"Node ID: {node_id}\n{self.data_column}: {value:.2f}")
             else:
-                self.hover_annotation.SetText(2,"")
-            iren.GetRenderWindow().Render()
+                self.hover_annotation.SetText(2, "")
 
-        self.plotter.iren.add_observer('MouseMoveEvent', hover_callback)
+            iren.GetRenderWindow().Render()
+            self.last_hover_time = now
+
+        # Add and track new observer
+        self.hover_observer = self.plotter.iren.add_observer('MouseMoveEvent', hover_callback)
+
+    def clear_hover_elements(self):
+        """Dedicated hover element cleanup"""
+        if self.hover_annotation:
+            self.plotter.remove_actor(self.hover_annotation)
+            self.hover_annotation = None
+
+        if self.hover_observer:
+            self.plotter.iren.remove_observer(self.hover_observer)
+            self.hover_observer = None
 
     def update_point_size(self):
         """Handle dynamic point size updates"""
         if self.current_mesh:
+            self.clear_hover_elements()  # Clean up before update
             self.update_visualization()
+            self.setup_hover_annotation()  # Reinitialize hover
 
     def clear_visualization(self):
         """Properly clear existing visualization"""
+        self.clear_hover_elements()
+
+        if self.camera_widget:
+            self.camera_widget.EnabledOff()
+            self.camera_widget = None
+
         self.plotter.clear()
         if self.current_mesh:
             self.current_mesh.clear_data()
