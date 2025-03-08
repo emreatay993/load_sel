@@ -1810,6 +1810,31 @@ class WE_load_plotter(QMainWindow):
         analysis_settings_TR.IncludeResidualVector = True
         # endregion
 
+        # region Add a python object for clearing-up unnecessary files in solution folder after extracting the MCF file
+        python_code_for_cleanup = analysis_TR.Solution.AddPythonCodeEventBased()
+        python_code_for_cleanup.TargetCallback = PythonCodeTargetCallback.OnAfterPost
+        python_code_for_cleanup.Text ="""
+import os
+
+def delete_files_except_mcf(directory):
+    for file_name in os.listdir(directory):
+        file_path = os.path.join(directory, file_name)
+
+        # Check if it's a file and not a directory
+        if os.path.isfile(file_path) and not file_name.endswith(".mcf"):
+            os.remove(file_path)
+
+def after_post(this, solution):  # Do not edit this line
+    # Get the working directory
+    solution_directory_path = solution.WorkingDir
+
+    if solution_directory_path:
+        delete_files_except_mcf(solution_directory_path)
+    else:
+        print("Error: Working directory not found.")
+"""
+        # endregion
+
         # region Determine the number of partitions required
         number_of_rows_in_mechanical = 50000
         number_of_partitions = math.ceil(len(list_of_all_time_points) / number_of_rows_in_mechanical)
