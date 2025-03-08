@@ -1812,7 +1812,7 @@ class WE_load_plotter(QMainWindow):
 
         # region Add a python object for clearing-up unnecessary files in solution folder after extracting the MCF file
         python_code_for_cleanup = analysis_TR.Solution.AddPythonCodeEventBased()
-        python_code_for_cleanup.TargetCallback = PythonCodeTargetCallback.OnAfterPost
+        python_code_for_cleanup.TargetCallback = Ansys.Mechanical.DataModel.Enums.PythonCodeTargetCallback.OnAfterPost
         python_code_for_cleanup.Text ="""
 import os
 
