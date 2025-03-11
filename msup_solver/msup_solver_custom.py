@@ -13,7 +13,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
                              QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
-                             QFileSystemModel, QMessageBox, QSpinBox)
+                             QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox)
 from PyQt5.QtGui import QPalette, QColor, QFont, QTextCursor
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths
 import sys
@@ -478,9 +478,9 @@ class MSUPSmartSolverTransient(QObject):
 
         if calculate_principal_stress:
             # Create memmap files for storing the maximum principal stresses per node (s1)
-            s1_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_s1_stress.dat'), 
+            s1_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_s1_stress.dat'),
                                       dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-            s1_max_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_s1_stress.dat'), 
+            s1_max_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_s1_stress.dat'),
                                            dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
 
         if calculate_von_mises:
@@ -691,6 +691,7 @@ class DisplayTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_mesh = None  # Track current mesh for memory management
+        self.current_actor = None  # Track the current actor for scalar range updates
         self.camera_state = None
         self.camera_widget = None
         self.last_hover_time = 0  # For frame rate throttling
@@ -728,10 +729,21 @@ class DisplayTab(QWidget):
         self.point_size.setPrefix("Size: ")
         self.point_size.valueChanged.connect(self.update_point_size)
 
+        # Scalar range controls
+        self.scalar_min_spin = QDoubleSpinBox()
+        self.scalar_max_spin = QDoubleSpinBox()
+        self.scalar_min_spin.setPrefix("Min: ")
+        self.scalar_max_spin.setPrefix("Max: ")
+        self.scalar_min_spin.setDecimals(3)
+        self.scalar_max_spin.setDecimals(3)
+        self.scalar_min_spin.valueChanged.connect(self.update_scalar_range)
+        self.scalar_max_spin.valueChanged.connect(self.update_scalar_range)
+        self.scalar_min_spin.valueChanged.connect(lambda v: self.scalar_max_spin.setMinimum(v))
+        self.scalar_max_spin.valueChanged.connect(lambda v: self.scalar_min_spin.setMaximum(v))
+
         # Create PyVista widget
         self.plotter = QtInteractor(parent=self)
         self.plotter.set_background('#FFFFFF')
-
 
         # Layout
         layout = QVBoxLayout()
@@ -745,6 +757,9 @@ class DisplayTab(QWidget):
         control_layout = QHBoxLayout()
         control_layout.addWidget(QLabel("Node Point Size:"))
         control_layout.addWidget(self.point_size)
+        control_layout.addWidget(QLabel("Scalar Range:"))
+        control_layout.addWidget(self.scalar_min_spin)
+        control_layout.addWidget(self.scalar_max_spin)
         control_layout.addStretch()
 
         layout.addLayout(file_layout)
@@ -803,6 +818,18 @@ class DisplayTab(QWidget):
                 # After creating mesh:
                 self.current_mesh.set_active_scalars(self.data_column)
 
+                # Initialize scalar range spin boxes
+                data_min = np.min(self.current_mesh[self.data_column])
+                data_max = np.max(self.current_mesh[self.data_column])
+                self.scalar_min_spin.blockSignals(True)
+                self.scalar_max_spin.blockSignals(True)
+                self.scalar_min_spin.setRange(data_min, data_max)
+                self.scalar_min_spin.setValue(data_min)
+                self.scalar_max_spin.setRange(data_min, data_max)
+                self.scalar_max_spin.setValue(data_max)
+                self.scalar_min_spin.blockSignals(False)
+                self.scalar_max_spin.blockSignals(False)
+
             # Store NodeID if available
             if 'NodeID' in df.columns:
                 self.current_mesh['NodeID'] = df['NodeID'].values
@@ -814,10 +841,21 @@ class DisplayTab(QWidget):
             #self.plotter.enable_point_picking(point_size=self.point_size.value())
             self.update_visualization()
             self.plotter.reset_camera()
+            # Slightly zoom-out after resetting camera
+            self.plotter.camera.zoom(0.9)
 
         except Exception as e:
             self.clear_visualization()
             QMessageBox.critical(self, "Visualization Error", f"Error visualizing data: {str(e)}")
+
+    def update_scalar_range(self):
+        """Update the scalar range of the current visualization based on spin box values."""
+        if self.current_actor is None:
+            return
+        min_val = self.scalar_min_spin.value()
+        max_val = self.scalar_max_spin.value()
+        self.current_actor.mapper.SetScalarRange(min_val, max_val)
+        self.plotter.render()
 
     def update_visualization(self):
         """Update plotter with current settings"""
@@ -835,24 +873,26 @@ class DisplayTab(QWidget):
         self.plotter.clear()
         self.data_column = self.current_mesh.array_names[0] if self.current_mesh.array_names else None
 
-        self.plotter.add_mesh(
+        self.current_actor = self.plotter.add_mesh(
             self.current_mesh,
             scalars=self.data_column,
             cmap='jet',  # Changed colormap to 'jet' to mimic ANSYS Mechanical
             point_size=self.point_size.value(),
             render_points_as_spheres=True,
+            below_color='gray',
+            above_color='white',
             scalar_bar_args={
                 'title': self.data_column,
                 'fmt': '%.2f',
-                'position_x': 0.02,  # Left edge (5% from left)
-                'position_y': 0.35,  # Vertical position (25% from bottom)
-                'width': 0.08,  # Width of the scalar bar (8% of window)
+                'position_x': 0.04,  # Left edge (5% from left)
+                'position_y': 0.35,  # Vertical position (35% from bottom)
+                'width': 0.05,  # Width of the scalar bar (5% of window)
                 'height': 0.5,  # Height of the scalar bar (50% of window)
                 'vertical': True,  # Force vertical orientation
-                'title_font_size': 12,
-                'label_font_size': 10,
+                'title_font_size': 10,
+                'label_font_size': 8,
                 'shadow': True,  # Optional: Add shadow for readability
-                'n_labels': 5  # Number of labels to display
+                'n_labels': 10  # Number of labels to display
             }
         )
         self.setup_hover_annotation()
@@ -944,6 +984,10 @@ class DisplayTab(QWidget):
         if self.current_mesh:
             self.current_mesh.clear_data()
             self.current_mesh = None
+
+        self.current_actor = None
+        self.scalar_min_spin.clear()
+        self.scalar_max_spin.clear()
 
     def __del__(self):
         """Ensure proper cleanup"""
@@ -1700,7 +1744,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.65.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.66')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
@@ -1919,7 +1963,7 @@ if __name__ == '__main__':
 
     # Create the main window and show it
     main_window = MainWindow()
-    main_window.show()
+    main_window.showMaximized()
 
     sys.exit(app.exec_())
 # endregion
