@@ -343,7 +343,7 @@ class WE_load_plotter(QMainWindow):
         # Update the window title and icon.
         folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
         parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
-        self.setWindowTitle(f"WE MechLoad Viewer - v0.96    |    (Directory Folder: {parent_folder})")
+        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.1    |    (Directory Folder: {parent_folder})")
         icon_path = self.get_resource_path("icon.ico")
         self.setWindowIcon(QIcon(icon_path))
         self.showMaximized()
@@ -1228,6 +1228,9 @@ class WE_load_plotter(QMainWindow):
         print("Updating the global variables...")
         # endregion
 
+        # Set Mechanical Units
+        ExtAPI.Application.ActiveUnitSystem = Ansys.ACT.Interfaces.Common.MechanicalUnitSystem.StandardMKS
+
         # region Initialize the list of frequency points extracted
         # Create a separate list for FREQ
         list_of_all_frequencies = self.df_extracted_loads_for_ansys["FREQ"].tolist()
@@ -1719,6 +1722,9 @@ class WE_load_plotter(QMainWindow):
         globals().update(global_variables(app_ansys))
         print("Updating the global variables...")
         # endregion
+
+        # Set Mechanical Units
+        ExtAPI.Application.ActiveUnitSystem = Ansys.ACT.Interfaces.Common.MechanicalUnitSystem.StandardMKS
 
         # region Helper function to partition long dataframes of time vs. force / moment tabular data
         @staticmethod
