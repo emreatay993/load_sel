@@ -478,9 +478,10 @@ class MSUPSmartSolverTransient(QObject):
 
         if calculate_principal_stress:
             # Create memmap files for storing the maximum principal stresses per node (s1)
-            s1_max_memmap = np.memmap('max_s1_stress.dat', dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-            s1_max_time_memmap = np.memmap('time_of_max_s1_stress.dat', dtype=RESULT_DTYPE, mode='w+',
-                                           shape=(num_nodes,))
+            s1_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_s1_stress.dat'), 
+                                      dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+            s1_max_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_s1_stress.dat'), 
+                                           dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
 
         if calculate_von_mises:
             # Create memmap files for storing the maximum von Mises stresses per node
@@ -512,7 +513,8 @@ class MSUPSmartSolverTransient(QObject):
                 # Calculate the maximum von Mises stress and its time index for each node
                 start_time = time.time()
                 max_von_mises_stress_per_node = np.max(sigma_vm, axis=1)
-                time_of_max_von_mises_stress_per_node = np.argmax(sigma_vm, axis=1)
+                time_indices = np.argmax(sigma_vm, axis=1)
+                time_of_max_von_mises_stress_per_node = time_values[time_indices]
                 von_mises_max_memmap[start_idx:end_idx] = max_von_mises_stress_per_node
                 von_mises_max_time_memmap[start_idx:end_idx] = time_of_max_von_mises_stress_per_node
                 print(f"Elapsed time for max von Mises stress and time: {(time.time() - start_time):.3f} seconds")
@@ -527,7 +529,8 @@ class MSUPSmartSolverTransient(QObject):
                 # Calculate the maximum principal stress (s1) and its time index for each node
                 start_time = time.time()
                 max_s1_per_node = np.max(s1, axis=1)
-                time_of_max_s1_per_node = np.argmax(s1, axis=1)
+                time_indices = np.argmax(s1, axis=1)
+                time_of_max_s1_per_node = time_values[time_indices]
                 s1_max_memmap[start_idx:end_idx] = max_s1_per_node
                 s1_max_time_memmap[start_idx:end_idx] = time_of_max_s1_per_node
                 print(f"Elapsed time for max principal stress (s1) and time: {(time.time() - start_time):.3f} seconds")
@@ -1697,7 +1700,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.65')
+        self.setWindowTitle('MSUP Smart Solver - v0.65.1')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
