@@ -1,6 +1,6 @@
 '''
 Author: Kamil Emre Atay (k5483)
-Version: 0.96.1
+Version: 0.96.2
 Script Name: we_mechload_viewer.py
 
 Tested in Python version 3.10.
@@ -343,7 +343,7 @@ class WE_load_plotter(QMainWindow):
         # Update the window title and icon.
         folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
         parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
-        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.1    |    (Directory Folder: {parent_folder})")
+        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.2    |    (Directory Folder: {parent_folder})")
         icon_path = self.get_resource_path("icon.ico")
         self.setWindowIcon(QIcon(icon_path))
         self.showMaximized()
@@ -1347,9 +1347,9 @@ class WE_load_plotter(QMainWindow):
                                                                 interface_dicts_full[interface_name]["Phase_T1"],
                                                                 interface_dicts_full[interface_name]["Phase_T2"],
                                                                 interface_dicts_full[interface_name]["Phase_T3"]):
-                list_of_fx_values.append(Quantity(fx, "N"))
-                list_of_fy_values.append(Quantity(fy, "N"))
-                list_of_fz_values.append(Quantity(fz, "N"))
+                list_of_fx_values.append(Quantity(fx, "kN"))
+                list_of_fy_values.append(Quantity(fy, "kN"))
+                list_of_fz_values.append(Quantity(fz, "kN"))
                 list_of_angle_fx_values.append(Quantity(angle_fx, "deg"))
                 list_of_angle_fy_values.append(Quantity(angle_fy, "deg"))
                 list_of_angle_fz_values.append(Quantity(angle_fz, "deg"))
@@ -1424,9 +1424,9 @@ class WE_load_plotter(QMainWindow):
                                                                 interface_dicts_full[interface_name]["Phase_R1"],
                                                                 interface_dicts_full[interface_name]["Phase_R2"],
                                                                 interface_dicts_full[interface_name]["Phase_R3"]):
-                list_of_mx_values.append(Quantity(mx, "N mm"))
-                list_of_my_values.append(Quantity(my, "N mm"))
-                list_of_mz_values.append(Quantity(mz, "N mm"))
+                list_of_mx_values.append(Quantity(mx, "kN m"))
+                list_of_my_values.append(Quantity(my, "kN m"))
+                list_of_mz_values.append(Quantity(mz, "kN m"))
                 list_of_angle_mx_values.append(Quantity(angle_mx, "deg"))
                 list_of_angle_my_values.append(Quantity(angle_my, "deg"))
                 list_of_angle_mz_values.append(Quantity(angle_mz, "deg"))
@@ -1956,13 +1956,13 @@ def after_post(this, solution):  # Do not edit this line
 
             # Convert the partitioned DataFrames to quantity-based DataFrames
             print('Converting partitioned force data into ANSYS Quantity objects...')
-            partitioned_df_load_table_fx_quantity = convert_partition_to_quantity(partitioned_df_load_table_fx, 'T1', "N")
-            partitioned_df_load_table_fy_quantity = convert_partition_to_quantity(partitioned_df_load_table_fy, 'T2', "N")
-            partitioned_df_load_table_fz_quantity = convert_partition_to_quantity(partitioned_df_load_table_fz, 'T3', "N")
+            partitioned_df_load_table_fx_quantity = convert_partition_to_quantity(partitioned_df_load_table_fx, 'T1', "kN")
+            partitioned_df_load_table_fy_quantity = convert_partition_to_quantity(partitioned_df_load_table_fy, 'T2', "kN")
+            partitioned_df_load_table_fz_quantity = convert_partition_to_quantity(partitioned_df_load_table_fz, 'T3', "kN")
             print('Converting partitioned moment data into ANSYS Quantity objects...')
-            partitioned_df_load_table_mx_quantity = convert_partition_to_quantity(partitioned_df_load_table_mx, 'R1', "N mm")
-            partitioned_df_load_table_my_quantity = convert_partition_to_quantity(partitioned_df_load_table_my, 'R2', "N mm")
-            partitioned_df_load_table_mz_quantity = convert_partition_to_quantity(partitioned_df_load_table_mz, 'R3', "N mm")
+            partitioned_df_load_table_mx_quantity = convert_partition_to_quantity(partitioned_df_load_table_mx, 'R1', "kN m")
+            partitioned_df_load_table_my_quantity = convert_partition_to_quantity(partitioned_df_load_table_my, 'R2', "kN m")
+            partitioned_df_load_table_mz_quantity = convert_partition_to_quantity(partitioned_df_load_table_mz, 'R3', "kN m")
 
             # endregion
 
@@ -2199,7 +2199,7 @@ def after_post(this, solution):  # Do not edit this line
             folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
             parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
             # Rename the windows title so that directory is updated
-            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.1    |    (Directory Folder: {parent_folder})")
+            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.2    |    (Directory Folder: {parent_folder})")
 
             self.refresh_directory_tree()
 
