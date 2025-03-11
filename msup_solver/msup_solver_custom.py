@@ -103,6 +103,96 @@ def get_node_index_from_id(node_id, node_ids):
     except IndexError:
         print(f"Node ID {node_id} not found in the list of nodes.")
         return None
+
+def unwrap_mcf_file(input_file, output_file):
+    """
+    Unwraps a file that has a header section and then data lines.
+    After the header line (the one starting with "Number of Modes"),
+    some records are wrapped. Additionally, there is a header line
+    (e.g. "      Time          Coordinates...") in the data block that should
+    remain separate. The algorithm:
+
+    1. Keeps all lines up to and including the line that starts (after stripping)
+       with "Number of Modes".
+    2. For the remaining lines, if a line (after stripping) contains both "Time"
+       and "Coordinates", it is treated as a header line and is preserved as its own record.
+    3. For other lines, the minimum indentation among them is determined (the base indent).
+       Lines with exactly that indentation start new records, while lines with extra
+       indentation are treated as continuations (wrapped lines) and appended to the previous record.
+    """
+    # Read all lines
+    with open(input_file, 'r') as f:
+        lines = f.readlines()
+
+    # Separate header (everything up to and including the line that starts with "Number of Modes")
+    header_end = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("Number of Modes"):
+            header_end = i
+            break
+    if header_end is None:
+        header_lines = []
+        data_lines = lines
+    else:
+        header_lines = lines[:header_end + 1]
+        data_lines = lines[header_end + 1:]
+
+    # For base indentation calculation, skip any line that (after stripping) is a header line
+    # like the one with "Time" and "Coordinates".
+    data_non_header = []
+    for line in data_lines:
+        stripped = line.strip()
+        if stripped and ("Time" in stripped and "Coordinates" in stripped):
+            continue  # skip header lines for indent calculation
+        if stripped:
+            data_non_header.append(line)
+    base_indent = None
+    for line in data_non_header:
+        indent = len(line) - len(line.lstrip(' '))
+        if base_indent is None or indent < base_indent:
+            base_indent = indent
+    if base_indent is None:
+        base_indent = 0
+
+    # Process data lines:
+    unwrapped_data = []
+    current_line = ""
+    for line in data_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue  # skip empty lines
+
+        # If this line is the special header (e.g., "Time          Coordinates...")
+        if "Time" in stripped and "Coordinates" in stripped:
+            if current_line:
+                unwrapped_data.append(current_line)
+                current_line = ""
+            unwrapped_data.append(stripped)
+            continue
+
+        # Determine indentation of the current line.
+        indent = len(line) - len(line.lstrip(' '))
+        if indent == base_indent:
+            # New record.
+            if current_line:
+                unwrapped_data.append(current_line)
+            current_line = stripped
+        else:
+            # Wrapped (continuation) line.
+            current_line = current_line.rstrip('\n') + " " + stripped
+
+    if current_line:
+        unwrapped_data.append(current_line)
+
+    # Combine header and unwrapped data.
+    final_lines = [h.rstrip('\n') for h in header_lines] + unwrapped_data
+
+    # Write final result to output file.
+    with open(output_file, 'w') as f:
+        for line in final_lines:
+            f.write(line + "\n")
+
+    return final_lines
 # endregion
 
 # region Define global class & functions
@@ -1176,34 +1266,43 @@ class MSUPSmartSolverGUI(QWidget):
 
     def process_modal_coordinate_file(self, filename):
         try:
-            # Read the file into a DataFrame, skipping the header information
-            with open(filename, 'r') as file:
+            # First, create an unwrapped version of the file.
+            base, ext = os.path.splitext(filename)
+            unwrapped_filename = base + "_unwrapped" + ext
+            unwrap_mcf_file(filename, unwrapped_filename)
+
+            # Now read the unwrapped file.
+            # Find the line that contains 'Time' to know where data starts.
+            with open(unwrapped_filename, 'r') as file:
                 for i, line in enumerate(file):
                     if 'Time' in line:
                         start_index = i
                         break
 
-            # Read the data starting from the identified start line
-            df = pd.read_csv(filename, sep='\s+', skiprows=start_index + 1, header=None)
+            # Read the data starting from the identified start line.
+            df = pd.read_csv(unwrapped_filename, sep='\s+', skiprows=start_index + 1, header=None)
 
-            # Create the column names
+            # Delete the unwrapped file from disk now that its data is loaded.
+            os.remove(unwrapped_filename)
+
+            # Create the column names: first column is 'Time', then Mode_1, Mode_2, etc.
             df.columns = ['Time'] + [f'Mode_{i}' for i in range(1, df.shape[1])]
 
-            # Store the Time column separately
+            # Store the Time column separately.
             global time_values
             time_values = df['Time'].to_numpy()
 
-            # Drop the 'Time' column and transpose the DataFrame
+            # Drop the 'Time' column and transpose the DataFrame to get modal coordinates.
             df_transposed_dropped = df.drop(columns='Time').transpose()
 
-            # Convert the DataFrame to a global NumPy array
+            # Convert the DataFrame to a global NumPy array.
             global modal_coord
             modal_coord = df_transposed_dropped.to_numpy()
 
             del df, df_transposed_dropped
 
-            # Log the success and shape of the resulting array
-            self.console_textbox.append(f"Successfully processed modal coordinate input: {filename}")
+            # Log the success and shape of the resulting array.
+            self.console_textbox.append(f"Successfully processed modal coordinate input: {unwrapped_filename}")
             self.console_textbox.append(f"Modal coordinates tensor shape (m x n): {modal_coord.shape} \n")
         except Exception as e:
             self.console_textbox.append(f"Error processing modal coordinate file: {e}")
@@ -1598,7 +1697,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.6')
+        self.setWindowTitle('MSUP Smart Solver - v0.65')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
