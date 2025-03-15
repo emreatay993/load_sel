@@ -686,7 +686,6 @@ class Logger:
     def flush(self):
         pass
 
-
 class DisplayTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -762,10 +761,179 @@ class DisplayTab(QWidget):
         control_layout.addWidget(self.scalar_max_spin)
         control_layout.addStretch()
 
+        # Contour Time-point controls layout:
+        self.selected_time_checkbox = QCheckBox("Display results for a selected time point")
+        self.selected_time_checkbox.setStyleSheet("margin: 10px;")
+        self.selected_time_checkbox.toggled.connect(self.toggle_time_point_controls)
+        # Initially hide the checkbox, and show it once the required files are loaded.
+        self.selected_time_checkbox.setVisible(False)
+
+        self.time_point_spinbox = QDoubleSpinBox()
+        self.time_point_spinbox.setDecimals(3)
+        # Range will be updated later from the modal coordinate file's time values.
+        self.time_point_spinbox.setRange(0, 0)
+        self.time_point_spinbox.setVisible(False)
+
+        self.update_time_button = QPushButton("Update")
+        self.update_time_button.setVisible(False)
+        self.update_time_button.clicked.connect(self.update_time_point_results)
+
+        self.save_time_button = QPushButton("Save Time Point")
+        self.save_time_button.setVisible(False)
+        self.save_time_button.clicked.connect(self.save_time_point_results)
+
+        # Put the new widgets in a horizontal layout
+        time_point_layout = QHBoxLayout()
+        time_point_layout.addWidget(self.selected_time_checkbox)
+        time_point_layout.addWidget(self.time_point_spinbox)
+        time_point_layout.addWidget(self.update_time_button)
+        time_point_layout.addWidget(self.save_time_button)
+
         layout.addLayout(file_layout)
         layout.addLayout(control_layout)
+        layout.addLayout(time_point_layout)
         layout.addWidget(self.plotter)
         self.setLayout(layout)
+
+    def toggle_time_point_controls(self, checked):
+        self.time_point_spinbox.setVisible(checked)
+        self.update_time_button.setVisible(checked)
+        self.save_time_button.setVisible(checked)
+
+    def update_time_point_range(self):
+        """
+        Check whether both the modal coordinate file (MCF) and the modal stress file have been loaded.
+        If so, update the range of the time_point_spinbox (using the global time_values array)
+        and make the 'Display results for a selected time point' checkbox visible.
+        """
+        if "modal_coord" in globals() and "modal_sx" in globals() and "time_values" in globals():
+            min_time = np.min(time_values)
+            max_time = np.max(time_values)
+            self.time_point_spinbox.setRange(min_time, max_time)
+            self.time_point_spinbox.setValue(min_time)
+            self.selected_time_checkbox.setVisible(True)
+        else:
+            # Hide the controls if the required data is not available.
+            self.selected_time_checkbox.setVisible(False)
+
+    def update_time_point_results(self):
+        """
+        When the Update button is clicked:
+          - Retrieve the selected time value from the spinbox.
+          - Find the closest matching time index from the global time_values array.
+          - Slice the modal coordinate matrix for that time point.
+          - Create a temporary instance of MSUPSmartSolverTransient using the sliced modal coordinate tensor.
+          - Depending on the main window’s selection:
+                * If von Mises is selected, compute normal stresses and then von Mises stress.
+                * If principal stress is selected, compute normal stresses and then principal stresses (selecting s₁).
+          - Update the PyVista plot with the computed scalar field.
+        """
+        # Verify that required global variables exist.
+        required_vars = ["modal_coord", "time_values", "modal_sx", "modal_sy", "modal_sz",
+                         "modal_sxy", "modal_syz", "modal_sxz"]
+        if not all(var in globals() for var in required_vars):
+            QMessageBox.warning(self, "Missing Data", "Modal stress and coordinate files are not loaded.")
+            return
+
+        # Access the main window's solver tab (assumed to be stored in batch_solver_tab)
+        main_tab = self.main_window.batch_solver_tab
+
+        # Ensure that damage index and time history mode are not selected (invalid for time point mode)
+        if main_tab.damage_index_checkbox.isChecked() or main_tab.time_history_checkbox.isChecked():
+            QMessageBox.warning(self, "Invalid Selection",
+                                "Damage Index and Time History Mode are not valid for single time point visualization.")
+            return
+
+        # Determine which stress type is selected.
+        compute_von = main_tab.von_mises_checkbox.isChecked()
+        compute_principal = main_tab.principal_stress_checkbox.isChecked()
+
+        if not (compute_von or compute_principal):
+            QMessageBox.warning(self, "No Selection",
+                                "Please select either Von Mises or Principal Stress for computation.")
+            return
+
+        # Get the selected time value and find the closest index in the global time_values array.
+        selected_time = self.time_point_spinbox.value()
+        time_index = np.argmin(np.abs(time_values - selected_time))
+
+        # Slice the modal coordinate matrix for the chosen time point.
+        # Assuming modal_coord shape is [num_modes, num_time_points], we extract a column vector.
+        selected_modal_coord = modal_coord[:, time_index:time_index + 1]
+
+        # Create a temporary solver instance using the sliced modal coordinate matrix.
+        try:
+            if "steady_sx" in globals() and steady_sx is not None and "steady_node_ids" in globals():
+                temp_solver = MSUPSmartSolverTransient(
+                    modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                    selected_modal_coord,
+                    steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz,
+                    steady_node_ids, modal_node_ids=df_node_ids
+                )
+            else:
+                temp_solver = MSUPSmartSolverTransient(
+                    modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                    selected_modal_coord,
+                    modal_node_ids=df_node_ids
+                )
+        except Exception as e:
+            QMessageBox.warning(self, "Solver Error", f"Failed to create solver instance: {e}")
+            return
+
+        # Determine the number of nodes (assumed from the shape of the modal stress arrays).
+        num_nodes = modal_sx.shape[0]
+
+        # Compute normal stresses for all nodes using the temporary solver.
+        actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
+            temp_solver.compute_normal_stresses(0, num_nodes)
+
+        # Based on the selected stress type, compute the scalar field.
+        if compute_von:
+            scalar_field = temp_solver.compute_von_mises_stress(actual_sx, actual_sy, actual_sz,
+                                                                actual_sxy, actual_syz, actual_sxz)
+            field_name = "Von Mises Stress"
+        elif compute_principal:
+            s1, s2, s3 = temp_solver.compute_principal_stresses(actual_sx, actual_sy, actual_sz,
+                                                                actual_sxy, actual_syz, actual_sxz)
+            scalar_field = s1  # Choose the maximum principal stress
+            field_name = "Principal Stress (σ₁)"
+        else:
+            QMessageBox.warning(self, "Selection Error", "No valid stress type selected.")
+            return
+
+        # Update the visualization.
+        if "node_coords" in globals() and node_coords is not None:
+            mesh = pv.PolyData(node_coords)
+            mesh["Stress"] = scalar_field  # assign the computed scalar field
+            self.current_mesh = mesh
+            self.data_column = "Stress"
+            self.plotter.reset_camera()
+            self.plotter.render()
+            self.update_visualization()
+
+        else:
+            QMessageBox.warning(self, "Missing Data", "Node coordinates are not available.")
+
+    def save_time_point_results(self):
+        """
+        When the Save Time Point button is clicked, save the currently displayed results (node coordinates
+        and the computed stress field) into a CSV file so that they can later be reloaded via the Load Visualization File button.
+        """
+        if self.current_mesh is None:
+            QMessageBox.warning(self, "No Data", "No visualization data to save.")
+            return
+
+        file_name, _ = QFileDialog.getSaveFileName(self, "Save Time Point Results", "", "CSV Files (*.csv)")
+        if file_name:
+            if "Stress" in self.current_mesh.array_names:
+                stress_data = self.current_mesh["Stress"]
+                coords = self.current_mesh.points
+                df_out = pd.DataFrame(coords, columns=["X", "Y", "Z"])
+                df_out["Stress"] = stress_data
+                df_out.to_csv(file_name, index=False)
+                QMessageBox.information(self, "Saved", "Time point results saved successfully.")
+            else:
+                QMessageBox.warning(self, "Missing Data", "The current mesh does not contain a 'Stress' field.")
 
     def load_file(self):
         """Load and visualize new data file"""
@@ -880,7 +1048,7 @@ class DisplayTab(QWidget):
             point_size=self.point_size.value(),
             render_points_as_spheres=True,
             below_color='gray',
-            above_color='white',
+            above_color='magenta',
             scalar_bar_args={
                 'title': self.data_column,
                 'fmt': '%.2f',
@@ -992,7 +1160,6 @@ class DisplayTab(QWidget):
     def __del__(self):
         """Ensure proper cleanup"""
         self.clear_visualization()
-
 
 class MSUPSmartSolverGUI(QWidget):
     def __init__(self, parent=None):
@@ -1353,6 +1520,9 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.append(f"Modal coordinates tensor shape (m x n): {modal_coord.shape} \n")
         except Exception as e:
             self.console_textbox.append(f"Error processing modal coordinate file: {e}")
+        finally:
+            # After processing, update the time point controls in the DisplayTab.
+            self.update_display_time_controls()
 
     def select_stress_file(self):
         file_name, _ = QFileDialog.getOpenFileName(self, 'Open Modal Stress File', '', 'CSV Files (*.csv)')
@@ -1403,6 +1573,20 @@ class MSUPSmartSolverGUI(QWidget):
         except Exception as e:
             self.console_textbox.append(f"Error processing modal stress file: {e}")
             self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
+        finally:
+            # After processing, update the time point controls in the DisplayTab.
+            self.update_display_time_controls()
+
+    def update_display_time_controls(self):
+        """
+        Call the update_time_point_range() method on the DisplayTab to check if the
+        modal coordinate and modal stress files are loaded. This should be called after
+        processing either file.
+        """
+        try:
+            self.window().display_tab.update_time_point_range()
+        except Exception as e:
+            print("Could not update display time controls:", e)
 
     def select_steady_state_file(self):
         file_name, _ = QFileDialog.getOpenFileName(self, 'Open Steady-State Stress File (Node numbers should be included)', '', 'Stress field exported from ANSYS Mechanical (*.txt)')
@@ -1744,7 +1928,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.66')
+        self.setWindowTitle('MSUP Smart Solver - v0.7')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
@@ -1826,6 +2010,7 @@ class MainWindow(QMainWindow):
 
         # Create and add Display tab
         self.display_tab = DisplayTab()
+        self.display_tab.main_window = self
         self.tab_widget.addTab(self.display_tab, "Display")
 
         # Set the central widget of the main window to the tab widget
