@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButt
                              QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
                              QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox)
 from PyQt5.QtGui import QPalette, QColor, QFont, QTextCursor
-from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths
+from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths, QTimer
 import sys
 from io import StringIO
 import os
@@ -696,6 +696,8 @@ class DisplayTab(QWidget):
         self.last_hover_time = 0  # For frame rate throttling
         self.hover_annotation = None
         self.hover_observer = None  # Track hover callback observer
+        self.anim_timer = None       # timer for animation
+        self.current_anim_time = 0.0  # current time in the animation
         self.init_ui()
 
     def init_ui(self):
@@ -803,18 +805,26 @@ class DisplayTab(QWidget):
     def update_time_point_range(self):
         """
         Check whether both the modal coordinate file (MCF) and the modal stress file have been loaded.
-        If so, update the range of the time_point_spinbox (using the global time_values array)
-        and make the 'Display results for a selected time point' checkbox visible.
+        If so, update the range of the time_point_spinbox (using the global time_values array),
+        set its singleStep to the average sampling interval, and make the
+        'Display results for a selected time point' checkbox visible.
         """
         if "modal_coord" in globals() and "modal_sx" in globals() and "time_values" in globals():
             min_time = np.min(time_values)
             max_time = np.max(time_values)
             self.time_point_spinbox.setRange(min_time, max_time)
             self.time_point_spinbox.setValue(min_time)
+            # Compute the average sampling interval (dt)
+            if len(time_values) > 1:
+                avg_dt = np.mean(np.diff(time_values))
+            else:
+                avg_dt = 1.0  # Fallback if only one time value exists
+            self.time_point_spinbox.setSingleStep(avg_dt)
             self.selected_time_checkbox.setVisible(True)
         else:
             # Hide the controls if the required data is not available.
             self.selected_time_checkbox.setVisible(False)
+
 
     def update_time_point_results(self):
         """
@@ -850,7 +860,7 @@ class DisplayTab(QWidget):
 
         if not (compute_von or compute_principal):
             QMessageBox.warning(self, "No Selection",
-                                "Please select either Von Mises or Principal Stress for computation.")
+                                "No output is selected. Please select a valid output type to compute the results.")
             return
 
         # Get the selected time value and find the closest index in the global time_values array.
@@ -900,6 +910,20 @@ class DisplayTab(QWidget):
         else:
             QMessageBox.warning(self, "Selection Error", "No valid stress type selected.")
             return
+
+        # Calculate min and max of the scalar field
+        data_min = np.min(scalar_field)
+        data_max = np.max(scalar_field)
+
+        # Update the scalar range spin boxes
+        self.scalar_min_spin.blockSignals(True)
+        self.scalar_max_spin.blockSignals(True)
+        self.scalar_min_spin.setRange(data_min, data_max)
+        self.scalar_max_spin.setRange(data_min, data_max)
+        self.scalar_min_spin.setValue(data_min)
+        self.scalar_max_spin.setValue(data_max)
+        self.scalar_min_spin.blockSignals(False)
+        self.scalar_max_spin.blockSignals(False)
 
         # Update the visualization.
         if "node_coords" in globals() and node_coords is not None:
@@ -1928,7 +1952,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.7')
+        self.setWindowTitle('MSUP Smart Solver - v0.71')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
