@@ -901,12 +901,14 @@ class DisplayTab(QWidget):
         if compute_von:
             scalar_field = temp_solver.compute_von_mises_stress(actual_sx, actual_sy, actual_sz,
                                                                 actual_sxy, actual_syz, actual_sxz)
-            field_name = "Von Mises Stress"
+            field_name = "SVM"
+            display_name = "SVM (MPa)"
         elif compute_principal:
             s1, s2, s3 = temp_solver.compute_principal_stresses(actual_sx, actual_sy, actual_sz,
                                                                 actual_sxy, actual_syz, actual_sxz)
             scalar_field = s1  # Choose the maximum principal stress
-            field_name = "Principal Stress (σ₁)"
+            field_name = "S1"
+            display_name = "S1 (MPa)"
         else:
             QMessageBox.warning(self, "Selection Error", "No valid stress type selected.")
             return
@@ -928,9 +930,16 @@ class DisplayTab(QWidget):
         # Update the visualization.
         if "node_coords" in globals() and node_coords is not None:
             mesh = pv.PolyData(node_coords)
-            mesh["Stress"] = scalar_field  # assign the computed scalar field
+
+            # Add NodeID array if available
+            if 'df_node_ids' in globals() and df_node_ids is not None:
+                mesh["NodeID"] = df_node_ids.astype(int)
+
+            mesh[field_name] = scalar_field  # Use field-specific name
+            mesh.set_active_scalars(field_name)  # Set active scalars
+
             self.current_mesh = mesh
-            self.data_column = "Stress"
+            self.data_column = display_name  # For visualization labels
             self.plotter.reset_camera()
             self.plotter.render()
             self.update_visualization()
@@ -1033,8 +1042,7 @@ class DisplayTab(QWidget):
             #self.plotter.enable_point_picking(point_size=self.point_size.value())
             self.update_visualization()
             self.plotter.reset_camera()
-            # Slightly zoom-out after resetting camera
-            self.plotter.camera.zoom(0.9)
+            self.plotter.camera.zoom(1)
 
         except Exception as e:
             self.clear_visualization()
@@ -1952,7 +1960,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.71')
+        self.setWindowTitle('MSUP Smart Solver - v0.72')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
