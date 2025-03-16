@@ -816,12 +816,21 @@ class DisplayTab(QWidget):
         self.stop_button.setEnabled(False)
         self.play_button.clicked.connect(self.start_animation)
         self.stop_button.clicked.connect(self.stop_animation)
+
+        # Add a spin box for animation frame interval (in milliseconds)
+        self.anim_interval_spin = QSpinBox()
+        self.anim_interval_spin.setRange(10, 10000)  # Allow between 10 ms and 10,000 ms delay
+        self.anim_interval_spin.setValue(100)  # Default delay is 100 ms
+        self.anim_interval_spin.setPrefix("Interval (ms): ")
+        self.anim_layout.addWidget(self.anim_interval_spin)
+
         # Add widgets to the animation layout
         self.anim_layout.addWidget(self.anim_start_label)
         self.anim_layout.addWidget(self.anim_start_spin)
         self.anim_layout.addWidget(self.anim_end_spin)
         self.anim_layout.addWidget(self.play_button)
         self.anim_layout.addWidget(self.stop_button)
+        self.anim_layout.addWidget(self.anim_interval_spin)
         self.anim_layout.addStretch()
 
         layout.addLayout(file_layout)
@@ -907,7 +916,7 @@ class DisplayTab(QWidget):
         # Create a temporary solver instance using the sliced modal coordinate matrix.
         include_steady = self.main_window.batch_solver_tab.steady_state_checkbox.isChecked()
         try:
-            if "steady_sx" in globals() and steady_sx is not None and "steady_node_ids" in globals():
+            if include_steady and "steady_sx" in globals() and steady_sx is not None and "steady_node_ids" in globals():
                 temp_solver = MSUPSmartSolverTransient(
                     modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
                     selected_modal_coord,
@@ -1022,6 +1031,7 @@ class DisplayTab(QWidget):
             QMessageBox.warning(self, "No Data", "Please load the mesh before animating.")
             return
         if hasattr(self, 'time_text_actor'):
+            self.plotter.remove_actor(self.time_text_actor)
             self.time_text_actor = None  # clear the reference
         self.play_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -1030,7 +1040,7 @@ class DisplayTab(QWidget):
         # Create a QTimer to update the animation frame periodically
         self.anim_timer = QTimer(self)
         self.anim_timer.timeout.connect(self.animate_frame)
-        self.anim_timer.start(100)  # Update every 100 ms (adjust as needed)
+        self.anim_timer.start(self.anim_interval_spin.value())  # Update every 100 ms (adjust as needed)
 
     def stop_animation(self):
         """Stop the animation."""
@@ -1065,16 +1075,18 @@ class DisplayTab(QWidget):
 
             # Update (or create) the free-floating text actor
             current_text = f"Time: {self.current_anim_time:.3f}"
-            if self.time_text_actor is None:
-                # Create a free-floating text actor with normalized viewport coordinates.
-                # For example, (0.8, 0.9) positions it near the upper-right.
-                self.time_text_actor = self.plotter.add_text(current_text,
-                                                             position=(0.8, 0.9),
-                                                             viewport=True,
-                                                             font_size=10)
-            else:
-                self.time_text_actor.SetInput(current_text)
-                self.time_text_actor.Modified()  # Notify VTK of the change
+
+            # Remove existing time text actor if present
+            if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
+                self.plotter.remove_actor(self.time_text_actor)
+                self.time_text_actor = None
+
+            # Create a free-floating text actor with normalized viewport coordinates.
+            # For example, (0.8, 0.9) positions it near the upper-right.
+            self.time_text_actor = self.plotter.add_text(current_text,
+                                                         position=(0.8, 0.9),
+                                                         viewport=True,
+                                                         font_size=10)
 
             self.plotter.render()
 
@@ -2178,7 +2190,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.72')
+        self.setWindowTitle('MSUP Smart Solver - v0.73')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
