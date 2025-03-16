@@ -2298,6 +2298,10 @@ class MainWindow(QMainWindow):
         self.file_model.setRootPath(desktop_path)  # Initially Desktop, updates when project directory is selected
         self.file_model.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)  # Show all files & folders
 
+        # Apply file type filter
+        self.file_model.setNameFilters(["*.csv", "*.mcf", "*.txt"])  # Only show CSV, MCF, TXT files
+        self.file_model.setNameFilterDisables(False)  # Disable showing grayed-out files
+
         # Create Tree View
         self.tree_view = QTreeView()
         self.tree_view.setModel(self.file_model)
