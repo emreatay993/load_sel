@@ -697,6 +697,7 @@ class DisplayTab(QWidget):
         self.hover_annotation = None
         self.hover_observer = None  # Track hover callback observer
         self.anim_timer = None       # timer for animation
+        self.time_text_actor = None
         self.current_anim_time = 0.0  # current time in the animation
         self.init_ui()
 
@@ -791,9 +792,42 @@ class DisplayTab(QWidget):
         time_point_layout.addWidget(self.update_time_button)
         time_point_layout.addWidget(self.save_time_button)
 
+        # Animation Control Layout
+        self.anim_layout = QHBoxLayout()
+        # Label and spinbox for animation start time
+        self.anim_start_label = QLabel("Time Range:")
+        self.anim_start_spin = QDoubleSpinBox()
+        self.anim_start_spin.setPrefix("Start: ")
+        self.anim_start_spin.setDecimals(3)
+        self.anim_start_spin.setMinimum(0)
+        self.anim_start_spin.setValue(0)
+        # Label and spinbox for animation end time
+        self.anim_end_spin = QDoubleSpinBox()
+        self.anim_end_spin.setPrefix("End: ")
+        self.anim_end_spin.setDecimals(3)
+        self.anim_end_spin.setMinimum(0)
+        self.anim_end_spin.setValue(1)
+        # Ensure valid range by connecting valueChanged signals
+        self.anim_start_spin.valueChanged.connect(self.update_anim_range_min)
+        self.anim_end_spin.valueChanged.connect(self.update_anim_range_max)
+        # Play and Stop buttons
+        self.play_button = QPushButton("Play")
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setEnabled(False)
+        self.play_button.clicked.connect(self.start_animation)
+        self.stop_button.clicked.connect(self.stop_animation)
+        # Add widgets to the animation layout
+        self.anim_layout.addWidget(self.anim_start_label)
+        self.anim_layout.addWidget(self.anim_start_spin)
+        self.anim_layout.addWidget(self.anim_end_spin)
+        self.anim_layout.addWidget(self.play_button)
+        self.anim_layout.addWidget(self.stop_button)
+        self.anim_layout.addStretch()
+
         layout.addLayout(file_layout)
         layout.addLayout(control_layout)
         layout.addLayout(time_point_layout)
+        layout.addLayout(self.anim_layout)
         layout.addWidget(self.plotter)
         self.setLayout(layout)
 
@@ -824,7 +858,6 @@ class DisplayTab(QWidget):
         else:
             # Hide the controls if the required data is not available.
             self.selected_time_checkbox.setVisible(False)
-
 
     def update_time_point_results(self):
         """
@@ -872,6 +905,7 @@ class DisplayTab(QWidget):
         selected_modal_coord = modal_coord[:, time_index:time_index + 1]
 
         # Create a temporary solver instance using the sliced modal coordinate matrix.
+        include_steady = self.main_window.batch_solver_tab.steady_state_checkbox.isChecked()
         try:
             if "steady_sx" in globals() and steady_sx is not None and "steady_node_ids" in globals():
                 temp_solver = MSUPSmartSolverTransient(
@@ -921,7 +955,7 @@ class DisplayTab(QWidget):
         self.scalar_min_spin.blockSignals(True)
         self.scalar_max_spin.blockSignals(True)
         self.scalar_min_spin.setRange(data_min, data_max)
-        self.scalar_max_spin.setRange(data_min, data_max)
+        self.scalar_max_spin.setRange(data_min, 1e30)
         self.scalar_min_spin.setValue(data_min)
         self.scalar_max_spin.setValue(data_max)
         self.scalar_min_spin.blockSignals(False)
@@ -940,6 +974,12 @@ class DisplayTab(QWidget):
 
             self.current_mesh = mesh
             self.data_column = display_name  # For visualization labels
+
+            # Remove existing time text actor if present
+            if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
+                self.plotter.remove_actor(self.time_text_actor)
+                self.time_text_actor = None
+
             self.plotter.reset_camera()
             self.plotter.render()
             self.update_visualization()
@@ -967,6 +1007,160 @@ class DisplayTab(QWidget):
                 QMessageBox.information(self, "Saved", "Time point results saved successfully.")
             else:
                 QMessageBox.warning(self, "Missing Data", "The current mesh does not contain a 'Stress' field.")
+
+    def update_anim_range_min(self, value):
+        # Ensure that the animation end spin box cannot be set to a value less than the start
+        self.anim_end_spin.setMinimum(value)
+
+    def update_anim_range_max(self, value):
+        # Ensure that the animation start spin box cannot exceed the end value
+        self.anim_start_spin.setMaximum(value)
+
+    def start_animation(self):
+        """Start animating through the time range."""
+        if self.current_mesh is None:
+            QMessageBox.warning(self, "No Data", "Please load the mesh before animating.")
+            return
+        if hasattr(self, 'time_text_actor'):
+            self.time_text_actor = None  # clear the reference
+        self.play_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        # Initialize current animation time with the start value
+        self.current_anim_time = self.anim_start_spin.value()
+        # Create a QTimer to update the animation frame periodically
+        self.anim_timer = QTimer(self)
+        self.anim_timer.timeout.connect(self.animate_frame)
+        self.anim_timer.start(100)  # Update every 100 ms (adjust as needed)
+
+    def stop_animation(self):
+        """Stop the animation."""
+        if self.anim_timer is not None:
+            self.anim_timer.stop()
+        self.play_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+
+    def animate_frame(self):
+        try:
+            # Increment the current animation time
+            start_time = self.anim_start_spin.value()
+            end_time = self.anim_end_spin.value()
+            step = 0.05  # Adjust the step increment as needed
+            self.current_anim_time += step
+            if self.current_anim_time > end_time:
+                self.current_anim_time = start_time
+
+            # Update the scalar field on your mesh (replace with your actual computation)
+            new_scalars = self.get_scalar_field_for_time(self.current_anim_time)
+            self.current_mesh[self.data_column] = new_scalars
+
+            # Update the scalar bar range:
+            fixed_min = self.scalar_min_spin.value()
+            fixed_max = self.scalar_max_spin.value()
+            current_data_min = np.min(new_scalars)
+            current_data_max = np.max(new_scalars)
+            if abs(fixed_min - current_data_min) < 1e-6 and abs(fixed_max - current_data_max) < 1e-6:
+                self.current_actor.mapper.SetScalarRange(current_data_min, current_data_max)
+            else:
+                self.current_actor.mapper.SetScalarRange(fixed_min, fixed_max)
+
+            # Update (or create) the free-floating text actor
+            current_text = f"Time: {self.current_anim_time:.3f}"
+            if self.time_text_actor is None:
+                # Create a free-floating text actor with normalized viewport coordinates.
+                # For example, (0.8, 0.9) positions it near the upper-right.
+                self.time_text_actor = self.plotter.add_text(current_text,
+                                                             position=(0.8, 0.9),
+                                                             viewport=True,
+                                                             font_size=10)
+            else:
+                self.time_text_actor.SetInput(current_text)
+                self.time_text_actor.Modified()  # Notify VTK of the change
+
+            self.plotter.render()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Animation Error", f"Failed to animate the results: {str(e)}")
+
+    def get_scalar_field_for_time(self, time_val):
+        """
+        Computes the actual stress results (von Mises or principal stress) at a given time_val
+        for all nodes, returning a 1D NumPy array of length n_points.
+
+        This replaces the dummy sinusoidal code with real computations:
+          1) Identify the user’s selection (von Mises or principal).
+          2) Find the nearest time index from global time_values.
+          3) Slice modal_coord to a single column for that time.
+          4) Create a temporary solver to compute normal stresses, then compute the final result.
+        """
+        # 1) Check which output is selected in the main GUI:
+        main_tab = self.main_window.batch_solver_tab
+        compute_von = main_tab.von_mises_checkbox.isChecked()
+        compute_principal = main_tab.principal_stress_checkbox.isChecked()
+        # If neither is selected, return zeros (or you could raise an error).
+        if not (compute_von or compute_principal):
+            return np.zeros(self.current_mesh.n_points, dtype=np.float32)
+
+        # 2) Ensure that global data is loaded:
+        required_vars = ["modal_coord", "time_values", "modal_sx", "modal_sy", "modal_sz",
+                         "modal_sxy", "modal_syz", "modal_sxz", "df_node_ids"]
+        if not all(var in globals() for var in required_vars):
+            # Missing data => return zeros or raise an error
+            return np.zeros(self.current_mesh.n_points, dtype=np.float32)
+
+        # 3) Find the closest time index to time_val:
+        global time_values
+        time_index = np.argmin(np.abs(time_values - time_val))
+        # Slice out a single column from modal_coord:
+        selected_modal_coord = modal_coord[:, time_index: time_index + 1]
+
+        # 4) Create a small “temporary” solver for that single time slice:
+        try:
+            # Check if steady-state stress is included
+            global steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz, steady_node_ids
+            if (
+                    "steady_sx" in globals() and steady_sx is not None
+                    and "steady_node_ids" in globals() and steady_node_ids is not None
+            ):
+                temp_solver = MSUPSmartSolverTransient(
+                    modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                    selected_modal_coord,
+                    steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz,
+                    steady_node_ids, modal_node_ids=df_node_ids
+                )
+            else:
+                temp_solver = MSUPSmartSolverTransient(
+                    modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                    selected_modal_coord,
+                    modal_node_ids=df_node_ids
+                )
+        except Exception as e:
+            print(f"[Animation] Error creating temp solver: {e}")
+            return np.zeros(self.current_mesh.n_points, dtype=np.float32)
+
+        # 5) Compute the normal stresses for all nodes:
+        num_nodes = modal_sx.shape[0]
+        actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
+            temp_solver.compute_normal_stresses(0, num_nodes)
+
+        # 6) Depending on the selection, compute von Mises or principal stress:
+        if compute_von:
+            sigma_vm = temp_solver.compute_von_mises_stress(
+                actual_sx, actual_sy, actual_sz,
+                actual_sxy, actual_syz, actual_sxz
+            )
+            # sigma_vm has shape (n_nodes, 1) => flatten to 1D
+            return sigma_vm[:, 0]
+
+        elif compute_principal:
+            s1, s2, s3 = temp_solver.compute_principal_stresses(
+                actual_sx, actual_sy, actual_sz,
+                actual_sxy, actual_syz, actual_sxz
+            )
+            # s1 shape is (n_nodes, 1) => flatten to 1D
+            return s1[:, 0]
+
+        # If we get here somehow, return zeros
+        return np.zeros(self.current_mesh.n_points, dtype=np.float32)
 
     def load_file(self):
         """Load and visualize new data file"""
@@ -1026,7 +1220,7 @@ class DisplayTab(QWidget):
                 self.scalar_max_spin.blockSignals(True)
                 self.scalar_min_spin.setRange(data_min, data_max)
                 self.scalar_min_spin.setValue(data_min)
-                self.scalar_max_spin.setRange(data_min, data_max)
+                self.scalar_max_spin.setRange(data_min, 1e30)
                 self.scalar_max_spin.setValue(data_max)
                 self.scalar_min_spin.blockSignals(False)
                 self.scalar_max_spin.blockSignals(False)
@@ -1325,10 +1519,13 @@ class MSUPSmartSolverGUI(QWidget):
         # Connect checkbox signal to the method for controlling the visibility of the damage index checkbox
         self.von_mises_checkbox.toggled.connect(self.toggle_damage_index_checkbox_visibility)
 
-        # ComboBox for Node ID selection
-        self.node_combo_box = QComboBox()
-        self.node_combo_box.setStyleSheet(button_style)
-        self.node_combo_box.currentIndexChanged.connect(self.on_node_selected)
+        # LineEdit for Node ID input
+        self.node_line_edit = QLineEdit()
+        self.node_line_edit.setPlaceholderText("Enter Node ID")
+        self.node_line_edit.setStyleSheet(button_style)
+        self.node_line_edit.setMaximumWidth(150)
+        self.node_line_edit.setMinimumWidth(100)
+        self.node_line_edit.returnPressed.connect(self.on_node_entered)
 
         # Solve Button
         self.solve_button = QPushButton('Solve')
@@ -1413,8 +1610,9 @@ class MSUPSmartSolverGUI(QWidget):
         self.single_node_label.setFont(QFont('Arial', 8))
         single_node_layout = QHBoxLayout()
         single_node_layout.addWidget(self.single_node_label)
-        single_node_layout.addWidget(self.node_combo_box)
+        single_node_layout.addWidget(self.node_line_edit)
         self.single_node_group.setVisible(False)
+        self.single_node_group.setMaximumWidth(250)
         self.single_node_group.setLayout(single_node_layout)
 
         # Horizontal layout to place Outputs and Single Node Expansion side by side
@@ -1570,10 +1768,6 @@ class MSUPSmartSolverGUI(QWidget):
             # Extract 'Node ID' column and save it in another DataFrame
             global df_node_ids  # Make df_node_ids accessible globally
             df_node_ids = df[['NodeID']].to_numpy().flatten()  # Convert to a 1D array
-
-            # Populate the node combo box with actual node IDs from the modal stress file
-            self.node_combo_box.clear()  # Clear any existing items
-            self.node_combo_box.addItems([str(node_id) for node_id in df_node_ids])  # Add new node IDs
 
             # If the file contains X, Y, and Z columns, store them
             if {'X', 'Y', 'Z'}.issubset(df.columns):
@@ -1741,7 +1935,7 @@ class MSUPSmartSolverGUI(QWidget):
 
             if is_time_history_mode:
                 # Process only the selected node for time history mode
-                selected_node_id = int(self.node_combo_box.currentText())  # Get selected node ID as index
+                selected_node_id = int(self.node_line_edit.text())  # Get selected node ID as index
                 selected_node_idx = get_node_index_from_id(selected_node_id, df_node_ids)
 
                 self.console_textbox.append(f"Time History Mode enabled for Node {selected_node_id}\n")
@@ -1825,28 +2019,52 @@ class MSUPSmartSolverGUI(QWidget):
             # Hide the progress bar once the process is finished
             self.progress_bar.setVisible(False)
 
-    def on_node_selected(self):
-        """Update the plot when a new node is selected."""
+    def handle_node_selection(self, node_id):
+        """Handles node selection logic for both manual entry and combobox."""
         try:
-            selected_node_id = self.node_combo_box.currentText()
+            if node_id not in df_node_ids:
+                QMessageBox.warning(self, "Node Not Found", f"Node ID {node_id} not found in loaded data.")
+                return
 
-            # Dummy data for the plot (replace with actual data)
+            # Log the selected Node ID
+            self.console_textbox.append(f"Selected Node ID: {node_id}")
+            self.console_textbox.moveCursor(QTextCursor.End)
+            self.console_textbox.ensureCursorVisible()
+
+            # Dummy plot data (to be replaced with actual results if solver runs)
             x_data = [1, 2, 3, 4, 5]
             y_data = [0, 0, 0, 0, 0]
 
-            # Check if "Principal Stress" or "Von Mises" is selected
+            # Check checkbox states
             is_principal_stress = self.principal_stress_checkbox.isChecked()
             is_von_mises = self.von_mises_checkbox.isChecked()
 
-            # Update the plot with the selected node ID and the checkbox statuses
-            self.plot_single_node_tab.update_plot(x_data, y_data, selected_node_id, is_principal_stress, is_von_mises)
+            # Update plot widget
+            self.plot_single_node_tab.update_plot(
+                x_data, y_data, node_id,
+                is_principal_stress=is_principal_stress,
+                is_von_mises=is_von_mises
+            )
 
-            # Log the selected Node ID in the log terminal
-            self.console_textbox.append(f"Selected Node ID: {selected_node_id}")
-            self.console_textbox.moveCursor(QTextCursor.End)
-            self.console_textbox.ensureCursorVisible()  # Ensure the log scrolls to the bottom
+            # (Optional) Trigger solve immediately
+            # self.solve()
+
         except Exception as e:
-            print(f"Error updating plot with selected node: {e}")
+            QMessageBox.critical(self, "Error", f"An error occurred while selecting node: {e}")
+
+    def on_node_entered(self):
+        """Triggered when user presses Enter after typing Node ID."""
+        try:
+            entered_text = self.node_line_edit.text()
+            if not entered_text.isdigit():
+                QMessageBox.warning(self, "Invalid Input", "Please enter a valid integer Node ID.")
+                return
+
+            node_id = int(entered_text)
+            self.handle_node_selection(node_id)  # Use shared method
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error processing entered Node ID: {e}")
 
     #region Handle mouse-based UI functionality
     def dragEnterEvent(self, event):
