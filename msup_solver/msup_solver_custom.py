@@ -1054,10 +1054,22 @@ class DisplayTab(QWidget):
             # Increment the current animation time
             start_time = self.anim_start_spin.value()
             end_time = self.anim_end_spin.value()
-            step = 0.05  # Adjust the step increment as needed
-            self.current_anim_time += step
-            if self.current_anim_time > end_time:
-                self.current_anim_time = start_time
+            # Use np.searchsorted to get indices into the global time_values array.
+            # (Assuming time_values is a sorted NumPy array.)
+            start_index = np.searchsorted(time_values, start_time)
+            end_index = np.searchsorted(time_values, end_time, side='right') - 1
+
+            # Initialize a current_time_index attribute if it doesn't exist.
+            if not hasattr(self, 'current_time_index'):
+                self.current_time_index = start_index
+            else:
+                # Advance to the next index; if past end, wrap back to start.
+                self.current_time_index += 1
+                if self.current_time_index > end_index:
+                    self.current_time_index = start_index
+
+            # Update the current animation time using the actual time value.
+            self.current_anim_time = time_values[self.current_time_index]
 
             # Update the scalar field on your mesh (replace with your actual computation)
             new_scalars = self.get_scalar_field_for_time(self.current_anim_time)
@@ -2190,7 +2202,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.73')
+        self.setWindowTitle('MSUP Smart Solver - v0.73.1')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
