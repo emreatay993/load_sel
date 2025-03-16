@@ -4,7 +4,7 @@ import os
 import csv
 import sys
 import traceback
-from PyQt5.QtWidgets import (QApplication, QDialog, QVBoxLayout, QLabel,
+from PyQt5.QtWidgets import (QApplication, QDialog, QVBoxLayout, QLabel, QCheckBox, QHBoxLayout,
                              QComboBox, QPushButton, QFileDialog, QMessageBox)
 
 
@@ -12,18 +12,37 @@ from PyQt5.QtWidgets import (QApplication, QDialog, QVBoxLayout, QLabel,
 
 # region Global functions and classes
 class NamedSelectionDialog(QDialog):
-    def __init__(self, list_of_names, parent=None):  # Modified to accept list_of_names
+    def __init__(self, list_of_names, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Select Named Selection")
-        self.setMinimumSize(400, 150)
+        self.setWindowTitle("Select Named Selection or Import Nodes")
+        self.setMinimumSize(500, 200)
+        self.file_path = None
 
         layout = QVBoxLayout()
 
-        self.label = QLabel("Select a Named Selection:")
-        layout.addWidget(self.label)
+        # Checkbox for file import
+        self.file_checkbox = QCheckBox("Get node list from exported text file")
+        self.file_checkbox.stateChanged.connect(self.toggle_file_input)
+        layout.addWidget(self.file_checkbox)
+
+        # File selection widgets
+        self.file_layout = QHBoxLayout()
+        self.file_label = QLabel("Selected file:")
+        self.file_display = QLabel("None")
+        self.file_button = QPushButton("Browse...")
+        self.file_button.clicked.connect(self.select_file)
+        self.file_layout.addWidget(self.file_label)
+        self.file_layout.addWidget(self.file_display)
+        self.file_layout.addWidget(self.file_button)
+        self.file_layout.setEnabled(False)
+        layout.addLayout(self.file_layout)
+
+        # Named selection dropdown
+        self.ns_label = QLabel("Select a Named Selection:")
+        layout.addWidget(self.ns_label)
 
         self.combo = QComboBox()
-        for name in list_of_names:  # Add each name directly
+        for name in list_of_names:
             self.combo.addItem(name)
         layout.addWidget(self.combo)
 
@@ -32,6 +51,20 @@ class NamedSelectionDialog(QDialog):
         layout.addWidget(self.ok_btn)
 
         self.setLayout(layout)
+
+    def toggle_file_input(self, state):
+        enable_file = state == 2  # Qt.Checked
+        self.file_layout.setEnabled(enable_file)
+        self.combo.setEnabled(not enable_file)
+        self.ns_label.setEnabled(not enable_file)
+
+    def select_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Node List File", "", "Text Files (*.txt);;All Files (*)"
+        )
+        if file_path:
+            self.file_path = file_path
+            self.file_display.setText(os.path.basename(file_path))
 
 
 def show_message(message, title="Information"):
@@ -109,11 +142,32 @@ try:
         show_message("No named selection selected. Exiting.")
         sys.exit()
 
-    selected_NS = ns_dialog.combo.currentText()
-    obj_of_NS_of_selected_nodes = model.metadata.named_selection(selected_NS)
-    IDs_of_NS_of_selected_nodes = obj_of_NS_of_selected_nodes.ids
+    # Handle either file import or named selection
+    if ns_dialog.file_checkbox.isChecked() and ns_dialog.file_path:
+        # Read node IDs from text file
+        try:
+            with open(ns_dialog.file_path, 'r') as f:
+                reader = csv.reader(f, delimiter='\t')
+                headers = next(reader)
+
+                # Find Node Number column
+                if "Node Number" not in headers:
+                    raise ValueError("File missing 'Node Number' column")
+
+                node_idx = headers.index("Node Number")
+                IDs_of_NS_of_selected_nodes = [int(row[node_idx]) for row in reader]
+
+        except Exception as e:
+            show_error(f"Error reading node file: {str(e)}")
+            sys.exit()
+    else:
+        # Use traditional named selection
+        selected_NS = ns_dialog.combo.currentText()
+        obj_of_NS_of_selected_nodes = model.metadata.named_selection(selected_NS)
+        IDs_of_NS_of_selected_nodes = obj_of_NS_of_selected_nodes.ids
+
     my_mesh_scoping = dpf.Scoping(ids=IDs_of_NS_of_selected_nodes)
-    my_mesh_scoping.location = dpf.locations.elemental_nodal
+    my_mesh_scoping.location = dpf.locations.nodal
     # endregion
 
     # region Operator Connections
@@ -134,8 +188,8 @@ try:
         'SXZ': op_SXZ.outputs.fields_container.get_data()
     }
 
-    node_ids = stress_components['SX'].get_field_by_time_id(1).scoping.ids
-    stress_data = {comp: {nid: [] for nid in node_ids} for comp in stress_components}
+    my_node_ids = stress_components['SX'].get_field_by_time_id(1).scoping.ids
+    stress_data = {comp: {nid: [] for nid in my_node_ids} for comp in stress_components}
 
     for field_no in time_scoping.ids:
         for comp, container in stress_components.items():
@@ -149,10 +203,14 @@ try:
     node_coords = {}
     try:
         mesh = model.metadata.meshed_region
-        mesh.named_selection(selected_NS)
-        for nid in node_ids:
-            node = mesh.nodes.node_by_id(nid)
-            node_coords[nid] = (node.coordinates[0], node.coordinates[1], node.coordinates[2])
+        for nid in my_node_ids:
+            if my_node_ids is not None:
+                node = mesh.nodes.node_by_id(nid)
+                node_coords[nid] = (node.coordinates[0], node.coordinates[1], node.coordinates[2])
+            else:
+                node_coords[nid] = (None, None, None)
+                print(f"Node {nid} not found in mesh")
+
     except Exception as e:
         show_error(f"Coordinate extraction failed: {str(e)}")
         node_coords = None
@@ -169,7 +227,7 @@ try:
         writer = csv.writer(f)
         writer.writerow(header)
 
-        for nid in node_ids:
+        for nid in my_node_ids:
             row = [nid]
             if node_coords:
                 row.extend(node_coords.get(nid, [None] * 3))
@@ -184,7 +242,8 @@ try:
     show_message(f"Results successfully saved to:\n{output_path}")
     # endregion
 
-except Exception:
+except Exception as e:
     show_exception()
-
-sys.exit(app.exec_())
+    sys.exit(1)  # Error exit
+else:
+    sys.exit(0)  # Success exit
