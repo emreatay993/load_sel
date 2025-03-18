@@ -13,7 +13,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
                              QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
-                             QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut)
+                             QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut, QSplitter)
 from PyQt5.QtGui import QPalette, QColor, QFont, QTextCursor, QKeySequence
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths, QTimer
 from PyQt5.QtWebEngineWidgets import QWebEngineView
@@ -1514,11 +1514,11 @@ class MSUPSmartSolverGUI(QWidget):
         self.solver = None
 
         # Track whether the Plot(Modal Coordinates) tab is currently maximized
-        self.is_plotly_tab_maximized = False
+        self.modal_plot_window = None
 
-        # Create a shortcut for "M"
+        # Create a keyboard shortcut for "M"
         self.shortcut_m = QShortcut(QKeySequence("M"), self)
-        self.shortcut_m.activated.connect(self.toggle_modal_coords_plot_maximize)
+        self.shortcut_m.activated.connect(self.toggle_modal_coord_fullscreen_plot)
 
         # Set up a single logger instance
         self.logger = Logger(self.console_textbox)
@@ -2308,32 +2308,26 @@ class MSUPSmartSolverGUI(QWidget):
     #endregion
 
     #region Handle keyboard-based UI functionality
-    def toggle_modal_coords_plot_maximize(self):
-        """
-        Toggle the 'Plot (Modal Coordinates)' tab between
-        a 'maximized' state (only that tab visible) and normal state.
-        """
-        # Find which index is the Plot (Modal Coordinates) tab
-        plotly_tab_index = self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab)
-        if plotly_tab_index < 0:
-            return  # Tab not found for some reason
+    def toggle_modal_coord_fullscreen_plot(self):
+        # Only act if the current output tab is the Plot (Modal Coordinates) tab.
+        if self.show_output_tab_widget.currentWidget() != self.plot_modal_coords_tab:
+            return
 
-        if not self.is_plotly_tab_maximized:
-            # Hide every other tab
-            for i in range(self.show_output_tab_widget.count()):
-                if i != plotly_tab_index:
-                    self.show_output_tab_widget.setTabVisible(i, False)
-
-            # Switch to that tab
-            self.show_output_tab_widget.setCurrentIndex(plotly_tab_index)
-
-            self.is_plotly_tab_maximized = True
+        if self.modal_plot_window is None:
+            # Create a new composite widget.
+            composite_widget = ModalCoordCompositeWidget()
+            # Use stored data from the original Plotly widget to update both plots.
+            if (self.plot_modal_coords_tab.last_time_values is not None and
+                    self.plot_modal_coords_tab.last_modal_coord is not None):
+                composite_widget.update_time_plot(self.plot_modal_coords_tab.last_time_values,
+                                                  self.plot_modal_coords_tab.last_modal_coord)
+                composite_widget.update_bar_plot(self.plot_modal_coords_tab.last_modal_coord)
+            # Create and show the modal window with the composite widget.
+            self.modal_plot_window = ModalCoordPlotWindow(composite_widget, parent=self.window())
+            self.modal_plot_window.show()
         else:
-            # Restore all tabs
-            for i in range(self.show_output_tab_widget.count()):
-                self.show_output_tab_widget.setTabVisible(i, True)
-
-            self.is_plotly_tab_maximized = False
+            self.modal_plot_window.close()
+            self.modal_plot_window = None
     #endregion
 
 class MatplotlibWidget(QWidget):
@@ -2397,8 +2391,14 @@ class PlotlyWidget(QWidget):
         layout = QVBoxLayout()
         layout.addWidget(self.web_view)
         self.setLayout(layout)
+        # Store last used data for refresh
+        self.last_time_values = None
+        self.last_modal_coord = None
 
     def update_plot(self, time_values, modal_coord):
+        self.last_time_values = time_values
+        self.last_modal_coord = modal_coord
+
         fig = go.Figure()
         num_modes = modal_coord.shape[0]
         for i in range(num_modes):
@@ -2417,8 +2417,6 @@ class PlotlyWidget(QWidget):
             template="plotly_white",
             font=dict(size=7),  # global font size for labels, etc.
             margin=dict(l=40, r=40, t=10, b=0),  # figure margins
-            width=900,  # specify figure width
-            height=170,  # specify figure height
             legend=dict(
                 font=dict(size=7)
             )
@@ -2430,14 +2428,87 @@ class PlotlyWidget(QWidget):
 
         # Generate HTML and display
         html = pyo.plot(resampler_fig, include_plotlyjs='cdn', output_type='div')
-        self.web_view.setHtml(html)
+        self.web_view.setHtml(html, QUrl("about:blank"))
+
+class ModalCoordCompositeWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Use a vertical splitter so the user can adjust height between plots.
+        self.splitter = QSplitter(Qt.Vertical)
+
+        # Create two PlotlyWidget instances: one for the time plot and one for the bar plot.
+        self.time_plot_widget = PlotlyWidget()
+        self.bar_plot_widget = PlotlyWidget()
+
+        self.splitter.addWidget(self.time_plot_widget)
+        self.splitter.addWidget(self.bar_plot_widget)
+        # Set initial stretch factors (adjust as needed)
+        self.splitter.setStretchFactor(0, 3)  # Top widget gets more space
+        self.splitter.setStretchFactor(1, 1)  # Bottom widget gets less
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.splitter)
+        self.setLayout(layout)
+
+    def update_time_plot(self, time_values, modal_coord):
+        self.time_plot_widget.update_plot(time_values, modal_coord)
+
+    def update_bar_plot(self, modal_coord):
+        """
+        Computes the RMS of each mode (row of modal_coord) and creates a bar plot.
+        Each bar is its own trace so that a legend entry appears.
+        """
+        # Compute RMS values along the time axis (axis=1)
+        rms = np.sqrt(np.mean(modal_coord ** 2, axis=1))
+        num_modes = rms.shape[0]
+        # Create mode labels
+        x_labels = [f"Mode {i + 1}" for i in range(num_modes)]
+
+        # Create a new bar plot figure.
+        fig = go.Figure()
+        for i in range(num_modes):
+            # Each mode is a separate trace.
+            fig.add_trace(go.Bar(
+                x=[x_labels[i]],
+                y=[rms[i]],
+                name=f"Mode {i + 1}",
+                opacity=0.7
+            ))
+        # Update layout without fixed width/height.
+        fig.update_layout(
+            xaxis_title="Mode",
+            yaxis_title="RMS Value",
+            template="plotly_white",
+            font=dict(size=7),
+            margin=dict(l=40, r=40, t=10, b=40),
+            showlegend=True
+        )
+        # Generate HTML using inline Plotly JS or CDN as needed.
+        html = pyo.plot(fig, include_plotlyjs='cdn', output_type='div')
+        self.bar_plot_widget.web_view.setHtml(html, QUrl("about:blank"))
+
+class ModalCoordPlotWindow(QMainWindow):
+    def __init__(self, composite_widget, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Modal Coordinates Plot")
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setCentralWidget(composite_widget)
+        self.showMaximized()
+        # Shortcut "M" inside the modal window to close it.
+        self.shortcut_m = QShortcut(QKeySequence("M"), self)
+        self.shortcut_m.activated.connect(self.close)
+
+    def closeEvent(self, event):
+        # When closed, simply accept the event.
+        event.accept()
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.75.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.75.2')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
