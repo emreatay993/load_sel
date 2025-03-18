@@ -30,6 +30,7 @@ from pyvistaqt import QtInteractor
 import vtk
 import plotly.graph_objects as go
 import plotly.offline as pyo
+from plotly_resampler import FigureResampler
 # endregion
 
 # region Define global variables
@@ -2423,8 +2424,12 @@ class PlotlyWidget(QWidget):
             )
         )
 
+        # Wrap the figure in a FigureResampler.
+        # This enables dynamic resampling on zoom events.
+        resampler_fig = FigureResampler(fig, default_n_shown_samples=1000)
+
         # Generate HTML and display
-        html = pyo.plot(fig, include_plotlyjs='cdn', output_type='div')
+        html = pyo.plot(resampler_fig, include_plotlyjs='cdn', output_type='div')
         self.web_view.setHtml(html)
 
 class MainWindow(QMainWindow):
@@ -2432,7 +2437,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.75')
+        self.setWindowTitle('MSUP Smart Solver - v0.75.1')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
