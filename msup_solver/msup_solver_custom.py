@@ -13,9 +13,10 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
                              QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
-                             QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox)
-from PyQt5.QtGui import QPalette, QColor, QFont, QTextCursor
+                             QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut)
+from PyQt5.QtGui import QPalette, QColor, QFont, QTextCursor, QKeySequence
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths, QTimer
+from PyQt5.QtWebEngineWidgets import QWebEngineView
 import sys
 from io import StringIO
 import os
@@ -27,6 +28,8 @@ from matplotlib.ticker import MaxNLocator
 import pyvista as pv
 from pyvistaqt import QtInteractor
 import vtk
+import plotly.graph_objects as go
+import plotly.offline as pyo
 # endregion
 
 # region Define global variables
@@ -201,7 +204,7 @@ class MSUPSmartSolverTransient(QObject):
 
     def __init__(self, modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz, modal_coord,
                  steady_sx=None, steady_sy=None, steady_sz=None, steady_sxy=None, steady_syz=None, steady_sxz=None,
-                 steady_node_ids=None, modal_node_ids=None, output_directory=None):
+                 steady_node_ids=None, modal_node_ids=None, output_directory=None, modal_deformations=None):
         super().__init__()
 
         # Use selected output directory or fallback to script location
@@ -213,9 +216,19 @@ class MSUPSmartSolverTransient(QObject):
         self.RESULT_DTYPE = RESULT_DTYPE
         self.ELEMENT_SIZE = np.dtype(self.NP_DTYPE).itemsize
         self.RAM_PERCENT = 0.1
+        self.device = torch.device("cuda" if IS_GPU_ACCELERATION_ENABLED and torch.cuda.is_available() else "cpu")
+
+        self.modal_coord = torch.tensor(modal_coord, dtype=self.TORCH_DTYPE).to(self.device)
+        if modal_deformations is not None:
+            self.modal_deformations_ux = torch.tensor(modal_deformations[0], dtype=self.TORCH_DTYPE).to(self.device)
+            self.modal_deformations_uy = torch.tensor(modal_deformations[1], dtype=self.TORCH_DTYPE).to(self.device)
+            self.modal_deformations_uz = torch.tensor(modal_deformations[2], dtype=self.TORCH_DTYPE).to(self.device)
+        else:
+            self.modal_deformations_ux = None
+            self.modal_deformations_uy = None
+            self.modal_deformations_uz = None
 
         # Initialize modal inputs
-        self.device = torch.device("cuda" if IS_GPU_ACCELERATION_ENABLED and torch.cuda.is_available() else "cpu")
         self.modal_sx = torch.tensor(modal_sx, dtype=TORCH_DTYPE).to(self.device)
         self.modal_sy = torch.tensor(modal_sy, dtype=TORCH_DTYPE).to(self.device)
         self.modal_sz = torch.tensor(modal_sz, dtype=TORCH_DTYPE).to(self.device)
@@ -329,6 +342,20 @@ class MSUPSmartSolverTransient(QObject):
             actual_sxz += self.steady_sxz[selected_node_idx].unsqueeze(0)
 
         return actual_sx.cpu().numpy(), actual_sy.cpu().numpy(), actual_sz.cpu().numpy(), actual_sxy.cpu().numpy(), actual_syz.cpu().numpy(), actual_sxz.cpu().numpy()
+
+    def compute_deformations(self, start_idx, end_idx):
+        """
+        Compute actual nodal displacements (deformations) for all nodes in [start_idx, end_idx].
+        This method multiplies the modal deformation modes with the modal coordinate matrix.
+        """
+        if self.modal_deformations_ux is None:
+            return None  # No deformations data available
+
+        # Compute displacements (you can adjust the math if you have a different formulation)
+        actual_ux = torch.matmul(self.modal_deformations_ux[start_idx:end_idx, :], self.modal_coord)
+        actual_uy = torch.matmul(self.modal_deformations_uy[start_idx:end_idx, :], self.modal_coord)
+        actual_uz = torch.matmul(self.modal_deformations_uz[start_idx:end_idx, :], self.modal_coord)
+        return (actual_ux.cpu().numpy(), actual_uy.cpu().numpy(), actual_uz.cpu().numpy())
 
     @staticmethod
     @njit(parallel=True)
@@ -794,6 +821,12 @@ class DisplayTab(QWidget):
 
         # Animation Control Layout
         self.anim_layout = QHBoxLayout()
+        # Add a spin box for animation frame interval (in milliseconds)
+        self.anim_interval_spin = QSpinBox()
+        self.anim_interval_spin.setRange(10, 10000)  # Allow between 10 ms and 10,000 ms delay
+        self.anim_interval_spin.setValue(100)  # Default delay is 100 ms
+        self.anim_interval_spin.setPrefix("Interval (ms): ")
+        self.anim_layout.addWidget(self.anim_interval_spin)
         # Label and spinbox for animation start time
         self.anim_start_label = QLabel("Time Range:")
         self.anim_start_spin = QDoubleSpinBox()
@@ -812,31 +845,43 @@ class DisplayTab(QWidget):
         self.anim_end_spin.valueChanged.connect(self.update_anim_range_max)
         # Play and Stop buttons
         self.play_button = QPushButton("Play")
+        self.pause_button = QPushButton("Pause")
         self.stop_button = QPushButton("Stop")
+        self.pause_button.setEnabled(False)
         self.stop_button.setEnabled(False)
         self.play_button.clicked.connect(self.start_animation)
-        self.stop_button.clicked.connect(self.stop_animation)
-
-        # Add a spin box for animation frame interval (in milliseconds)
-        self.anim_interval_spin = QSpinBox()
-        self.anim_interval_spin.setRange(10, 10000)  # Allow between 10 ms and 10,000 ms delay
-        self.anim_interval_spin.setValue(100)  # Default delay is 100 ms
-        self.anim_interval_spin.setPrefix("Interval (ms): ")
-        self.anim_layout.addWidget(self.anim_interval_spin)
+        self.pause_button.clicked.connect(self.pause_animation)
+        self.stop_button.clicked.connect(self.reset_animation)
+        # Add Time Step Mode ComboBox and Custom Step SpinBox
+        self.time_step_mode_combo = QComboBox()
+        self.time_step_mode_combo.addItems(["Custom Time Step", "Actual Data Time Steps"])
+        self.custom_step_spin = QDoubleSpinBox()
+        self.custom_step_spin.setDecimals(3)
+        self.custom_step_spin.setRange(0.001, 10)
+        self.custom_step_spin.setValue(0.05)
+        self.custom_step_spin.setPrefix("Step: ")
 
         # Add widgets to the animation layout
+        self.anim_layout.addWidget(self.time_step_mode_combo)
+        self.anim_layout.addWidget(self.custom_step_spin)
+        self.anim_layout.addWidget(self.anim_interval_spin)
         self.anim_layout.addWidget(self.anim_start_label)
         self.anim_layout.addWidget(self.anim_start_spin)
         self.anim_layout.addWidget(self.anim_end_spin)
         self.anim_layout.addWidget(self.play_button)
+        self.anim_layout.addWidget(self.pause_button)
         self.anim_layout.addWidget(self.stop_button)
-        self.anim_layout.addWidget(self.anim_interval_spin)
         self.anim_layout.addStretch()
+
+        # Wrap the animation layout in a container widget and hide it initially
+        self.anim_controls_widget = QWidget()
+        self.anim_controls_widget.setLayout(self.anim_layout)
+        self.anim_controls_widget.setVisible(False)  # initially hidden
 
         layout.addLayout(file_layout)
         layout.addLayout(control_layout)
         layout.addLayout(time_point_layout)
-        layout.addLayout(self.anim_layout)
+        layout.addWidget(self.anim_controls_widget)
         layout.addWidget(self.plotter)
         self.setLayout(layout)
 
@@ -864,6 +909,14 @@ class DisplayTab(QWidget):
                 avg_dt = 1.0  # Fallback if only one time value exists
             self.time_point_spinbox.setSingleStep(avg_dt)
             self.selected_time_checkbox.setVisible(True)
+
+            # Update animation time range controls
+            self.anim_start_spin.setRange(min_time, max_time)
+            self.anim_end_spin.setRange(min_time, max_time)
+            self.anim_start_spin.setValue(min_time)
+            self.anim_end_spin.setValue(max_time)
+
+            self.anim_controls_widget.setVisible(True)
         else:
             # Hide the controls if the required data is not available.
             self.selected_time_checkbox.setVisible(False)
@@ -1028,12 +1081,14 @@ class DisplayTab(QWidget):
     def start_animation(self):
         """Start animating through the time range."""
         if self.current_mesh is None:
-            QMessageBox.warning(self, "No Data", "Please load the mesh before animating.")
+            QMessageBox.warning(self, "No Data", "Please load the mesh before animating by initializing and solving at "
+                                                 "least a single time point")
             return
         if hasattr(self, 'time_text_actor'):
             self.plotter.remove_actor(self.time_text_actor)
             self.time_text_actor = None  # clear the reference
         self.play_button.setEnabled(False)
+        self.pause_button.setEnabled(True)
         self.stop_button.setEnabled(True)
         # Initialize current animation time with the start value
         self.current_anim_time = self.anim_start_spin.value()
@@ -1042,38 +1097,73 @@ class DisplayTab(QWidget):
         self.anim_timer.timeout.connect(self.animate_frame)
         self.anim_timer.start(self.anim_interval_spin.value())  # Update every 100 ms (adjust as needed)
 
-    def stop_animation(self):
-        """Stop the animation."""
+    def pause_animation(self):
+        """Pause the animation (resumes from the current time when Play is clicked)."""
         if self.anim_timer is not None:
             self.anim_timer.stop()
         self.play_button.setEnabled(True)
+        self.pause_button.setEnabled(False)
+
+    def reset_animation(self):
+        """Stop the animation and reset the time to the start value."""
+        if self.anim_timer is not None:
+            self.anim_timer.stop()
+        self.current_anim_time = self.anim_start_spin.value()
+        self.play_button.setEnabled(True)
+        self.pause_button.setEnabled(False)
         self.stop_button.setEnabled(False)
 
     def animate_frame(self):
+        global time_values, modal_coord, modal_sx
         try:
             # Increment the current animation time
             start_time = self.anim_start_spin.value()
             end_time = self.anim_end_spin.value()
-            # Use np.searchsorted to get indices into the global time_values array.
-            # (Assuming time_values is a sorted NumPy array.)
-            start_index = np.searchsorted(time_values, start_time)
-            end_index = np.searchsorted(time_values, end_time, side='right') - 1
 
-            # Initialize a current_time_index attribute if it doesn't exist.
-            if not hasattr(self, 'current_time_index'):
-                self.current_time_index = start_index
+            # Update current_anim_time based on user selection ---
+            if self.time_step_mode_combo.currentText() == "Custom Time Step":
+                step = self.custom_step_spin.value()
+                self.current_anim_time += step
             else:
-                # Advance to the next index; if past end, wrap back to start.
-                self.current_time_index += 1
-                if self.current_time_index > end_index:
-                    self.current_time_index = start_index
+                idx = np.argmin(np.abs(time_values - self.current_anim_time))
+                if idx < len(time_values) - 1:
+                    self.current_anim_time = time_values[idx + 1]
+                else:
+                    self.current_anim_time = start_time
 
-            # Update the current animation time using the actual time value.
-            self.current_anim_time = time_values[self.current_time_index]
+            if self.current_anim_time > end_time:
+                self.current_anim_time = start_time
 
             # Update the scalar field on your mesh (replace with your actual computation)
             new_scalars = self.get_scalar_field_for_time(self.current_anim_time)
             self.current_mesh[self.data_column] = new_scalars
+
+            # Update node positions if modal deformations are loaded
+            if 'modal_ux' in globals() and modal_ux is not None:
+                # Find the time index corresponding to the current animation time
+                time_index = np.argmin(np.abs(time_values - self.current_anim_time))
+                # Slice the modal coordinate for the current time point
+                selected_modal_coord = modal_coord[:, time_index:time_index + 1]
+                # Create a temporary solver that now also receives the modal deformations tuple
+                # (Assuming that the other required globals like modal_sx, etc., are available)
+                try:
+                    temp_solver = MSUPSmartSolverTransient(
+                        modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                        selected_modal_coord,
+                        modal_node_ids=df_node_ids,
+                        modal_deformations=(modal_ux, modal_uy, modal_uz)
+                    )
+                    num_nodes = modal_sx.shape[0]
+                    # Compute deformations for all nodes at this time
+                    deformations = temp_solver.compute_deformations(0, num_nodes)
+                    if deformations is not None:
+                        ux, uy, uz = deformations  # Each with shape (n_nodes, 1)
+                        # Update mesh node positions: add computed displacements to original coordinates
+                        # (Assuming global variable node_coords holds the original positions)
+                        new_coords = node_coords + np.hstack((ux, uy, uz))
+                        self.current_mesh.points = new_coords
+                except Exception as e:
+                    print(f"Deformation update error: {e}")
 
             # Update the scalar bar range:
             fixed_min = self.scalar_min_spin.value()
@@ -1301,7 +1391,7 @@ class DisplayTab(QWidget):
             above_color='magenta',
             scalar_bar_args={
                 'title': self.data_column,
-                'fmt': '%.2f',
+                'fmt': '%.4f',
                 'position_x': 0.04,  # Left edge (5% from left)
                 'position_y': 0.35,  # Vertical position (35% from bottom)
                 'width': 0.05,  # Width of the scalar bar (5% of window)
@@ -1422,6 +1512,13 @@ class MSUPSmartSolverGUI(QWidget):
         # Initialize solver attribute
         self.solver = None
 
+        # Track whether the Plot(Modal Coordinates) tab is currently maximized
+        self.is_plotly_tab_maximized = False
+
+        # Create a shortcut for "M"
+        self.shortcut_m = QShortcut(QKeySequence("M"), self)
+        self.shortcut_m.activated.connect(self.toggle_modal_coords_plot_maximize)
+
         # Set up a single logger instance
         self.logger = Logger(self.console_textbox)
         sys.stdout = self.logger  # Redirect stdout to the logger
@@ -1521,6 +1618,24 @@ class MSUPSmartSolverGUI(QWidget):
             "background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
         self.steady_state_file_path.setVisible(False)  # Initially hidden
 
+        # Checkbox for including deformations
+        self.deformations_checkbox = QCheckBox("Include Deformations for Animation")
+        self.deformations_checkbox.setStyleSheet("margin: 10px 0;")
+        self.deformations_checkbox.toggled.connect(self.toggle_deformations_inputs)
+
+        self.deformations_file_button = QPushButton('Read Modal Deformations File (.csv)')
+        self.deformations_file_button.setStyleSheet("/* use your button style */")
+        self.deformations_file_button.setFont(QFont('Arial', 8))
+        self.deformations_file_path = QLineEdit()
+        self.deformations_file_button.setStyleSheet(button_style)
+        self.deformations_file_path.setReadOnly(True)
+        self.deformations_file_path.setStyleSheet("background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
+        self.deformations_file_button.clicked.connect(self.select_deformations_file)
+
+        # Initially hide the deformations file controls until the checkbox is checked.
+        self.deformations_file_button.setVisible(False)
+        self.deformations_file_path.setVisible(False)
+
         # Checkbox for Time History Mode (Single Node)
         self.time_history_checkbox = QCheckBox('Time History Mode (Single Node)')
         self.time_history_checkbox.setStyleSheet("margin: 10px 0;")
@@ -1574,18 +1689,24 @@ class MSUPSmartSolverGUI(QWidget):
         self.show_output_tab_widget.setStyleSheet(tab_style)
         self.show_output_tab_widget.addTab(self.console_textbox, "Console")
 
-        # Create the QWebEngineView for the Plotly Plot
+        # Initialize matplotlib plot
         self.plot_single_node_tab = MatplotlibWidget()
         # Ensure the plot widget expands to fill the tab
         self.plot_single_node_tab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Placeholder Plotly plot
+        # Placeholder matplotlib plot
         self.update_single_node_plot()
 
         # Add the plot tab to the tab widget, but hide it initially
         self.show_output_tab_widget.addTab(self.plot_single_node_tab, "Plot (Time History)")
         # Make it initially hidden
         self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_single_node_tab), False)
+
+        # Initialize modal coordinates plot
+        self.plot_modal_coords_tab = PlotlyWidget()
+        self.show_output_tab_widget.addTab(self.plot_modal_coords_tab, "Plot (Modal Coordinates)")
+        self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab),
+                                                  False)
 
         # Create Progress Bar
         self.progress_bar = QProgressBar(self)
@@ -1614,6 +1735,9 @@ class MSUPSmartSolverGUI(QWidget):
         file_layout.addWidget(self.steady_state_checkbox, 2, 0, 1, 2)
         file_layout.addWidget(self.steady_state_file_button, 3, 0)
         file_layout.addWidget(self.steady_state_file_path, 3, 1)
+        file_layout.addWidget(self.deformations_checkbox, 4, 0, 1, 2)
+        file_layout.addWidget(self.deformations_file_button, 5, 0)
+        file_layout.addWidget(self.deformations_file_path, 5, 1)
 
         file_group.setLayout(file_layout)
 
@@ -1664,6 +1788,14 @@ class MSUPSmartSolverGUI(QWidget):
         # Clear the file path text if the checkbox is unchecked
         if not is_checked:
             self.steady_state_file_path.clear()
+
+    def toggle_deformations_inputs(self):
+        if self.deformations_checkbox.isChecked():
+            self.deformations_file_button.setVisible(True)
+            self.deformations_file_path.setVisible(True)
+        else:
+            self.deformations_file_button.setVisible(False)
+            self.deformations_file_path.setVisible(False)
 
     def toggle_damage_index_checkbox_visibility(self):
         if self.von_mises_checkbox.isChecked():
@@ -1772,6 +1904,10 @@ class MSUPSmartSolverGUI(QWidget):
             # Log the success and shape of the resulting array.
             self.console_textbox.append(f"Successfully processed modal coordinate input: {unwrapped_filename}")
             self.console_textbox.append(f"Modal coordinates tensor shape (m x n): {modal_coord.shape} \n")
+
+            # Update the Plot (Modal Coordinates) tab
+            self.plot_modal_coords_tab.update_plot(time_values, modal_coord)
+            self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab), True)
         except Exception as e:
             self.console_textbox.append(f"Error processing modal coordinate file: {e}")
         finally:
@@ -1826,6 +1962,28 @@ class MSUPSmartSolverGUI(QWidget):
         finally:
             # After processing, update the time point controls in the DisplayTab.
             self.update_display_time_controls()
+
+    def select_deformations_file(self):
+        file_name, _ = QFileDialog.getOpenFileName(self, 'Open Modal Deformations File (.csv)', '', 'CSV Files (*.csv)')
+        if file_name:
+            self.deformations_file_path.setText(file_name)
+            self.process_modal_deformations_file(file_name)
+
+    def process_modal_deformations_file(self, filename):
+        try:
+            df = pd.read_csv(filename)
+            # Assume the CSV contains a "NodeID" column and deformation columns.
+            # For example, assume columns like "UX_mode1", "UY_mode1", "UZ_mode1", etc.
+            global df_node_ids_deformations, modal_ux, modal_uy, modal_uz
+            df_node_ids_deformations = df[['NodeID']].to_numpy().flatten()
+            # Extract deformation components using a case-insensitive regex (adjust as needed)
+            modal_ux = df.filter(regex='(?i)^ux_').to_numpy().astype(NP_DTYPE)
+            modal_uy = df.filter(regex='(?i)^uy_').to_numpy().astype(NP_DTYPE)
+            modal_uz = df.filter(regex='(?i)^uz_').to_numpy().astype(NP_DTYPE)
+            self.console_textbox.append(f"Successfully processed modal deformations file: {filename}")
+            self.console_textbox.append(f"Deformations array shapes: UX {modal_ux.shape}, UY {modal_uy.shape}, UZ {modal_uz.shape}")
+        except Exception as e:
+            self.console_textbox.append(f"Error processing modal deformations file: {e}")
 
     def update_display_time_controls(self):
         """
@@ -1963,6 +2121,11 @@ class MSUPSmartSolverGUI(QWidget):
                 selected_node_idx = get_node_index_from_id(selected_node_id, df_node_ids)
 
                 self.console_textbox.append(f"Time History Mode enabled for Node {selected_node_id}\n")
+
+                if 'modal_ux' in globals() and modal_ux is not None:
+                    modal_deformations = (modal_ux, modal_uy, modal_uz)
+                else:
+                    modal_deformations = None
 
                 # Create an instance of the solver
                 self.solver = MSUPSmartSolverTransient(
@@ -2143,6 +2306,35 @@ class MSUPSmartSolverGUI(QWidget):
         return False
     #endregion
 
+    #region Handle keyboard-based UI functionality
+    def toggle_modal_coords_plot_maximize(self):
+        """
+        Toggle the 'Plot (Modal Coordinates)' tab between
+        a 'maximized' state (only that tab visible) and normal state.
+        """
+        # Find which index is the Plot (Modal Coordinates) tab
+        plotly_tab_index = self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab)
+        if plotly_tab_index < 0:
+            return  # Tab not found for some reason
+
+        if not self.is_plotly_tab_maximized:
+            # Hide every other tab
+            for i in range(self.show_output_tab_widget.count()):
+                if i != plotly_tab_index:
+                    self.show_output_tab_widget.setTabVisible(i, False)
+
+            # Switch to that tab
+            self.show_output_tab_widget.setCurrentIndex(plotly_tab_index)
+
+            self.is_plotly_tab_maximized = True
+        else:
+            # Restore all tabs
+            for i in range(self.show_output_tab_widget.count()):
+                self.show_output_tab_widget.setTabVisible(i, True)
+
+            self.is_plotly_tab_maximized = False
+    #endregion
+
 class MatplotlibWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2197,12 +2389,50 @@ class MatplotlibWidget(QWidget):
         #self.figure.tight_layout()
         self.canvas.draw()
 
+class PlotlyWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.web_view = QWebEngineView(self)
+        layout = QVBoxLayout()
+        layout.addWidget(self.web_view)
+        self.setLayout(layout)
+
+    def update_plot(self, time_values, modal_coord):
+        fig = go.Figure()
+        num_modes = modal_coord.shape[0]
+        for i in range(num_modes):
+            fig.add_trace(go.Scattergl(
+                x=time_values,
+                y=modal_coord[i, :],
+                mode='lines',  # 'markers' or 'lines+markers'
+                name=f'Mode {i + 1}',
+                opacity=0.7
+            ))
+
+        # Adjust layout here
+        fig.update_layout(
+            xaxis_title="Time [s]",
+            yaxis_title="Modal Coordinate Value",
+            template="plotly_white",
+            font=dict(size=7),  # global font size for labels, etc.
+            margin=dict(l=40, r=40, t=10, b=0),  # figure margins
+            width=900,  # specify figure width
+            height=170,  # specify figure height
+            legend=dict(
+                font=dict(size=7)
+            )
+        )
+
+        # Generate HTML and display
+        html = pyo.plot(fig, include_plotlyjs='cdn', output_type='div')
+        self.web_view.setHtml(html)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.73.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.75')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
@@ -2303,11 +2533,11 @@ class MainWindow(QMainWindow):
         self.navigator_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
 
         # Get the Desktop path dynamically
-        desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+        #desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
 
         # Create file system model
         self.file_model = QFileSystemModel()
-        self.file_model.setRootPath(desktop_path)  # Initially Desktop, updates when project directory is selected
+        #self.file_model.setRootPath(desktop_path)  # Initially Desktop, updates when project directory is selected
         self.file_model.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)  # Show all files & folders
 
         # Apply file type filter
@@ -2317,7 +2547,7 @@ class MainWindow(QMainWindow):
         # Create Tree View
         self.tree_view = QTreeView()
         self.tree_view.setModel(self.file_model)
-        self.tree_view.setRootIndex(self.file_model.index(desktop_path))  # Start at Desktop
+        #self.tree_view.setRootIndex(self.file_model.index(desktop_path))  # Start at Desktop
         self.tree_view.setHeaderHidden(False)  # Show headers for resizing
         self.tree_view.setMinimumWidth(240)  # Set a reasonable width
         self.tree_view.setSortingEnabled(True)  # Allow sorting of files/folders
