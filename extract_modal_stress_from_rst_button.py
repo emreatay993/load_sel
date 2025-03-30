@@ -6,7 +6,7 @@ import Ans.DataProcessing as dpf
 
 # Define the solution path
 modal_solution = DataModel.GetObjectsByName("Modal")[0].Solution
-obj_of_NS = DataModel.GetObjectsByName("NS_Modal_Stress")[0]
+obj_of_NS = DataModel.GetObjectsByName("NS_Modal_Expansion")[0]
 
 folder = modal_solution.WorkingDir
 filename = "file.rst"
