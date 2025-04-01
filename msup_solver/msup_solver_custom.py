@@ -857,10 +857,13 @@ class DisplayTab(QWidget):
         self.time_step_mode_combo = QComboBox()
         self.time_step_mode_combo.addItems(["Custom Time Step", "Actual Data Time Steps"])
         self.custom_step_spin = QDoubleSpinBox()
-        self.custom_step_spin.setDecimals(3)
+        self.custom_step_spin.setDecimals(5)
         self.custom_step_spin.setRange(0.001, 10)
         self.custom_step_spin.setValue(0.05)
-        self.custom_step_spin.setPrefix("Step: ")
+        self.custom_step_spin.setPrefix("Step (seconds): ")
+
+        # Connect the combo box's text change signal
+        self.time_step_mode_combo.currentTextChanged.connect(self.update_step_spinbox_state)
 
         # Add widgets to the animation layout
         self.anim_layout.addWidget(self.time_step_mode_combo)
@@ -1177,7 +1180,7 @@ class DisplayTab(QWidget):
                 self.current_actor.mapper.SetScalarRange(fixed_min, fixed_max)
 
             # Update (or create) the free-floating text actor
-            current_text = f"Time: {self.current_anim_time:.3f}"
+            current_text = f"Time: {self.current_anim_time:.5f}"
 
             # Remove existing time text actor if present
             if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
@@ -1365,6 +1368,13 @@ class DisplayTab(QWidget):
         max_val = self.scalar_max_spin.value()
         self.current_actor.mapper.SetScalarRange(min_val, max_val)
         self.plotter.render()
+
+    def update_step_spinbox_state(self, text):
+        """Enable/disable the step spinbox based on the selected time step mode."""
+        if text == "Actual Data Time Steps":
+            self.custom_step_spin.setEnabled(False)
+        else:
+            self.custom_step_spin.setEnabled(True)
 
     def update_visualization(self):
         """Update plotter with current settings"""
