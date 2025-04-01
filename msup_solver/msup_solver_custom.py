@@ -31,6 +31,7 @@ import vtk
 import plotly.graph_objects as go
 import plotly.offline as pyo
 from plotly_resampler import FigureResampler
+import cProfile
 # endregion
 
 # region Define global variables
@@ -694,25 +695,36 @@ class MSUPSmartSolverTransient(QObject):
         except Exception as e:
             print(f"Error converting {dat_filename} to {csv_filename}: {e}")
 
-class Logger:
-    def __init__(self, text_edit):
+class Logger(QObject):
+    def __init__(self, text_edit, flush_interval=200):
+        super().__init__()
         self.text_edit = text_edit
         self.terminal = sys.stdout
-        self.log_stream = StringIO()
+        self.log_buffer = ""  # Buffer for messages
+        self.flush_interval = flush_interval  # in milliseconds
+
+        # Set up a QTimer to flush the buffer periodically
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.flush_buffer)
+        self.timer.start(self.flush_interval)
 
     def write(self, message):
-        self.terminal.write(message)  # Keep writing to the original terminal
-        self.log_stream.write(message)  # Save to internal buffer
-        self.log_stream.flush()  # Flush buffer to prevent any delay
+        # Write to the original terminal
+        self.terminal.write(message)
+        # Append the message to the buffer
+        self.log_buffer += message
 
-        self.text_edit.moveCursor(QTextCursor.End)
-        self.text_edit.insertPlainText(message)  # Add text to QTextEdit
-        self.text_edit.moveCursor(QTextCursor.End)
-        self.text_edit.ensureCursorVisible()  # Ensure the latest message is visible
-        QApplication.processEvents()  # Process UI updates to refresh the log in real time
+    def flush_buffer(self):
+        if self.log_buffer:
+            # Append the buffered messages to the text edit in one update
+            self.text_edit.moveCursor(QTextCursor.End)
+            self.text_edit.insertPlainText(self.log_buffer)
+            self.text_edit.moveCursor(QTextCursor.End)
+            self.text_edit.ensureCursorVisible()
+            self.log_buffer = ""
 
     def flush(self):
-        pass
+        self.flush_buffer()
 
 class DisplayTab(QWidget):
     def __init__(self, parent=None):
@@ -727,6 +739,7 @@ class DisplayTab(QWidget):
         self.anim_timer = None       # timer for animation
         self.time_text_actor = None
         self.current_anim_time = 0.0  # current time in the animation
+        self.temp_solver = None
         self.init_ui()
 
     def init_ui(self):
@@ -858,7 +871,7 @@ class DisplayTab(QWidget):
         self.time_step_mode_combo.addItems(["Custom Time Step", "Actual Data Time Steps"])
         self.custom_step_spin = QDoubleSpinBox()
         self.custom_step_spin.setDecimals(5)
-        self.custom_step_spin.setRange(0.001, 10)
+        self.custom_step_spin.setRange(0.000001, 10)
         self.custom_step_spin.setValue(0.05)
         self.custom_step_spin.setPrefix("Step (seconds): ")
 
@@ -1118,6 +1131,9 @@ class DisplayTab(QWidget):
         self.stop_button.setEnabled(False)
 
     def animate_frame(self):
+        # profiler = cProfile.Profile()
+        # profiler.enable()
+
         global time_values, modal_coord, modal_sx
         try:
             # Increment the current animation time
@@ -1198,6 +1214,9 @@ class DisplayTab(QWidget):
 
         except Exception as e:
             QMessageBox.critical(self, "Animation Error", f"Failed to animate the results: {str(e)}")
+
+        # profiler.disable()
+        # profiler.dump_stats("animation.prof")
 
     def get_scalar_field_for_time(self, time_val):
         """
