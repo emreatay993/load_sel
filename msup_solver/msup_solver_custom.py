@@ -384,7 +384,7 @@ class MSUPSmartSolverTransient(QObject):
         return signed_von_mises
 
     @staticmethod
-    def compute_principal_stresses_yedek(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
+    def compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
         """Compute principal stresses using NumPy vectorized operations."""
         num_nodes, num_time_points = actual_sx.shape
 
@@ -418,7 +418,7 @@ class MSUPSmartSolverTransient(QObject):
 
     @staticmethod
     @njit(parallel=True)
-    def compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
+    def compute_principal_stresses_yedek(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
         """Compute principal stresses using analytical methods without constructing full stress tensors."""
         num_nodes, num_time_points = actual_sx.shape
         s1 = np.zeros((num_nodes, num_time_points), dtype=actual_sx.dtype)
@@ -490,6 +490,10 @@ class MSUPSmartSolverTransient(QObject):
         num_nodes, num_modes = self.modal_sx.shape
         num_time_points = self.modal_coord.shape[1]
 
+        # Initialize max over time vectors
+        self.max_over_time_svm = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
+        self.max_over_time_s1 = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
+
         # Get the chunk size based on selected options
         chunk_size = self.get_chunk_size(
             num_nodes, num_time_points,
@@ -539,6 +543,10 @@ class MSUPSmartSolverTransient(QObject):
                                                          actual_sxy, actual_syz, actual_sxz)
                 print(f"Elapsed time for von Mises stresses: {(time.time() - start_time):.3f} seconds")
 
+                # Update max_over_time using the maximum from this chunk (axis=0 for time points)
+                chunk_max = np.max(sigma_vm, axis=0)
+                self.max_over_time_svm = np.maximum(self.max_over_time_svm, chunk_max)
+
                 # Calculate the maximum von Mises stress and its time index for each node
                 start_time = time.time()
                 max_von_mises_stress_per_node = np.max(sigma_vm, axis=1)
@@ -554,6 +562,10 @@ class MSUPSmartSolverTransient(QObject):
                 s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz,
                                                              actual_sxy, actual_syz, actual_sxz)
                 print(f"Elapsed time for principal stresses: {(time.time() - start_time):.3f} seconds")
+
+                # Update global max for s1 (maximum principal stress)
+                chunk_max = np.max(s1, axis=0)
+                self.max_over_time_s1 = np.maximum(self.max_over_time_s1, chunk_max)
 
                 # Calculate the maximum principal stress (s1) and its time index for each node
                 start_time = time.time()
@@ -2224,6 +2236,23 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.moveCursor(QTextCursor.End)  # Move cursor to the end
             self.console_textbox.ensureCursorVisible()  # Ensure the cursor is visible
 
+            # region Create maximum over time plot if solver is not run in Time History mode
+            if not self.time_history_checkbox.isChecked():
+                # Automatically determine which maximum arrays were computed
+                vm_data = self.solver.max_over_time_svm if self.von_mises_checkbox.isChecked() else None
+                principal_data = self.solver.max_over_time_s1 if self.principal_stress_checkbox.isChecked() else None
+
+                if not hasattr(self, 'plot_max_over_time_tab'):
+                    self.plot_max_over_time_tab = PlotlyMaxWidget()
+                    modal_tab_index = self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab)
+                    self.show_output_tab_widget.insertTab(modal_tab_index + 1, self.plot_max_over_time_tab,
+                                                          "Maximum Over Time")
+
+                self.plot_max_over_time_tab.update_plot(time_values, vm_values=vm_data, principal_values=principal_data)
+                self.show_output_tab_widget.setTabVisible(
+                    self.show_output_tab_widget.indexOf(self.plot_max_over_time_tab), True)
+            # endregion
+
         except Exception as e:
             self.console_textbox.append(f"Error during solving process: {e}, Datetime: {current_time}")
             self.console_textbox.moveCursor(QTextCursor.End)  # Move cursor to the end
@@ -2532,12 +2561,79 @@ class ModalCoordPlotWindow(QMainWindow):
         # When closed, simply accept the event.
         event.accept()
 
+class PlotlyMaxWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.web_view = QWebEngineView(self)
+        layout = QVBoxLayout()
+        layout.addWidget(self.web_view)
+        self.setLayout(layout)
+
+    def update_plot(self, time_values, vm_values=None, principal_values=None):
+        fig = go.Figure()
+
+        # If both metrics are provided, add two traces.
+        if vm_values is not None and principal_values is not None:
+            fig.add_trace(go.Scattergl(
+                x=time_values,
+                y=vm_values,
+                mode='lines',
+                name='Von Mises',
+                opacity=0.7,
+                line=dict(color='blue')
+            ))
+            fig.add_trace(go.Scattergl(
+                x=time_values,
+                y=principal_values,
+                mode='lines',
+                name='Max Principal',
+                opacity=0.7,
+                line=dict(color='red')
+            ))
+        # If only von Mises values are available, plot only that trace.
+        elif vm_values is not None:
+            fig.add_trace(go.Scattergl(
+                x=time_values,
+                y=vm_values,
+                mode='lines',
+                name='Von Mises',
+                opacity=0.7,
+                line=dict(color='blue')
+            ))
+        # If only principal stress values are available, plot that trace.
+        elif principal_values is not None:
+            fig.add_trace(go.Scattergl(
+                x=time_values,
+                y=principal_values,
+                mode='lines',
+                name='Max Principal',
+                opacity=0.7,
+                line=dict(color='red')
+            ))
+        else:
+            # If no data is provided, display a message.
+            fig.add_annotation(text="No data available", showarrow=False)
+
+        fig.update_layout(
+            xaxis_title="Time [s]",
+            yaxis_title="Stress (MPa)",
+            template="plotly_white",
+            font=dict(size=7),
+            margin=dict(l=40, r=40, t=10, b=0),
+            legend=dict(font=dict(size=7))
+        )
+
+        # Wrap the figure for dynamic resampling (improves performance on zoom)
+        resampler_fig = FigureResampler(fig, default_n_shown_samples=1000)
+        html = pyo.plot(resampler_fig, include_plotlyjs='cdn', output_type='div')
+        self.web_view.setHtml(html, QUrl("about:blank"))
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.75.2')
+        self.setWindowTitle('MSUP Smart Solver - v0.8')
         self.setGeometry(40, 40, 800, 670)
 
         # Create a menu bar
