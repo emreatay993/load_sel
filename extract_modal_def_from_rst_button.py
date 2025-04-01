@@ -84,9 +84,9 @@ with open(deformation_csv_path, mode='wb') as file:
     header = ["NodeID", "X", "Y", "Z"]
     for mode in range(1, num_modes + 1):
         header.extend([
-            "dx_Mode{}".format(mode),
-            "dy_Mode{}".format(mode),
-            "dz_Mode{}".format(mode)
+            "UX_mode{}".format(mode),
+            "UY_mode{}".format(mode),
+            "UZ_mode{}".format(mode)
         ])
     writer.writerow(header)
     
