@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButt
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
                              QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
                              QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut, QSplitter)
-from PyQt5.QtGui import QPalette, QColor, QFont, QTextCursor, QKeySequence
+from PyQt5.QtGui import QPalette, QColor, QFont, QTextCursor, QKeySequence, QDoubleValidator
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths, QTimer
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 import sys
@@ -200,7 +200,7 @@ def unwrap_mcf_file(input_file, output_file):
     return final_lines
 # endregion
 
-# region Define global class & functions
+# region Define global classes
 class MSUPSmartSolverTransient(QObject):
     progress_signal = pyqtSignal(int)
 
@@ -271,8 +271,8 @@ class MSUPSmartSolverTransient(QObject):
         print(f"Available system RAM: {self.available_memory:.2f} GB")
         print(f"Allocated system RAM: {self.allocated_memory:.2f} GB")
 
-    def get_chunk_size(self, num_nodes, num_time_points, calculate_von_mises, calculate_principal_stress,
-                       calculate_damage):
+    def estimate_chunk_size(self, num_nodes, num_time_points, calculate_von_mises, calculate_principal_stress,
+                            calculate_damage):
         """Calculate the optimal chunk size for processing based on available memory."""
         available_memory = psutil.virtual_memory().available * self.RAM_PERCENT
         memory_per_node = self.get_memory_per_node(num_time_points, calculate_von_mises, calculate_principal_stress,
@@ -487,15 +487,18 @@ class MSUPSmartSolverTransient(QObject):
 
     def process_results(self, calculate_damage=False, calculate_von_mises=False, calculate_principal_stress=False):
         """Process stress results to compute potential (relative) fatigue damage."""
+        # region Initialization
+        # Initialize tensor size
         num_nodes, num_modes = self.modal_sx.shape
         num_time_points = self.modal_coord.shape[1]
 
         # Initialize max over time vectors
         self.max_over_time_svm = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
         self.max_over_time_s1 = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
+        # endregion
 
-        # Get the chunk size based on selected options
-        chunk_size = self.get_chunk_size(
+        # region Get the chunk size based on selected options
+        chunk_size = self.estimate_chunk_size(
             num_nodes, num_time_points,
             calculate_von_mises, calculate_principal_stress, calculate_damage
         )
@@ -508,7 +511,9 @@ class MSUPSmartSolverTransient(QObject):
         )
         memory_required_per_iteration = self.estimate_ram_required_per_iteration(chunk_size, memory_per_node)
         print(f"Estimated RAM required per iteration: {memory_required_per_iteration:.2f} GB\n")
+        # endregion
 
+        # region Create temporary (memmap) files
         if calculate_principal_stress:
             # Create memmap files for storing the maximum principal stresses per node (s1)
             s1_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_s1_stress.dat'),
@@ -526,16 +531,20 @@ class MSUPSmartSolverTransient(QObject):
         if calculate_damage:
             potential_damage_memmap = np.memmap(os.path.join(self.output_directory,'potential_damage_results.dat'),
                                                 dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+        # endregion
 
+        # region --- MAIN CALCULATION ROUTINE ---
         for start_idx in range(0, num_nodes, chunk_size):
             end_idx = min(start_idx + chunk_size, num_nodes)
 
-            # Calculate normal stresses
+            # region Calculate normal stresses
             start_time = time.time()
             actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
                 self.compute_normal_stresses(start_idx, end_idx)
             print(f"Elapsed time for normal stresses: {(time.time() - start_time):.3f} seconds")
+            # endregion
 
+            # region Calculate the requested outputs
             if calculate_von_mises:
                 # Calculate von Mises stresses
                 start_time = time.time()
@@ -578,20 +587,20 @@ class MSUPSmartSolverTransient(QObject):
 
             # Calculate potential damage index for all nodes in the chunk
             if calculate_damage:
-                if calculate_damage:
-                    start_time = time.time()
+                start_time = time.time()
 
-                    # Compute the signed von Mises stress using the existing von Mises results
-                    signed_von_mises = self.compute_signed_von_mises_stress(sigma_vm, actual_sx, actual_sy, actual_sz)
+                # Compute the signed von Mises stress using the existing von Mises results
+                signed_von_mises = self.compute_signed_von_mises_stress(sigma_vm, actual_sx, actual_sy, actual_sz)
 
-                    # Use the signed von Mises stress for damage calculation
-                    A = 1  # Material constant (example value)
-                    m = -3  # Material exponent (example value)
-                    potential_damages = compute_potential_damage_for_all_nodes(signed_von_mises, A,m)
-                    potential_damage_memmap[start_idx:end_idx] = potential_damages
-                    print(f"Elapsed time for damage index calculation: {(time.time() - start_time):.3f} seconds")
+                # Use the signed von Mises stress for damage calculation
+                A = 1  # Material constant (example value)
+                m = -3  # Material exponent (example value)
+                potential_damages = compute_potential_damage_for_all_nodes(signed_von_mises, A,m)
+                potential_damage_memmap[start_idx:end_idx] = potential_damages
+                print(f"Elapsed time for damage index calculation: {(time.time() - start_time):.3f} seconds")
+            # endregion
 
-            # Free up some memory
+            # region Free up some memory
             start_time = time.time()
             del actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
 
@@ -602,10 +611,10 @@ class MSUPSmartSolverTransient(QObject):
 
             gc.collect()
             print(f"Elapsed time for garbage collection: {(time.time() - start_time):.3f} seconds")
-
             current_available_memory = psutil.virtual_memory().available * self.RAM_PERCENT
+            # endregion
 
-            # Emit progress signal as a percentage of the total iterations
+            # region Emit progress signal as a percentage of the total iterations
             current_iteration = (start_idx // chunk_size) + 1
             progress_percentage = (current_iteration / num_iterations) * 100
             self.progress_signal.emit(int(progress_percentage))
@@ -613,8 +622,10 @@ class MSUPSmartSolverTransient(QObject):
 
             print(f"Iteration completed for nodes {start_idx} to {end_idx}. "
                   f"Allocated system RAM: {current_available_memory / (1024 ** 3):.2f} GB\n")
+            # endregion
+        # endregion
 
-        # Ensure all memmap files are flushed to disk
+        # region Ensure all memmap files are flushed to disk
         if calculate_von_mises:
             von_mises_max_memmap.flush()
             von_mises_max_time_memmap.flush()
@@ -623,6 +634,7 @@ class MSUPSmartSolverTransient(QObject):
             s1_max_time_memmap.flush()
         if calculate_damage:
             potential_damage_memmap.flush()
+        # endregion
 
         # region Convert the .dat files to .csv
         if calculate_von_mises:
@@ -663,12 +675,17 @@ class MSUPSmartSolverTransient(QObject):
         - time_points: Array of time points for the selected node.
         - stress_values: Array of stress values (either Von Mises or Principal Stress).
         """
-        # Fetch stress data for the selected node
+
+        # region Initialization & reassignment of variables
+        selected_node_id = df_node_ids[selected_node_idx]
+        # endregion
+
+        # region Compute normal stresses for the selected node
         actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
             self.compute_normal_stresses_for_a_single_node(selected_node_idx)
+        # endregion
 
-        selected_node_id = df_node_ids[selected_node_idx]
-
+        # region Calculate the requested outputs
         if calculate_von_mises:
             # Compute Von Mises stress for the selected node
             sigma_vm = self.compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
@@ -685,7 +702,9 @@ class MSUPSmartSolverTransient(QObject):
 
             return np.arange(s1.shape[1]), s1[0, :]  # time_indices, stress_values
 
+        # Return none if no output is requested
         return None, None
+        # endregion
 
     def convert_dat_to_csv(self, node_ids, num_nodes, dat_filename, csv_filename, header):
         """Converts a .dat file to a .csv file with NodeID and, if available, X,Y,Z coordinates."""
@@ -751,6 +770,7 @@ class DisplayTab(QWidget):
         self.anim_timer = None       # timer for animation
         self.time_text_actor = None
         self.current_anim_time = 0.0  # current time in the animation
+        self.animation_paused = False
         self.temp_solver = None
         self.init_ui()
 
@@ -766,6 +786,19 @@ class DisplayTab(QWidget):
             QPushButton:hover {
                 background-color: #cce4ff;
             }
+        """
+        group_box_style = """
+        QGroupBox {
+            border: 1px solid #5b9bd5;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            left: 10px;
+            padding: 0 5px;
+        }
         """
 
         # Create file selection components
@@ -809,41 +842,47 @@ class DisplayTab(QWidget):
         file_layout.addWidget(self.file_path)
 
         # Visualization controls
-        control_layout = QHBoxLayout()
-        control_layout.addWidget(QLabel("Node Point Size:"))
-        control_layout.addWidget(self.point_size)
-        control_layout.addWidget(QLabel("Scalar Range:"))
-        control_layout.addWidget(self.scalar_min_spin)
-        control_layout.addWidget(self.scalar_max_spin)
-        control_layout.addStretch()
+        self.graphics_control_layout = QHBoxLayout()
+        self.graphics_control_layout.addWidget(QLabel("Node Point Size:"))
+        self.graphics_control_layout.addWidget(self.point_size)
+        self.graphics_control_layout.addWidget(QLabel("Legend Range:"))
+        self.graphics_control_layout.addWidget(self.scalar_min_spin)
+        self.graphics_control_layout.addWidget(self.scalar_max_spin)
+        self.graphics_control_layout.addStretch()
+
+        self.graphics_control_group = QGroupBox("Visualization Controls")
+        self.graphics_control_group.setStyleSheet(group_box_style)
+        self.graphics_control_group.setLayout(self.graphics_control_layout)
 
         # Contour Time-point controls layout:
-        self.selected_time_checkbox = QCheckBox("Display results for a selected time point")
-        self.selected_time_checkbox.setStyleSheet("margin: 10px;")
-        self.selected_time_checkbox.toggled.connect(self.toggle_time_point_controls)
+        self.selected_time_label = QLabel("Display results for a selected time point:")
+        self.selected_time_label.setStyleSheet("margin: 10px;")
         # Initially hide the checkbox, and show it once the required files are loaded.
-        self.selected_time_checkbox.setVisible(False)
 
         self.time_point_spinbox = QDoubleSpinBox()
-        self.time_point_spinbox.setDecimals(3)
+        self.time_point_spinbox.setDecimals(5)
+        self.time_point_spinbox.setPrefix("Time (seconds): ")
         # Range will be updated later from the modal coordinate file's time values.
         self.time_point_spinbox.setRange(0, 0)
-        self.time_point_spinbox.setVisible(False)
 
         self.update_time_button = QPushButton("Update")
-        self.update_time_button.setVisible(False)
         self.update_time_button.clicked.connect(self.update_time_point_results)
 
-        self.save_time_button = QPushButton("Save Time Point")
-        self.save_time_button.setVisible(False)
+        self.save_time_button = QPushButton("Save Time Point as CSV")
         self.save_time_button.clicked.connect(self.save_time_point_results)
 
         # Put the new widgets in a horizontal layout
-        time_point_layout = QHBoxLayout()
-        time_point_layout.addWidget(self.selected_time_checkbox)
-        time_point_layout.addWidget(self.time_point_spinbox)
-        time_point_layout.addWidget(self.update_time_button)
-        time_point_layout.addWidget(self.save_time_button)
+        self.time_point_layout = QHBoxLayout()
+        self.time_point_layout.addWidget(self.selected_time_label)
+        self.time_point_layout.addWidget(self.time_point_spinbox)
+        self.time_point_layout.addWidget(self.update_time_button)
+        self.time_point_layout.addWidget(self.save_time_button)
+        self.time_point_layout.addStretch()
+
+        self.time_point_group = QGroupBox("Initialization & Time Point Controls")
+        self.time_point_group.setStyleSheet(group_box_style)
+        self.time_point_group.setLayout(self.time_point_layout)
+        self.time_point_group.setVisible(False)
 
         # Animation Control Layout
         self.anim_layout = QHBoxLayout()
@@ -857,13 +896,13 @@ class DisplayTab(QWidget):
         self.anim_start_label = QLabel("Time Range:")
         self.anim_start_spin = QDoubleSpinBox()
         self.anim_start_spin.setPrefix("Start: ")
-        self.anim_start_spin.setDecimals(3)
+        self.anim_start_spin.setDecimals(5)
         self.anim_start_spin.setMinimum(0)
         self.anim_start_spin.setValue(0)
         # Label and spinbox for animation end time
         self.anim_end_spin = QDoubleSpinBox()
         self.anim_end_spin.setPrefix("End: ")
-        self.anim_end_spin.setDecimals(3)
+        self.anim_end_spin.setDecimals(5)
         self.anim_end_spin.setMinimum(0)
         self.anim_end_spin.setValue(1)
         # Ensure valid range by connecting valueChanged signals
@@ -877,22 +916,47 @@ class DisplayTab(QWidget):
         self.stop_button.setEnabled(False)
         self.play_button.clicked.connect(self.start_animation)
         self.pause_button.clicked.connect(self.pause_animation)
-        self.stop_button.clicked.connect(self.reset_animation)
+        self.stop_button.clicked.connect(self.stop_animation)
         # Add Time Step Mode ComboBox and Custom Step SpinBox
         self.time_step_mode_combo = QComboBox()
         self.time_step_mode_combo.addItems(["Custom Time Step", "Actual Data Time Steps"])
+        self.time_step_mode_combo.setCurrentIndex(1)
         self.custom_step_spin = QDoubleSpinBox()
         self.custom_step_spin.setDecimals(5)
         self.custom_step_spin.setRange(0.000001, 10)
-        self.custom_step_spin.setValue(0.05)
-        self.custom_step_spin.setPrefix("Step (seconds): ")
+        self.custom_step_spin.setValue(0.01)
+        self.custom_step_spin.setPrefix("Step (secs): ")
+
+        self.actual_interval_spin = QSpinBox()
+        self.actual_interval_spin.setRange(1, 1)  # Set max later after loading time_values
+        self.actual_interval_spin.setValue(1)
+        self.actual_interval_spin.setPrefix("Every nth: ")
+        self.actual_interval_spin.setVisible(False)  # Hidden by default
 
         # Connect the combo box's text change signal
         self.time_step_mode_combo.currentTextChanged.connect(self.update_step_spinbox_state)
+        self.update_step_spinbox_state(self.time_step_mode_combo.currentText())
+
+        # Deformation Scale Factor
+        self.deformation_scale_label = QLabel("Deformation Scale Factor:")
+        self.deformation_scale_edit = QLineEdit("1")
+        # Create and set a QDoubleValidator. This will allow numbers in standard or scientific notation.
+        validator = QDoubleValidator()
+        validator.setNotation(QDoubleValidator.StandardNotation)
+        self.deformation_scale_edit.setValidator(validator)
+        # Connect the editingFinished signal so that pressing Enter (or losing focus) triggers validation.
+        self.deformation_scale_edit.editingFinished.connect(self.validate_deformation_scale)
+        # Store the last valid input – starting at 1.0.
+        self.last_valid_deformation_scale = 1.0
+        self.deformation_scale_label.setVisible(False)
+        self.deformation_scale_edit.setVisible(False)
+        self.graphics_control_layout.addWidget(self.deformation_scale_label)
+        self.graphics_control_layout.addWidget(self.deformation_scale_edit)
 
         # Add widgets to the animation layout
         self.anim_layout.addWidget(self.time_step_mode_combo)
         self.anim_layout.addWidget(self.custom_step_spin)
+        self.anim_layout.addWidget(self.actual_interval_spin)
         self.anim_layout.addWidget(self.anim_interval_spin)
         self.anim_layout.addWidget(self.anim_start_label)
         self.anim_layout.addWidget(self.anim_start_spin)
@@ -900,24 +964,19 @@ class DisplayTab(QWidget):
         self.anim_layout.addWidget(self.play_button)
         self.anim_layout.addWidget(self.pause_button)
         self.anim_layout.addWidget(self.stop_button)
-        self.anim_layout.addStretch()
+        #self.anim_layout.addStretch()
 
-        # Wrap the animation layout in a container widget and hide it initially
-        self.anim_controls_widget = QWidget()
-        self.anim_controls_widget.setLayout(self.anim_layout)
-        self.anim_controls_widget.setVisible(False)  # initially hidden
+        self.anim_group = QGroupBox("Animation Controls")
+        self.anim_group.setStyleSheet(group_box_style)
+        self.anim_group.setLayout(self.anim_layout)
+        self.anim_group.setVisible(False)
 
         layout.addLayout(file_layout)
-        layout.addLayout(control_layout)
-        layout.addLayout(time_point_layout)
-        layout.addWidget(self.anim_controls_widget)
+        layout.addWidget(self.graphics_control_group)
+        layout.addWidget(self.time_point_group)
+        layout.addWidget(self.anim_group)
         layout.addWidget(self.plotter)
         self.setLayout(layout)
-
-    def toggle_time_point_controls(self, checked):
-        self.time_point_spinbox.setVisible(checked)
-        self.update_time_button.setVisible(checked)
-        self.save_time_button.setVisible(checked)
 
     def update_time_point_range(self):
         """
@@ -937,18 +996,37 @@ class DisplayTab(QWidget):
             else:
                 avg_dt = 1.0  # Fallback if only one time value exists
             self.time_point_spinbox.setSingleStep(avg_dt)
-            self.selected_time_checkbox.setVisible(True)
 
             # Update animation time range controls
             self.anim_start_spin.setRange(min_time, max_time)
             self.anim_end_spin.setRange(min_time, max_time)
             self.anim_start_spin.setValue(min_time)
             self.anim_end_spin.setValue(max_time)
+            self.actual_interval_spin.setMaximum(len(time_values))  # max is number of time points
+            self.actual_interval_spin.setValue(1)  # default to every point
 
-            self.anim_controls_widget.setVisible(True)
+            self.anim_group.setVisible(True)
+            self.time_point_group.setVisible(True)
+            self.deformation_scale_label.setVisible(True)
+            self.deformation_scale_edit.setVisible(True)
+
+            # Initialize plotter with points
+            if "node_coords" in globals() and node_coords is not None:
+                mesh = pv.PolyData(node_coords)
+                if "df_node_ids" in globals() and df_node_ids is not None:
+                    mesh["NodeID"] = df_node_ids.astype(int)
+                mesh["Index"] = np.arange(mesh.n_points)
+
+                self.current_mesh = mesh
+                self.data_column = "Index"
+                self.update_visualization()
+                self.plotter.reset_camera()
         else:
             # Hide the controls if the required data is not available.
-            self.selected_time_checkbox.setVisible(False)
+            self.anim_group.setVisible(False)
+            self.time_point_group.setVisible(False)
+            self.deformation_scale_label.setVisible(False)
+            self.deformation_scale_edit.setVisible(False)
 
     def update_time_point_results(self):
         """
@@ -1107,6 +1185,20 @@ class DisplayTab(QWidget):
         # Ensure that the animation start spin box cannot exceed the end value
         self.anim_start_spin.setMaximum(value)
 
+    def validate_deformation_scale(self):
+        """
+        Validate the deformation scale factor input.
+        If the input can be converted to a float, update the last valid value.
+        Otherwise, revert the text to the last valid input.
+        """
+        text = self.deformation_scale_edit.text()
+        try:
+            value = float(text)
+            self.last_valid_deformation_scale = value
+        except ValueError:
+            # Revert to the last valid input if the current text is invalid.
+            self.deformation_scale_edit.setText(str(self.last_valid_deformation_scale))
+
     def start_animation(self):
         """Start animating through the time range."""
         if self.current_mesh is None:
@@ -1116,11 +1208,16 @@ class DisplayTab(QWidget):
         if hasattr(self, 'time_text_actor'):
             self.plotter.remove_actor(self.time_text_actor)
             self.time_text_actor = None  # clear the reference
+        self.deformation_scale_edit.setEnabled(False)
         self.play_button.setEnabled(False)
         self.pause_button.setEnabled(True)
         self.stop_button.setEnabled(True)
-        # Initialize current animation time with the start value
-        self.current_anim_time = self.anim_start_spin.value()
+
+        # Initialize current animation time with the start value or where it left off
+        if not self.animation_paused:
+            self.current_anim_time = self.anim_start_spin.value()
+        self.animation_paused = False  # Reset flag on (re)start
+
         # Create a QTimer to update the animation frame periodically
         self.anim_timer = QTimer(self)
         self.anim_timer.timeout.connect(self.animate_frame)
@@ -1132,15 +1229,18 @@ class DisplayTab(QWidget):
             self.anim_timer.stop()
         self.play_button.setEnabled(True)
         self.pause_button.setEnabled(False)
+        self.animation_paused = True
 
-    def reset_animation(self):
+    def stop_animation(self):
         """Stop the animation and reset the time to the start value."""
         if self.anim_timer is not None:
             self.anim_timer.stop()
         self.current_anim_time = self.anim_start_spin.value()
+        self.deformation_scale_edit.setEnabled(True)
         self.play_button.setEnabled(True)
         self.pause_button.setEnabled(False)
         self.stop_button.setEnabled(False)
+        self.animation_paused = False
 
     def animate_frame(self):
         # profiler = cProfile.Profile()
@@ -1158,10 +1258,12 @@ class DisplayTab(QWidget):
                 self.current_anim_time += step
             else:
                 idx = np.argmin(np.abs(time_values - self.current_anim_time))
-                if idx < len(time_values) - 1:
-                    self.current_anim_time = time_values[idx + 1]
+                nth = self.actual_interval_spin.value()
+                new_idx = idx + nth
+                if new_idx < len(time_values):
+                    self.current_anim_time = time_values[new_idx]
                 else:
-                    self.current_anim_time = start_time
+                    self.current_anim_time = start_time  # or time_values[0]
 
             if self.current_anim_time > end_time:
                 self.current_anim_time = start_time
@@ -1190,9 +1292,13 @@ class DisplayTab(QWidget):
                     deformations = temp_solver.compute_deformations(0, num_nodes)
                     if deformations is not None:
                         ux, uy, uz = deformations  # Each with shape (n_nodes, 1)
+
+                        # Retrieve the scale factor from the widget
+                        scale_factor = float(self.deformation_scale_edit.text())
+
                         # Update mesh node positions: add computed displacements to original coordinates
                         # (Assuming global variable node_coords holds the original positions)
-                        new_coords = node_coords + np.hstack((ux, uy, uz))
+                        new_coords = node_coords + scale_factor * np.hstack((ux, uy, uz))
                         self.current_mesh.points = new_coords
                 except Exception as e:
                     print(f"Deformation update error: {e}")
@@ -1403,9 +1509,11 @@ class DisplayTab(QWidget):
     def update_step_spinbox_state(self, text):
         """Enable/disable the step spinbox based on the selected time step mode."""
         if text == "Actual Data Time Steps":
-            self.custom_step_spin.setEnabled(False)
+            self.custom_step_spin.setVisible(False)
+            self.actual_interval_spin.setVisible(True)
         else:
-            self.custom_step_spin.setEnabled(True)
+            self.custom_step_spin.setVisible(True)
+            self.actual_interval_spin.setVisible(False)
 
     def update_visualization(self):
         """Update plotter with current settings"""
@@ -1495,7 +1603,7 @@ class DisplayTab(QWidget):
             if point_id != -1 and point_id < self.current_mesh.n_points:
                 node_id = self.current_mesh['NodeID'][point_id]
                 value = self.current_mesh[self.data_column][point_id]
-                self.hover_annotation.SetText(2, f"Node ID: {node_id}\n{self.data_column}: {value:.2f}")
+                self.hover_annotation.SetText(2, f"Node ID: {node_id}\n{self.data_column}: {value:.5f}")
             else:
                 self.hover_annotation.SetText(2, "")
 
@@ -1694,7 +1802,7 @@ class MSUPSmartSolverGUI(QWidget):
         self.von_mises_checkbox.toggled.connect(self.update_single_node_plot_based_on_checkboxes)
 
         # Checkbox for Calculate Damage Index
-        self.damage_index_checkbox = QCheckBox('Damage Index')
+        self.damage_index_checkbox = QCheckBox('Damage Index / Potential Damage')
         self.damage_index_checkbox.setStyleSheet("margin: 10px 0;")
 
         # Connect checkbox signal to the method for controlling the visibility of the damage index checkbox
@@ -1954,7 +2062,7 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.append(f"Error processing modal coordinate file: {e}")
         finally:
             # After processing, update the time point controls in the DisplayTab.
-            self.update_display_time_controls()
+            self.update_time_and_animation_ui()
 
     def select_stress_file(self):
         file_name, _ = QFileDialog.getOpenFileName(self, 'Open Modal Stress File', '', 'CSV Files (*.csv)')
@@ -2003,7 +2111,7 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
         finally:
             # After processing, update the time point controls in the DisplayTab.
-            self.update_display_time_controls()
+            self.update_time_and_animation_ui()
 
     def select_deformations_file(self):
         file_name, _ = QFileDialog.getOpenFileName(self, 'Open Modal Deformations File (.csv)', '', 'CSV Files (*.csv)')
@@ -2027,7 +2135,7 @@ class MSUPSmartSolverGUI(QWidget):
         except Exception as e:
             self.console_textbox.append(f"Error processing modal deformations file: {e}")
 
-    def update_display_time_controls(self):
+    def update_time_and_animation_ui(self):
         """
         Call the update_time_point_range() method on the DisplayTab to check if the
         modal coordinate and modal stress files are loaded. This should be called after
@@ -2251,6 +2359,31 @@ class MSUPSmartSolverGUI(QWidget):
                 self.plot_max_over_time_tab.update_plot(time_values, vm_values=vm_data, principal_values=principal_data)
                 self.show_output_tab_widget.setTabVisible(
                     self.show_output_tab_widget.indexOf(self.plot_max_over_time_tab), True)
+
+                # region Update the scalar range spinboxes in the Display tab using the calculated min and max values
+                if vm_data is not None:
+                    scalar_min = np.min(vm_data)
+                    scalar_max = np.max(vm_data)
+                elif principal_data is not None:
+                    scalar_min = np.min(principal_data)
+                    scalar_max = np.max(principal_data)
+                else:
+                    scalar_min = None
+                    scalar_max = None
+
+                if scalar_min is not None and scalar_max is not None:
+                    # Retrieve the DisplayTab instance
+                    display_tab = self.window().display_tab
+                    display_tab.scalar_min_spin.blockSignals(True)
+                    display_tab.scalar_max_spin.blockSignals(True)
+                    display_tab.scalar_min_spin.setRange(scalar_min, scalar_max)
+                    # We use 1e30 as an arbitrary high upper bound
+                    display_tab.scalar_max_spin.setRange(scalar_min, 1e30)
+                    display_tab.scalar_min_spin.setValue(scalar_min)
+                    display_tab.scalar_max_spin.setValue(scalar_max)
+                    display_tab.scalar_min_spin.blockSignals(False)
+                    display_tab.scalar_max_spin.blockSignals(False)
+                # endregion
             # endregion
 
         except Exception as e:
@@ -2633,8 +2766,8 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.8')
-        self.setGeometry(40, 40, 800, 670)
+        self.setWindowTitle('MSUP Smart Solver - v0.85')
+        self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
         menu_bar_style = """
@@ -2846,7 +2979,6 @@ class MainWindow(QMainWindow):
             # Update the navigator with the selected directory
             self.file_model.setRootPath(self.project_directory)
             self.tree_view.setRootIndex(self.file_model.index(self.project_directory))
-
 # endregion
 
 # region Run the main GUI
@@ -2854,6 +2986,11 @@ if __name__ == '__main__':
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)  # Enable high DPI scaling
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)  # Use high DPI icons and images
     app = QApplication(sys.argv)
+    app.setStyleSheet("""
+        QLabel, QComboBox, QSpinBox, QDoubleSpinBox, QPushButton, QCheckBox, QTextEdit, QLineEdit {
+            font-size: 7pt;
+        }
+    """)
 
     # Create the main window and show it
     main_window = MainWindow()
