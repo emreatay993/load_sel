@@ -1562,6 +1562,11 @@ class DisplayTab(QWidget):
             self.plotter.camera.up = self.camera_state['view_up']
             self.plotter.camera.view_angle = self.camera_state['view_angle']
 
+        # Ensure the camera widget is re-enabled if it was removed.
+        if not self.camera_widget:
+            self.camera_widget = self.plotter.add_camera_orientation_widget()
+            self.camera_widget.EnabledOn()
+
         # self.plotter.add_axes(
         #     line_width=2,  # Reduced complexity
         #     color='black',  # Simpler color
@@ -2766,7 +2771,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.85')
+        self.setWindowTitle('MSUP Smart Solver - v0.85.2')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
@@ -2820,25 +2825,25 @@ class MainWindow(QMainWindow):
         self.tab_widget = QTabWidget()
 
         tab_style = """
-            QTabBar::tab {
-                background-color: #e7f0fd;
-                border: 2px solid #5b9bd5;
-                padding: 3px;
-                border-top-left-radius: 5px;  /* Upper left corner rounded */
-                border-top-right-radius: 5px; /* Upper right corner rounded */
-                margin: 2px;
-            }
-            QTabBar::tab:hover {
-                background-color: #cce4ff;
-            }
-            QTabBar::tab:selected {
-                background-color: #ffffff;  # Active tab has a white background
-                border: 2px solid #5b9bd5;
-                font-weight: bold;
-            }
-            QTabBar::tab:!selected {
-                margin-top: 3px;  # Make the unselected tabs slightly smaller
-            }
+        QTabBar::tab {
+            background-color: #d6e4f5;     /* Paler blue for inactive tabs */
+            color: #666666;                /* Dimmed text for inactive tabs */
+            border: 1px solid #5b9bd5;
+            padding: 3px;
+            border-top-left-radius: 5px;
+            border-top-right-radius: 5px;
+            margin: 2px;
+        }
+
+        QTabBar::tab:selected {
+            background-color: #e7f0fd;     /* Active tab: your current blue theme */
+            color: #000000;                /* Bold text */
+            border: 2px solid #5b9bd5;
+        }
+
+        QTabBar::tab:hover {
+            background-color: #cce4ff;     /* Lighter blue on hover */
+        }
         """
         self.tab_widget.setStyleSheet(tab_style)
 
