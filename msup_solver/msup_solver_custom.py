@@ -1267,7 +1267,7 @@ class DisplayTab(QWidget):
         # --- End Resume Logic ---
 
         # --- Start Fresh Logic ---
-        print("Starting animation precomputation...")
+        print("\n ---Starting animation precomputation...---")
         self.stop_animation()  # Ensure clean state (clears previous data, resets index)
 
         # --- 1. Get Animation Parameters & Time Steps ---
@@ -1438,7 +1438,7 @@ class DisplayTab(QWidget):
             if compute_deformation and deformations_anim is not None:
                 del deformations_anim, ux_anim, uy_anim, uz_anim, displacements_stacked, original_coords_reshaped
             gc.collect()
-            print("Precomputation complete.")
+            print(" ---Precomputation complete.---")
 
         except Exception as e:
             QMessageBox.critical(self, "Precomputation Error", f"Failed to precompute animation frames: {str(e)}")
@@ -1484,13 +1484,13 @@ class DisplayTab(QWidget):
             self.animation_paused = True  # Set the flag
             self.play_button.setEnabled(True)
             self.pause_button.setEnabled(False)
-            print("Animation paused.")
+            print("\nAnimation paused.")
         else:
-            print("Pause command ignored: Animation timer not active.")
+            print("\nPause command ignored: Animation timer not active.")
 
     def stop_animation(self):
         """Stop the animation, release precomputed data, and reset state."""
-        print("Stopping animation and releasing resources...")
+        print("\nStopping animation and releasing resources...")
         if self.anim_timer is not None:
             self.anim_timer.stop()
             # Optional: disconnect to be sure it doesn't trigger again accidentally
@@ -1501,6 +1501,7 @@ class DisplayTab(QWidget):
             self.anim_timer = None  # Allow timer to be garbage collected
 
         # --- Release Precomputed Data ---
+        print(" ")
         if self.precomputed_scalars is not None:
             del self.precomputed_scalars
             self.precomputed_scalars = None
@@ -1553,7 +1554,7 @@ class DisplayTab(QWidget):
             except Exception as e:
                 print(f"Error resetting mesh points: {e}")
 
-        print("Animation stopped.")
+        print("\nAnimation stopped.")
 
     def animate_frame(self, update_index=True):
         """Update the display using the next precomputed animation frame."""
@@ -3349,7 +3350,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.90.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.90.2')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
