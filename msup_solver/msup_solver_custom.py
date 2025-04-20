@@ -33,8 +33,6 @@ import vtk
 import plotly.graph_objects as go
 import plotly.offline as pyo
 from plotly_resampler import FigureResampler
-import cProfile
-import pstats
 import io
 from scipy.signal import butter, filtfilt, detrend
 # endregion
@@ -787,11 +785,6 @@ class DisplayTab(QWidget):
         self.data_column_name = "Stress"         # Default/placeholder name for scalars
         self.is_deformation_included_in_anim = False # Track if deformation was computed
 
-        # Attributes for Profiling
-        self.profiler = None           # cProfile object
-        self.profiled_frame_count = 0  # Counter for profiled frames
-        self.profile_target_frames = 200 # How many frames to profile (adjust as needed)
-
         self.init_ui()
 
     def init_ui(self):
@@ -1459,15 +1452,6 @@ class DisplayTab(QWidget):
         self.current_anim_frame_index = 0
         self.animation_paused = False  # Ensure flag is reset
 
-        # --- Profiling Setup ---
-        self.profiled_frame_count = 0
-        # Only start profiling if not already running (safety check)
-        if self.profiler is None:
-            print(f"\n--- Starting Profiling for {self.profile_target_frames} playback frames ---")
-            self.profiler = cProfile.Profile()
-            self.profiler.enable()
-        # --- End Profiling Setup ---
-
         # Update the mesh with the first frame's data before starting timer
         # We probably don't want to include this first update in the loop profile
         try:
@@ -1475,11 +1459,8 @@ class DisplayTab(QWidget):
         except Exception as e:
              QMessageBox.critical(self, "Animation Error", f"Failed initial frame render: {str(e)}")
              self.stop_animation() # Stop if initial render fails
-             # Disable profiler if it was enabled
-             if self.profiler:
-                 self.profiler.disable()
-                 self.profiler = None
              return
+
         # Now start the timer for subsequent frames
         self.anim_timer = QTimer(self)
         self.anim_timer.timeout.connect(self.animate_frame)
@@ -1641,35 +1622,6 @@ class DisplayTab(QWidget):
             # --- Render ---
             self.plotter.render()
 
-            # --- Profiling Logic ---
-            # Check if profiling is active *before* incrementing index
-            if self.profiler is not None:
-                self.profiled_frame_count += 1
-                if self.profiled_frame_count >= self.profile_target_frames:
-                    print(f"\n--- Stopping Profiling after {self.profiled_frame_count} frames ---")
-                    self.profiler.disable()
-
-                    stats_filename = "animation_playback.prof"
-                    try:
-                        self.profiler.dump_stats(stats_filename)
-                        print(f"Profiling stats saved to '{stats_filename}'")
-
-                        # Print stats to console, sorted by cumulative time
-                        s = io.StringIO()
-                        # Sort by 'cumulative' (total time spent in function + callees)
-                        # Other options: 'time'/'tottime' (internal time), 'calls'
-                        stats = pstats.Stats(self.profiler, stream=s).sort_stats('cumulative')
-                        stats.print_stats(30) # Print top 30 functions
-                        print("\n--- cProfile Stats (Top 30 by Cumulative Time) ---")
-                        print(s.getvalue())
-                        print("--------------------------------------------------\n")
-
-                    except Exception as profile_err:
-                        print(f"Error processing profiling stats: {profile_err}")
-
-                    self.profiler = None # Stop checking after stats are processed
-
-
             # --- Increment Frame Index for Next Call ---
             if update_index:
                 self.current_anim_frame_index += 1
@@ -1796,24 +1748,48 @@ class DisplayTab(QWidget):
 
     def _estimate_animation_ram(self, num_nodes, num_anim_steps, include_deformation):
         """
-        Estimates the RAM needed in GB for precomputing animation data.
+        Estimates the peak RAM needed in GB for precomputing animation data.
+        This revised version considers the intermediate arrays needed during calculation.
         """
-        element_size = np.dtype(NP_DTYPE).itemsize  # Size of float32
+        element_size = np.dtype(NP_DTYPE).itemsize  # Size of NP_DTYPE selected
 
-        # RAM for scalars (Von Mises or S1)
-        scalar_ram = num_nodes * num_anim_steps * element_size
+        # RAM for the 6 intermediate normal/shear stress arrays (sx, sy, sz, sxy, syz, sxz)
+        # These are needed to compute the final scalars (Von Mises or S1)
+        # Shape: (num_nodes, num_anim_steps) for each of the 6 components.
+        normal_stress_ram = num_nodes * 6 * num_anim_steps * element_size
 
-        # RAM for deformed coordinates (if requested)
-        deformation_ram = 0
+        # RAM for the final stored scalar array (Von Mises or S1)
+        # Shape: (num_nodes, num_anim_steps)
+        scalar_ram = num_nodes * 1 * num_anim_steps * element_size
+
+        # RAM for deformation calculation and storage (if requested)
+        intermediate_displacement_ram = 0
+        final_coordinate_ram = 0
         if include_deformation:
-            # Stores X, Y, Z coordinates for each node at each step
-            deformation_ram = num_nodes * 3 * num_anim_steps * element_size
+            # RAM for intermediate displacement arrays (ux_anim, uy_anim, uz_anim)
+            # Shape: (num_nodes, num_anim_steps) for each of the 3 components.
+            intermediate_displacement_ram = num_nodes * 3 * num_anim_steps * element_size
 
-        total_ram_bytes = scalar_ram + deformation_ram
-        # Add a small buffer (e.g., 10%) for intermediate calculations/overhead
-        total_ram_bytes *= 1.1
+            # RAM for the final stored deformed coordinate array (precomputed_coords)
+            # Stores X, Y, Z coordinates for each node at each step.
+            # Shape: (num_nodes, 3, num_anim_steps) -> num_nodes * 3 * num_anim_steps elements.
+            final_coordinate_ram = num_nodes * 3 * num_anim_steps * element_size
 
-        return total_ram_bytes / (1024 ** 3)  # Convert bytes to GB
+        # Total estimated peak RAM is the sum of intermediate stresses, final scalars,
+        # and potentially intermediate displacements and final coordinates.
+        # We assume the peak occurs when most of these arrays exist simultaneously
+        # before intermediate ones are deleted by garbage collection.
+        total_ram_bytes = (normal_stress_ram +
+                           scalar_ram +
+                           intermediate_displacement_ram +
+                           final_coordinate_ram)
+
+        # Add a safety buffer (e.g., 20%) for Python overhead, temporary copies, etc.
+        # Increased buffer slightly as the calculation involves several large steps.
+        total_ram_bytes *= 1.20
+
+        # Convert bytes to Gigabytes (GB)
+        return total_ram_bytes / (1024 ** 3)
 
     def get_scalar_field_for_time(self, time_val):
         """
@@ -3373,7 +3349,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.90.0')
+        self.setWindowTitle('MSUP Smart Solver - v0.90.1')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
