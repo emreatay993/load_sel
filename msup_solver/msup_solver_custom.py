@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButt
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
                              QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
                              QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut, QSplitter,
-                             QAbstractItemView, QTableView)
+                             QAbstractItemView, QTableView, QProgressDialog)
 from PyQt5.QtGui import (QPalette, QColor, QFont, QTextCursor, QKeySequence, QDoubleValidator, QStandardItemModel,
                          QStandardItem, QKeySequence)
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths, QTimer
@@ -35,6 +35,7 @@ import plotly.offline as pyo
 from plotly_resampler import FigureResampler
 import io
 from scipy.signal import butter, filtfilt, detrend
+import imageio
 # endregion
 
 # region Define global variables
@@ -980,6 +981,14 @@ class DisplayTab(QWidget):
         self.detrend_type_combo.setVisible(False)
         self.graphics_control_layout.addWidget(self.detrend_type_combo)
 
+        # Add Save Animation Button ---
+        self.save_anim_button = QPushButton("Save as Video/GIF")
+        self.save_anim_button.setStyleSheet(button_style) # Apply the style
+        self.save_anim_button.clicked.connect(self.save_animation)
+        self.save_anim_button.setEnabled(False) # Initially disabled
+        self.save_anim_button.setToolTip("Save the precomputed animation frames as MP4 or GIF.\nRequires 'imageio' and 'ffmpeg' (for MP4).")
+
+
         # Add widgets to the animation layout
         self.anim_layout.addWidget(self.time_step_mode_combo)
         self.anim_layout.addWidget(self.custom_step_spin)
@@ -991,6 +1000,7 @@ class DisplayTab(QWidget):
         self.anim_layout.addWidget(self.play_button)
         self.anim_layout.addWidget(self.pause_button)
         self.anim_layout.addWidget(self.stop_button)
+        self.anim_layout.addWidget(self.save_anim_button)
         #self.anim_layout.addStretch()
 
         self.anim_group = QGroupBox("Animation Controls")
@@ -1439,6 +1449,7 @@ class DisplayTab(QWidget):
                 del deformations_anim, ux_anim, uy_anim, uz_anim, displacements_stacked, original_coords_reshaped
             gc.collect()
             print(" ---Precomputation complete.---")
+            self.save_anim_button.setEnabled(True)
 
         except Exception as e:
             QMessageBox.critical(self, "Precomputation Error", f"Failed to precompute animation frames: {str(e)}")
@@ -1471,6 +1482,10 @@ class DisplayTab(QWidget):
         self.play_button.setEnabled(False)
         self.pause_button.setEnabled(True)
         self.stop_button.setEnabled(True)
+
+        # Ensure save button remains enabled if precomputation succeeded
+        if self.precomputed_scalars is not None:
+             self.save_anim_button.setEnabled(True) # Redundant check, but safe
 
         # Remove static time text if it exists from previous single time point updates
         if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
@@ -1529,6 +1544,7 @@ class DisplayTab(QWidget):
         self.play_button.setEnabled(True)
         self.pause_button.setEnabled(False)
         self.stop_button.setEnabled(False)
+        self.save_anim_button.setEnabled(False)
 
         # Remove the animation time text actor
         if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
@@ -1558,85 +1574,379 @@ class DisplayTab(QWidget):
 
     def animate_frame(self, update_index=True):
         """Update the display using the next precomputed animation frame."""
+        # --- Use helper to update mesh ---
+        # Check if data exists before calling helper
         if self.precomputed_scalars is None or self.precomputed_anim_times is None:
             print("Animation frame skipped: Precomputed data not available.")
-            # Attempt to stop gracefully if data disappears mid-animation
             self.stop_animation()
             return
+
+        if not self._update_mesh_for_frame(self.current_anim_frame_index):
+             print(f"Animation frame skipped: Failed to update mesh for index {self.current_anim_frame_index}.")
+             # Attempt to stop gracefully if data seems inconsistent
+             self.stop_animation()
+             return
+
+        # --- Render ---
+        # Render happens *after* mesh update now
+        self.plotter.render()
+
+        # --- Increment Frame Index for Next Call ---
+        if update_index:
+            num_frames = len(self.precomputed_anim_times) if self.precomputed_anim_times is not None else 0
+            if num_frames > 0:
+                self.current_anim_frame_index += 1
+                if self.current_anim_frame_index >= num_frames:
+                    self.current_anim_frame_index = 0  # Loop animation
+            else:
+                 # Should not happen if called correctly, but safety check
+                 self.stop_animation()
+
+    def _update_mesh_for_frame(self, frame_index):
+        """Updates the mesh data (scalars and optionally points) for a given frame index."""
+        if self.precomputed_scalars is None or self.precomputed_anim_times is None or self.current_mesh is None:
+            print("Error: Cannot update mesh - precomputed data or mesh missing.")
+            return False
 
         num_frames = len(self.precomputed_anim_times)
-        if num_frames == 0:
-            print("Animation frame skipped: No precomputed frames.")
-            self.stop_animation()
-            return
+        if frame_index < 0 or frame_index >= num_frames:
+             print(f"Error: Invalid frame index {frame_index} for {num_frames} frames.")
+             return False # Invalid index
 
-        # --- Get Data for Current Frame ---
         try:
-            # Get scalars for the current frame
-            current_scalars = self.precomputed_scalars[:, self.current_anim_frame_index]
-            current_time = self.precomputed_anim_times[self.current_anim_frame_index]
+            current_scalars = self.precomputed_scalars[:, frame_index]
+            current_time = self.precomputed_anim_times[frame_index]
 
-            # Get deformed coordinates if available
+            # Get deformed coordinates if available and enabled
             if self.is_deformation_included_in_anim and self.precomputed_coords is not None:
-                # Adjust slicing based on how precomputed_coords was stored, e.g., (num_nodes, 3, num_steps)
-                current_coords = self.precomputed_coords[:, :, self.current_anim_frame_index]
-                self.current_mesh.points = current_coords  # Update node positions
+                if frame_index >= self.precomputed_coords.shape[2]:
+                     print(f"Error: Frame index {frame_index} out of bounds for precomputed coordinates.")
+                     return False
+                current_coords = self.precomputed_coords[:, :, frame_index]
+                # Ensure mesh object still exists
+                if self.current_mesh is not None:
+                     self.current_mesh.points = current_coords  # Update node positions
+                else:
+                     print("Error: Current mesh is None, cannot update points.")
+                     return False
+
 
             # Update scalars on the mesh
-            self.current_mesh[self.data_column_name] = current_scalars
-            # Ensure the active scalar is set correctly (might be redundant if mesh isn't recreated)
-            if self.current_mesh.active_scalars_name != self.data_column_name:
-                self.current_mesh.set_active_scalars(self.data_column_name)
+            if self.current_mesh is not None:
+                 self.current_mesh[self.data_column_name] = current_scalars
+                 # Ensure the active scalar is set correctly
+                 if self.current_mesh.active_scalars_name != self.data_column_name:
+                     self.current_mesh.set_active_scalars(self.data_column_name)
+            else:
+                 print("Error: Current mesh is None, cannot update scalars.")
+                 return False
 
             # Update the scalar bar range if necessary (using fixed range from UI)
             fixed_min = self.scalar_min_spin.value()
             fixed_max = self.scalar_max_spin.value()
-            if self.current_actor:
-                # Check if range needs setting (e.g., first frame or if it changed)
+            if self.current_actor and hasattr(self.current_actor, 'mapper') and self.current_actor.mapper:
+                # Check if range needs setting
                 current_range = self.current_actor.mapper.GetScalarRange()
+                # Use a tolerance for float comparison
                 if abs(current_range[0] - fixed_min) > 1e-6 or abs(current_range[1] - fixed_max) > 1e-6:
                     self.current_actor.mapper.SetScalarRange(fixed_min, fixed_max)
                     # Update scalar bar title if needed
-                    self.plotter.scalar_bar.SetTitle(self.data_column_name)
+                    if hasattr(self.plotter, 'scalar_bar') and self.plotter.scalar_bar:
+                        self.plotter.scalar_bar.SetTitle(self.data_column_name)
 
-            # --- Update Time Text ---
             # --- Update Time Text ---
             time_text = f"Time: {current_time:.5f} s"
-
-            # Remove the previous time text actor if it exists
-            # Use the name='anim_time_text' for safer removal
             if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
-                # It's generally safer to remove by the actor object itself or a unique name
-                try:
-                    self.plotter.remove_actor(self.time_text_actor, render=False)
-                except ValueError:  # Actor might have already been removed somehow
-                    pass
-                self.time_text_actor = None  # Clear the reference after removal attempt
+                 # Check if actor still exists in renderer before trying to set input
+                 try:
+                      # VTKPythonCore could throw errors if the underlying VTK object is deleted
+                      if self.time_text_actor.GetViewProps() is not None:
+                           self.time_text_actor.SetInput(time_text)
+                      else: # Underlying object gone, recreate
+                           # Safer to attempt removal by ref first
+                           self.plotter.remove_actor(self.time_text_actor, render=False)
+                           self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False, font_size=10)
+                 except (AttributeError, ReferenceError): # Actor might have been garbage collected or VTK object deleted
+                      # Attempt removal if reference still exists
+                      try: self.plotter.remove_actor(self.time_text_actor, render=False)
+                      except: pass
+                      self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False, font_size=10)
+            else:
+                self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False, font_size=10)
 
-            # Add the new time text actor for the current frame
-            # Ensure a unique name if multiple text actors might exist, or just reuse 'anim_time_text'
-            self.time_text_actor = self.plotter.add_text(time_text,
-                                                         position=(0.8, 0.9),
-                                                         viewport=False,
-                                                         font_size=10)  # Use a consistent name
+            return True
 
-            # --- Render ---
-            self.plotter.render()
-
-            # --- Increment Frame Index for Next Call ---
-            if update_index:
-                self.current_anim_frame_index += 1
-                if self.current_anim_frame_index >= num_frames:
-                    self.current_anim_frame_index = 0  # Loop animation
-
-        except IndexError:
-            print(
-                f"Error: Frame index {self.current_anim_frame_index} out of bounds for precomputed data (size: {num_frames}). Stopping animation.")
-            self.stop_animation()
+        except IndexError as e:
+            print(f"Error: Index {frame_index} out of bounds during mesh update. {e}")
+            return False
         except Exception as e:
-            QMessageBox.critical(self, "Animation Error", f"Failed to update animation frame: {str(e)}")
-            print(f"Error updating frame {self.current_anim_frame_index}: {e}")
-            self.stop_animation()  # Stop on error
+            # Log the error type and message
+            print(f"Error updating mesh for frame {frame_index}: {type(e).__name__}: {e}")
+            # Optionally show a QMessageBox here for critical errors
+            # QMessageBox.critical(self, "Animation Error", f"Failed to update mesh for frame {frame_index}: {str(e)}")
+            return False
+
+    def _capture_animation_frame(self, frame_index):
+        """Updates the plotter for the given frame index and returns a screenshot (NumPy array)."""
+        # Update mesh data, scalar bar, time text for the target frame
+        if not self._update_mesh_for_frame(frame_index):
+            print(f"Warning: Failed to update mesh for frame {frame_index} before capture.")
+            return None # Indicate failure
+
+        # Render the scene *after* updating
+        self.plotter.render()
+        # Allow the event loop to process the render command, might help prevent blank frames
+        QApplication.processEvents()
+        time.sleep(0.01) # Small delay, sometimes helps ensure rendering completes before screenshot
+
+        # Capture screenshot
+        try:
+            # Use window_size=None to capture the current interactive window size
+            # Ensure plotter and renderer are valid
+            if self.plotter and self.plotter.renderer:
+                frame_image = self.plotter.screenshot(transparent_background=False, return_img=True, window_size=None)
+                if frame_image is None:
+                     print(f"Warning: Screenshot returned None for frame {frame_index}.")
+                     return None
+                return frame_image
+            else:
+                print(f"Error: Plotter or renderer invalid for frame {frame_index}.")
+                return None
+        except Exception as e:
+            print(f"Error taking screenshot for frame {frame_index}: {type(e).__name__}: {e}")
+            return None
+
+    def save_animation(self):
+        """Saves the precomputed animation frames as a video (MP4) or GIF."""
+        if self.precomputed_scalars is None or self.precomputed_anim_times is None:
+            QMessageBox.warning(self, "Cannot Save", "Animation data must be precomputed first (click Play).")
+            return
+
+        num_frames = len(self.precomputed_anim_times)
+        if num_frames == 0:
+            QMessageBox.warning(self, "Cannot Save", "No frames were precomputed.")
+            return
+
+        # --- File Dialog ---
+        options = QFileDialog.Options()
+        # Use project directory if available in the main window
+        default_dir = ""
+        if hasattr(self.window(), 'project_directory') and self.window().project_directory:
+             default_dir = self.window().project_directory
+        elif self.file_path.text(): # Fallback to directory of loaded viz file
+             default_dir = os.path.dirname(self.file_path.text())
+
+        fileName, selectedFilter = QFileDialog.getSaveFileName(self,
+                                                        "Save Animation", default_dir,
+                                                        "MP4 Video (*.mp4);;Animated GIF (*.gif)",
+                                                        "MP4 Video (*.mp4)", # Default filter
+                                                        options=options)
+        if not fileName:
+            return # User cancelled
+
+        # Determine format and ensure correct extension
+        file_format = ""
+        if selectedFilter == "MP4 Video (*.mp4)":
+            file_format = "MP4"
+            if not fileName.lower().endswith(".mp4"):
+                 fileName += ".mp4"
+        elif selectedFilter == "Animated GIF (*.gif)":
+             file_format = "GIF"
+             if not fileName.lower().endswith(".gif"):
+                 fileName += ".gif"
+        else: # If filter somehow is unexpected, try deriving from extension
+             if fileName.lower().endswith(".mp4"):
+                 file_format = "MP4"
+             elif fileName.lower().endswith(".gif"):
+                 file_format = "GIF"
+             else: # Add default extension if none provided and filter unknown
+                 QMessageBox.warning(self, "Cannot Determine Format", "Could not determine file format. Please use .mp4 or .gif extension.")
+                 # Defaulting to MP4, force extension
+                 # file_format = "MP4"
+                 # if not fileName.lower().endswith(".mp4"): fileName += ".mp4"
+                 return
+
+
+        fps = 1000.0 / self.anim_interval_spin.value()
+        print(f"---Saving animation...---")
+        print(f"Attempting to save {num_frames} frames to '{fileName}' as {file_format} at {fps:.2f} FPS.")
+
+        # --- Progress Dialog ---
+        progress = QProgressDialog("Saving animation frames...", "Cancel", 0, num_frames, self.window()) # Parent to main window
+        progress.setWindowModality(Qt.WindowModal) # Block interaction with main window
+        progress.setWindowTitle("Saving Animation")
+        progress.setMinimumDuration(1000) # Show only if saving takes > 1 second
+        progress.setValue(0)
+        # Don't call progress.show() yet, wait until first frame attempt
+
+        # --- Store original state to restore later ---
+        original_frame_index = self.current_anim_frame_index
+        original_is_paused = self.animation_paused
+        was_timer_active = self.anim_timer is not None and self.anim_timer.isActive()
+
+        # Pause the live animation timer if it's running
+        if was_timer_active:
+             self.anim_timer.stop()
+             print("Live animation timer paused for saving.")
+
+
+        # --- Saving Loop (using imageio writer for memory efficiency) ---
+        cancelled = False
+        writer = None # Initialize writer to None
+        try:
+            # Prepare writer arguments
+            writer_kwargs = {'fps': fps}
+            if file_format == 'MP4':
+                # pixelformat is crucial for MP4 compatibility (like QuickTime)
+                # quality can be set (0-10, 10 is highest, default is often 5)
+                writer_kwargs.update({'macro_block_size': None, 'pixelformat': 'yuv420p', 'quality': 7})
+            elif file_format == 'GIF':
+                 # loop=0 means infinite loop
+                 # palettesize can affect colors/size
+                 # subrectangles=True might optimize for smaller GIFs if only parts change (unlikely here)
+                 writer_kwargs.update({'macro_block_size': None, 'loop': 0, 'palettesize': 256})
+
+
+            # --- Preserve Camera State ---
+            # GetState() returns a dictionary or tuple, depending on VTK version
+            initial_camera_state = None
+            if self.plotter and self.plotter.camera:
+                 # Let's try the dictionary method first, common in newer PyVista/VTK
+                 try:
+                     initial_camera_state = self.plotter.camera.GetState()
+                     print("Saved camera state (dict/tuple).")
+                 except AttributeError: # Fallback for older versions possibly returning tuple directly from position etc.
+                      initial_camera_state = (
+                          self.plotter.camera.position,
+                          self.plotter.camera.focal_point,
+                          self.plotter.camera.up
+                      )
+                      print("Saved camera state (pos/focal/up).")
+
+
+            # Start the writer *before* the loop
+            writer = imageio.get_writer(fileName, format=file_format, mode='I', **writer_kwargs) # mode='I' for multiple images
+            progress.show() # Show progress dialog now writer is ready
+
+            for i in range(num_frames):
+                if progress.wasCanceled():
+                    cancelled = True
+                    print("Save cancelled by user.")
+                    break
+
+                # --- Restore Camera State before capturing each frame ---
+                if initial_camera_state is not None and self.plotter and self.plotter.camera:
+                     try:
+                         if isinstance(initial_camera_state, dict):
+                             self.plotter.camera.SetState(initial_camera_state)
+                         elif isinstance(initial_camera_state, tuple) and len(initial_camera_state) == 3: # pos/focal/up tuple
+                             self.plotter.camera.position = initial_camera_state[0]
+                             self.plotter.camera.focal_point = initial_camera_state[1]
+                             self.plotter.camera.up = initial_camera_state[2]
+                         # No else needed, if it's not recognized, we just don't restore
+                     except Exception as cam_err:
+                          print(f"Warning: Could not restore camera state for frame {i}: {cam_err}")
+
+
+                # Capture the frame using the helper function
+                frame_image = self._capture_animation_frame(i)
+
+                if frame_image is None: # Handle potential errors during capture
+                    # Option 1: Skip frame (video might look glitchy)
+                    print(f"Warning: Skipping frame {i} due to capture failure.")
+                    # Option 2: Abort saving
+                    # raise RuntimeError(f"Failed to capture frame {i}")
+                    # Let's skip for now, user can retry if it looks bad
+                    progress.setValue(i + 1) # Still update progress
+                    QApplication.processEvents()
+                    continue # Go to next frame
+
+                writer.append_data(frame_image) # Append frame to file
+                progress.setValue(i + 1)
+                QApplication.processEvents() # Keep UI responsive, update progress
+
+        except ImportError as e:
+             # Specific error for missing backend
+             error_msg = f"ImportError: {e}. Cannot save animation.\n\n"
+             if file_format == 'MP4':
+                 error_msg += "Saving MP4 requires 'ffmpeg'. Please install it.\nTry: pip install imageio[ffmpeg]"
+             else:
+                 error_msg += "Ensure 'imageio' is installed correctly."
+             QMessageBox.critical(self, "Missing Dependency", error_msg)
+             print(error_msg)
+             cancelled = True # Treat as cancellation
+        except Exception as e:
+            error_msg = f"Failed to save animation:\n{type(e).__name__}: {e}\n\n"
+            error_msg += "Check write permissions for the directory.\n"
+            if file_format == 'MP4':
+                 error_msg += "Ensure 'ffmpeg' is installed and accessible.\n"
+            error_msg += "Check console output for more details."
+            QMessageBox.critical(self, "Save Error", error_msg)
+            print(f"Imageio save error: {type(e).__name__}: {e}") # Log detailed error
+            cancelled = True # Treat error as cancellation for cleanup logic
+        finally:
+            # --- Cleanup ---
+            if writer is not None:
+                try:
+                    writer.close() # Ensure writer is closed
+                    print("Imageio writer closed.")
+                except Exception as close_err:
+                    print(f"Error closing imageio writer: {close_err}")
+
+            progress.close() # Ensure progress dialog is closed
+
+            # --- Restore original animation state ---
+            print("Restoring plotter state...")
+            # Restore mesh/plotter to the state it was in before saving started
+            # Use a try-except block for robustness
+            try:
+                self._update_mesh_for_frame(original_frame_index)
+                self.plotter.render() # Render the restored state
+                print(f"Restored view to frame {original_frame_index}.")
+            except Exception as restore_err:
+                 print(f"Warning: Could not fully restore plotter state: {restore_err}")
+
+
+            # Restore live animation timer if it was running *and* wasn't paused originally
+            if was_timer_active and not original_is_paused:
+                # Check if timer still exists (might be None if stop_animation was called)
+                if self.anim_timer:
+                     self.anim_timer.start(self.anim_interval_spin.value())
+                     print("Live animation timer restarted.")
+                else: # Recreate timer if needed (edge case)
+                     print("Recreating live animation timer.")
+                     self.anim_timer = QTimer(self)
+                     self.anim_timer.timeout.connect(self.animate_frame)
+                     self.anim_timer.start(self.anim_interval_spin.value())
+            elif was_timer_active and original_is_paused:
+                 print("Leaving live animation timer paused (was paused before saving).")
+
+
+            # Ensure paused state is correct
+            self.animation_paused = original_is_paused
+
+
+            # --- Clean up potentially incomplete/cancelled file ---
+            if cancelled and os.path.exists(fileName):
+                 try:
+                      print(f"Attempting to remove cancelled/incomplete file: {fileName}")
+                      os.remove(fileName)
+                      print("File removed.")
+                 except OSError as remove_error:
+                      print(f"Could not remove cancelled/incomplete file: {remove_error}")
+
+
+        # --- Final Feedback ---
+        if not cancelled:
+            QMessageBox.information(self, "Save Successful", f"Animation successfully saved to:\n{fileName}")
+            print("---Animation saving process finished.---\n")
+        else:
+             # Message box already shown for error, only show warning for user cancellation
+             if not progress.wasCanceled(): # i.e., cancelled due to an error
+                 pass # Error message already shown
+             else: # Cancelled by user clicking button
+                 QMessageBox.warning(self, "Save Cancelled", "Animation saving was cancelled by user.")
+             print("Animation saving process aborted.")
 
     def _get_animation_time_steps(self):
         """
@@ -3350,7 +3660,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.90.2')
+        self.setWindowTitle('MSUP Smart Solver - v0.91.0')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
