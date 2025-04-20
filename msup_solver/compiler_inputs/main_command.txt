@@ -1,0 +1,1 @@
+pyinstaller --onedir -w --name "MSUP Transient Expansion Tool" MSUP_Smart_Solver_w_Modal_Def.py --clean --noconfirm
