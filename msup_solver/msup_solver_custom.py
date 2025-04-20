@@ -13,8 +13,10 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
                              QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
-                             QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut, QSplitter)
-from PyQt5.QtGui import QPalette, QColor, QFont, QTextCursor, QKeySequence, QDoubleValidator
+                             QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut, QSplitter,
+                             QAbstractItemView, QTableView)
+from PyQt5.QtGui import (QPalette, QColor, QFont, QTextCursor, QKeySequence, QDoubleValidator, QStandardItemModel,
+                         QStandardItem, QKeySequence)
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths, QTimer
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 import sys
@@ -32,6 +34,9 @@ import plotly.graph_objects as go
 import plotly.offline as pyo
 from plotly_resampler import FigureResampler
 import cProfile
+import pstats
+import io
+from scipy.signal import butter, filtfilt, detrend
 # endregion
 
 # region Define global variables
@@ -593,8 +598,9 @@ class MSUPSmartSolverTransient(QObject):
                 signed_von_mises = self.compute_signed_von_mises_stress(sigma_vm, actual_sx, actual_sy, actual_sz)
 
                 # Use the signed von Mises stress for damage calculation
-                A = 1  # Material constant (example value)
-                m = -3  # Material exponent (example value)
+                # Instead of hardcoding, use fatigue parameters if they have been set; otherwise, fall back to defaults.
+                A = self.fatigue_A if hasattr(self, 'fatigue_A') else 1
+                m = self.fatigue_m if hasattr(self, 'fatigue_m') else -3
                 potential_damages = compute_potential_damage_for_all_nodes(signed_von_mises, A,m)
                 potential_damage_memmap[start_idx:end_idx] = potential_damages
                 print(f"Elapsed time for damage index calculation: {(time.time() - start_time):.3f} seconds")
@@ -772,6 +778,20 @@ class DisplayTab(QWidget):
         self.current_anim_time = 0.0  # current time in the animation
         self.animation_paused = False
         self.temp_solver = None
+
+        # Attributes for Precomputation
+        self.precomputed_scalars = None          # (num_nodes, num_anim_steps)
+        self.precomputed_coords = None           # (num_nodes, 3, num_anim_steps) or similar
+        self.precomputed_anim_times = None       # (num_anim_steps,) - actual time values for each frame
+        self.current_anim_frame_index = 0      # Index for accessing precomputed arrays
+        self.data_column_name = "Stress"         # Default/placeholder name for scalars
+        self.is_deformation_included_in_anim = False # Track if deformation was computed
+
+        # Attributes for Profiling
+        self.profiler = None           # cProfile object
+        self.profiled_frame_count = 0  # Counter for profiled frames
+        self.profile_target_frames = 200 # How many frames to profile (adjust as needed)
+
         self.init_ui()
 
     def init_ui(self):
@@ -855,7 +875,7 @@ class DisplayTab(QWidget):
         self.graphics_control_group.setLayout(self.graphics_control_layout)
 
         # Contour Time-point controls layout:
-        self.selected_time_label = QLabel("Display results for a selected time point:")
+        self.selected_time_label = QLabel("Initialize / Display results for a selected time point:")
         self.selected_time_label.setStyleSheet("margin: 10px;")
         # Initially hide the checkbox, and show it once the required files are loaded.
 
@@ -879,7 +899,7 @@ class DisplayTab(QWidget):
         self.time_point_layout.addWidget(self.save_time_button)
         self.time_point_layout.addStretch()
 
-        self.time_point_group = QGroupBox("Initialization & Time Point Controls")
+        self.time_point_group = QGroupBox("Initialization && Time Point Controls")
         self.time_point_group.setStyleSheet(group_box_style)
         self.time_point_group.setLayout(self.time_point_layout)
         self.time_point_group.setVisible(False)
@@ -888,7 +908,7 @@ class DisplayTab(QWidget):
         self.anim_layout = QHBoxLayout()
         # Add a spin box for animation frame interval (in milliseconds)
         self.anim_interval_spin = QSpinBox()
-        self.anim_interval_spin.setRange(10, 10000)  # Allow between 10 ms and 10,000 ms delay
+        self.anim_interval_spin.setRange(5, 10000)  # Allow between 5 ms and 10,000 ms delay
         self.anim_interval_spin.setValue(100)  # Default delay is 100 ms
         self.anim_interval_spin.setPrefix("Interval (ms): ")
         self.anim_layout.addWidget(self.anim_interval_spin)
@@ -953,6 +973,20 @@ class DisplayTab(QWidget):
         self.graphics_control_layout.addWidget(self.deformation_scale_label)
         self.graphics_control_layout.addWidget(self.deformation_scale_edit)
 
+        # Remove‑Drift checkbox and cutoff frequency
+        self.remove_drift_checkbox = QCheckBox("Remove Drift")
+        self.remove_drift_checkbox.setVisible(False)
+        self.remove_drift_checkbox.toggled.connect(
+            lambda checked: self.detrend_type_combo.setVisible(checked)
+        )
+        self.graphics_control_layout.addWidget(self.remove_drift_checkbox)
+
+        self.detrend_type_combo = QComboBox()
+        self.detrend_type_combo.addItems(["constant", "linear"])
+        self.detrend_type_combo.setToolTip("constant: remove mean; linear: remove linear drift")
+        self.detrend_type_combo.setVisible(False)
+        self.graphics_control_layout.addWidget(self.detrend_type_combo)
+
         # Add widgets to the animation layout
         self.anim_layout.addWidget(self.time_step_mode_combo)
         self.anim_layout.addWidget(self.custom_step_spin)
@@ -1010,6 +1044,11 @@ class DisplayTab(QWidget):
             self.deformation_scale_label.setVisible(True)
             self.deformation_scale_edit.setVisible(True)
 
+            # Show Remove‑Drift only if modal deformations are loaded
+            has_deforms = "modal_ux" in globals()
+            self.remove_drift_checkbox.setVisible(has_deforms)
+            self.detrend_type_combo.setVisible(has_deforms and self.remove_drift_checkbox.isChecked())
+
             # Initialize plotter with points
             if "node_coords" in globals() and node_coords is not None:
                 mesh = pv.PolyData(node_coords)
@@ -1027,6 +1066,8 @@ class DisplayTab(QWidget):
             self.time_point_group.setVisible(False)
             self.deformation_scale_label.setVisible(False)
             self.deformation_scale_edit.setVisible(False)
+            self.remove_drift_checkbox.setVisible(False)
+            self.detrend_type_combo.setVisible(False)
 
     def update_time_point_results(self):
         """
@@ -1200,141 +1241,579 @@ class DisplayTab(QWidget):
             self.deformation_scale_edit.setText(str(self.last_valid_deformation_scale))
 
     def start_animation(self):
-        """Start animating through the time range."""
+        """Start animating through the time range by precomputing frames."""
+        global time_values, modal_coord, modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz
+        global node_coords, df_node_ids
+        global modal_ux, modal_uy, modal_uz  # For deformations
+
         if self.current_mesh is None:
-            QMessageBox.warning(self, "No Data", "Please load the mesh before animating by initializing and solving at "
-                                                 "least a single time point")
+            QMessageBox.warning(self, "No Data",
+                                "Please load or initialize the mesh before animating (e.g., by updating results for a single time point).")
             return
-        if hasattr(self, 'time_text_actor'):
-            self.plotter.remove_actor(self.time_text_actor)
-            self.time_text_actor = None  # clear the reference
-        self.deformation_scale_edit.setEnabled(False)
+
+        # --- Resume Logic ---
+        if self.animation_paused:
+            if self.precomputed_scalars is None:
+                QMessageBox.warning(self, "Resume Error",
+                                    "Cannot resume animation. Precomputed data is missing. Please stop and start again.")
+                self.stop_animation()  # Force stop state
+                return
+            print("Resuming animation...")
+            self.animation_paused = False
+            self.play_button.setEnabled(False)
+            self.pause_button.setEnabled(True)
+            self.stop_button.setEnabled(True)
+            self.deformation_scale_edit.setEnabled(False)  # Keep disabled during animation
+            if self.anim_timer:
+                self.anim_timer.start(self.anim_interval_spin.value())
+            else:  # Should not happen, but safety check
+                self.anim_timer = QTimer(self)
+                self.anim_timer.timeout.connect(self.animate_frame)
+                self.anim_timer.start(self.anim_interval_spin.value())
+            return
+        # --- End Resume Logic ---
+
+        # --- Start Fresh Logic ---
+        print("Starting animation precomputation...")
+        self.stop_animation()  # Ensure clean state (clears previous data, resets index)
+
+        # --- 1. Get Animation Parameters & Time Steps ---
+        anim_times, anim_indices, error_msg = self._get_animation_time_steps()
+        if error_msg:
+            QMessageBox.warning(self, "Animation Setup Error", error_msg)
+            self.stop_animation()  # Ensure UI is reset
+            return
+        if anim_times is None or len(anim_times) == 0:
+            QMessageBox.warning(self, "Animation Setup Error", "No time steps generated for the animation.")
+            self.stop_animation()
+            return
+
+        num_anim_steps = len(anim_times)
+        print(f"Attempting to precompute {num_anim_steps} frames.")
+
+        # --- 2. Determine Required Outputs ---
+        main_tab = self.window().batch_solver_tab  # Access main tab for settings
+        compute_von = main_tab.von_mises_checkbox.isChecked()
+        compute_principal = main_tab.principal_stress_checkbox.isChecked()
+        compute_deformation = main_tab.deformations_checkbox.isChecked()
+
+        if not (compute_von or compute_principal):
+            QMessageBox.warning(self, "No Selection",
+                                "No output (Von Mises or Principal Stress) selected in the Main Window tab for animation.")
+            self.stop_animation()
+            return
+
+        if compute_deformation and 'modal_ux' not in globals():
+            QMessageBox.warning(self, "Deformation Error",
+                                "Deformation checkbox is checked, but modal deformation data (ux, uy, uz) is not loaded.")
+            compute_deformation = False  # Disable deformation if data missing
+            self.is_deformation_included_in_anim = False
+        elif compute_deformation:
+            self.is_deformation_included_in_anim = True
+        else:
+            self.is_deformation_included_in_anim = False
+
+        # --- 3. RAM Estimation and Check ---
+        num_nodes = modal_sx.shape[0]
+        estimated_gb = self._estimate_animation_ram(num_nodes, num_anim_steps, compute_deformation)
+        available_gb = psutil.virtual_memory().available / (1024 ** 3)
+        # Use a safety factor (e.g., allow using up to 80% of available RAM)
+        safe_available_gb = available_gb * 0.8
+
+        print(f"Estimated RAM for precomputation: {estimated_gb:.3f} GB")
+        print(f"Available system RAM: {available_gb:.3f} GB (Safe threshold: {safe_available_gb:.3f} GB)")
+
+        if estimated_gb > safe_available_gb:
+            # Calculate max possible steps
+            ram_per_step_gb = estimated_gb / num_anim_steps
+            max_steps = int(safe_available_gb // ram_per_step_gb) if ram_per_step_gb > 0 else 0
+
+            if max_steps > 1:
+                # Try to estimate max time based on current step settings
+                if self.time_step_mode_combo.currentText() == "Custom Time Step":
+                    max_time_est = self.anim_start_spin.value() + max_steps * self.custom_step_spin.value()
+                    suggestion = f"Try reducing the end time to around {max_time_est:.4f}s or increasing the custom step."
+                else:
+                    # Estimate based on average interval of actual data within the original range
+                    avg_dt = np.mean(np.diff(anim_times)) if len(anim_times) > 1 else 0
+                    max_time_est = self.anim_start_spin.value() + max_steps * avg_dt * self.actual_interval_spin.value() if avg_dt > 0 else self.anim_end_spin.value()
+                    suggestion = f"Try reducing the end time to around {max_time_est:.4f}s or increasing the 'Every nth' value."
+
+                QMessageBox.warning(self, "Insufficient Memory",
+                                    f"Estimated RAM required ({estimated_gb:.3f} GB) exceeds the safe available RAM ({safe_available_gb:.3f} GB).\n\n"
+                                    f"The current settings would require precomputing {num_anim_steps} frames.\n"
+                                    f"With available memory, you can precompute approximately {max_steps} frames.\n\n"
+                                    f"{suggestion}\n\n"
+                                    "Please adjust the time range or step/interval and try again.")
+            else:
+                QMessageBox.warning(self, "Insufficient Memory",
+                                    f"Estimated RAM required ({estimated_gb:.3f} GB) exceeds the safe available RAM ({safe_available_gb:.3f} GB), even for a minimal number of frames.\n\n"
+                                    "Cannot start animation. Please check system resources or reduce model complexity if possible.")
+
+            self.stop_animation()
+            return
+
+        # --- 4. Perform Precomputation ---
+        QApplication.setOverrideCursor(Qt.WaitCursor)  # Show busy cursor
+        try:
+            # Slice the required modal coordinates
+            selected_modal_coord = modal_coord[:, anim_indices]
+
+            # Check if steady-state stress is included
+            include_steady = self.main_window.batch_solver_tab.steady_state_checkbox.isChecked()
+            steady_kwargs = {}
+            if include_steady and "steady_sx" in globals() and steady_sx is not None and "steady_node_ids" in globals():
+                steady_kwargs = {
+                    'steady_sx': steady_sx, 'steady_sy': steady_sy, 'steady_sz': steady_sz,
+                    'steady_sxy': steady_sxy, 'steady_syz': steady_syz, 'steady_sxz': steady_sxz,
+                    'steady_node_ids': steady_node_ids
+                }
+
+            # Handle deformations
+            modal_deformations_tuple = None
+            if compute_deformation:
+                modal_deformations_tuple = (modal_ux, modal_uy, modal_uz)
+
+            # Create a temporary solver instance for the *entire* animation duration
+            temp_solver = MSUPSmartSolverTransient(
+                modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                selected_modal_coord,  # Use the sliced coordinates
+                modal_node_ids=df_node_ids,
+                modal_deformations=modal_deformations_tuple,
+                **steady_kwargs  # Add steady state args if needed
+            )
+
+            # Compute normal stresses for all nodes, all required time steps
+            print("Computing normal stresses for animation...")
+            actual_sx_anim, actual_sy_anim, actual_sz_anim, actual_sxy_anim, actual_syz_anim, actual_sxz_anim = \
+                temp_solver.compute_normal_stresses(0, num_nodes)  # Shape: (num_nodes, num_anim_steps)
+
+            # Compute the selected scalar field
+            print("Computing scalar field for animation...")
+            if compute_von:
+                self.precomputed_scalars = temp_solver.compute_von_mises_stress(
+                    actual_sx_anim, actual_sy_anim, actual_sz_anim,
+                    actual_sxy_anim, actual_syz_anim, actual_sxz_anim)
+                self.data_column_name = "SVM (MPa)"
+            elif compute_principal:
+                s1_anim, _, _ = temp_solver.compute_principal_stresses(
+                    actual_sx_anim, actual_sy_anim, actual_sz_anim,
+                    actual_sxy_anim, actual_syz_anim, actual_sxz_anim)
+                self.precomputed_scalars = s1_anim
+                self.data_column_name = "S1 (MPa)"
+
+            # Compute deformations if needed
+            if compute_deformation:
+                print("Computing deformations for animation...")
+                deformations_anim = temp_solver.compute_deformations(0,
+                                                                     num_nodes)  # (ux, uy, uz) each (num_nodes, num_anim_steps)
+                if deformations_anim is not None:
+                    ux_anim, uy_anim, uz_anim = deformations_anim
+                    scale_factor = float(self.deformation_scale_edit.text())
+                    # Calculate absolute deformed coordinates: original + scaled displacement
+                    # Reshape original coords to broadcast: (num_nodes, 3, 1)
+                    original_coords_reshaped = node_coords[:, :, np.newaxis]
+
+                    # Zero‐offset so start shape is exact
+                    ux_anim = ux_anim - ux_anim[:, [0]]
+                    uy_anim = uy_anim - uy_anim[:, [0]]
+                    uz_anim = uz_anim - uz_anim[:, [0]]
+
+                    # Apply chosen detrend
+                    if self.remove_drift_checkbox.isChecked():
+                        dt_type = self.detrend_type_combo.currentText()  # "constant" or "linear"
+                        ux_anim = detrend(ux_anim, axis=1, type=dt_type)
+                        uy_anim = detrend(uy_anim, axis=1, type=dt_type)
+                        uz_anim = detrend(uz_anim, axis=1, type=dt_type)
+
+                    # Stack displacements: (num_nodes, 3, num_anim_steps)
+                    displacements_stacked = np.stack([ux_anim, uy_anim, uz_anim], axis=1)
+                    # Store final coordinates
+                    self.precomputed_coords = original_coords_reshaped + scale_factor * displacements_stacked
+                else:
+                    print("Warning: Deformation computation failed unexpectedly.")
+                    self.is_deformation_included_in_anim = False
+
+            # Store the time values corresponding to the computed frames
+            self.precomputed_anim_times = anim_times
+
+            print("Cleaning up temporary animation data...")
+            del temp_solver
+            del actual_sx_anim, actual_sy_anim, actual_sz_anim, actual_sxy_anim, actual_syz_anim, actual_sxz_anim
+            if compute_von: pass  # Scalars already stored
+            if compute_principal: del s1_anim
+            if compute_deformation and deformations_anim is not None:
+                del deformations_anim, ux_anim, uy_anim, uz_anim, displacements_stacked, original_coords_reshaped
+            gc.collect()
+            print("Precomputation complete.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Precomputation Error", f"Failed to precompute animation frames: {str(e)}")
+            self.stop_animation()  # Ensure cleanup on error
+            QApplication.restoreOverrideCursor()  # Restore cursor
+            return
+        finally:
+            QApplication.restoreOverrideCursor()  # Restore cursor
+
+        # --- 5. Final Setup & Start Timer ---
+        self.current_anim_frame_index = 0
+        self.animation_paused = False  # Ensure flag is reset
+
+        # --- Profiling Setup ---
+        self.profiled_frame_count = 0
+        # Only start profiling if not already running (safety check)
+        if self.profiler is None:
+            print(f"\n--- Starting Profiling for {self.profile_target_frames} playback frames ---")
+            self.profiler = cProfile.Profile()
+            self.profiler.enable()
+        # --- End Profiling Setup ---
+
+        # Update the mesh with the first frame's data before starting timer
+        # We probably don't want to include this first update in the loop profile
+        try:
+             self.animate_frame(update_index=False)
+        except Exception as e:
+             QMessageBox.critical(self, "Animation Error", f"Failed initial frame render: {str(e)}")
+             self.stop_animation() # Stop if initial render fails
+             # Disable profiler if it was enabled
+             if self.profiler:
+                 self.profiler.disable()
+                 self.profiler = None
+             return
+        # Now start the timer for subsequent frames
+        self.anim_timer = QTimer(self)
+        self.anim_timer.timeout.connect(self.animate_frame)
+        self.anim_timer.start(self.anim_interval_spin.value())
+
+        # Update UI state
+        self.deformation_scale_edit.setEnabled(False)  # Disable editing during animation
         self.play_button.setEnabled(False)
         self.pause_button.setEnabled(True)
         self.stop_button.setEnabled(True)
 
-        # Initialize current animation time with the start value or where it left off
-        if not self.animation_paused:
-            self.current_anim_time = self.anim_start_spin.value()
-        self.animation_paused = False  # Reset flag on (re)start
-
-        # Create a QTimer to update the animation frame periodically
-        self.anim_timer = QTimer(self)
-        self.anim_timer.timeout.connect(self.animate_frame)
-        self.anim_timer.start(self.anim_interval_spin.value())  # Update every 100 ms (adjust as needed)
+        # Remove static time text if it exists from previous single time point updates
+        if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
+            self.plotter.remove_actor(self.time_text_actor)
+            self.time_text_actor = None
 
     def pause_animation(self):
-        """Pause the animation (resumes from the current time when Play is clicked)."""
-        if self.anim_timer is not None:
+        """Pause the animation (resumes from the current frame when Play is clicked)."""
+        if self.anim_timer is not None and self.anim_timer.isActive():
             self.anim_timer.stop()
-        self.play_button.setEnabled(True)
-        self.pause_button.setEnabled(False)
-        self.animation_paused = True
+            self.animation_paused = True  # Set the flag
+            self.play_button.setEnabled(True)
+            self.pause_button.setEnabled(False)
+            print("Animation paused.")
+        else:
+            print("Pause command ignored: Animation timer not active.")
 
     def stop_animation(self):
-        """Stop the animation and reset the time to the start value."""
+        """Stop the animation, release precomputed data, and reset state."""
+        print("Stopping animation and releasing resources...")
         if self.anim_timer is not None:
             self.anim_timer.stop()
-        self.current_anim_time = self.anim_start_spin.value()
-        self.deformation_scale_edit.setEnabled(True)
+            # Optional: disconnect to be sure it doesn't trigger again accidentally
+            try:
+                self.anim_timer.timeout.disconnect(self.animate_frame)
+            except TypeError:  # Already disconnected
+                pass
+            self.anim_timer = None  # Allow timer to be garbage collected
+
+        # --- Release Precomputed Data ---
+        if self.precomputed_scalars is not None:
+            del self.precomputed_scalars
+            self.precomputed_scalars = None
+            print("Released precomputed scalars.")
+        if self.precomputed_coords is not None:
+            del self.precomputed_coords
+            self.precomputed_coords = None
+            print("Released precomputed coordinates.")
+        if self.precomputed_anim_times is not None:
+            del self.precomputed_anim_times
+            self.precomputed_anim_times = None
+            print("Released precomputed times.")
+
+        # Explicitly trigger garbage collection
+        gc.collect()
+        # --- End Release ---
+
+        # Reset state variables
+        self.current_anim_frame_index = 0
+        self.animation_paused = False
+        self.is_deformation_included_in_anim = False
+
+        # Reset UI elements
+        self.deformation_scale_edit.setEnabled(True)  # Re-enable editing
         self.play_button.setEnabled(True)
         self.pause_button.setEnabled(False)
         self.stop_button.setEnabled(False)
-        self.animation_paused = False
 
-    def animate_frame(self):
-        # profiler = cProfile.Profile()
-        # profiler.enable()
+        # Remove the animation time text actor
+        if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
+            self.plotter.remove_actor(self.time_text_actor)
+            self.time_text_actor = None
 
-        global time_values, modal_coord, modal_sx
-        try:
-            # Increment the current animation time
-            start_time = self.anim_start_spin.value()
-            end_time = self.anim_end_spin.value()
-
-            # Update current_anim_time based on user selection ---
-            if self.time_step_mode_combo.currentText() == "Custom Time Step":
-                step = self.custom_step_spin.value()
-                self.current_anim_time += step
-            else:
-                idx = np.argmin(np.abs(time_values - self.current_anim_time))
-                nth = self.actual_interval_spin.value()
-                new_idx = idx + nth
-                if new_idx < len(time_values):
-                    self.current_anim_time = time_values[new_idx]
+        # Optional: Reset mesh to original state (if node_coords exist)
+        if self.current_mesh and 'node_coords' in globals() and node_coords is not None:
+            print("Resetting mesh to original coordinates.")
+            try:
+                # Check if the mesh still has points data assigned
+                if self.current_mesh.points is not None:
+                    # Only reset if the number of points matches
+                    if self.current_mesh.n_points == node_coords.shape[0]:
+                        self.current_mesh.points = node_coords.copy()  # Use copy to be safe
+                        # Optionally reset scalars to 0 or initial state if desired
+                        # self.current_mesh[self.data_column_name] = np.zeros(self.current_mesh.n_points)
+                        self.plotter.render()  # Render the reset state
+                    else:
+                        print("Warning: Cannot reset mesh points, point count mismatch.")
                 else:
-                    self.current_anim_time = start_time  # or time_values[0]
+                    print("Warning: Cannot reset mesh points, mesh points data is missing.")
+            except Exception as e:
+                print(f"Error resetting mesh points: {e}")
 
-            if self.current_anim_time > end_time:
-                self.current_anim_time = start_time
+        print("Animation stopped.")
 
-            # Update the scalar field on your mesh (replace with your actual computation)
-            new_scalars = self.get_scalar_field_for_time(self.current_anim_time)
-            self.current_mesh[self.data_column] = new_scalars
+    def animate_frame(self, update_index=True):
+        """Update the display using the next precomputed animation frame."""
+        if self.precomputed_scalars is None or self.precomputed_anim_times is None:
+            print("Animation frame skipped: Precomputed data not available.")
+            # Attempt to stop gracefully if data disappears mid-animation
+            self.stop_animation()
+            return
 
-            # Update node positions if modal deformations are loaded
-            if 'modal_ux' in globals() and modal_ux is not None:
-                # Find the time index corresponding to the current animation time
-                time_index = np.argmin(np.abs(time_values - self.current_anim_time))
-                # Slice the modal coordinate for the current time point
-                selected_modal_coord = modal_coord[:, time_index:time_index + 1]
-                # Create a temporary solver that now also receives the modal deformations tuple
-                # (Assuming that the other required globals like modal_sx, etc., are available)
-                try:
-                    temp_solver = MSUPSmartSolverTransient(
-                        modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
-                        selected_modal_coord,
-                        modal_node_ids=df_node_ids,
-                        modal_deformations=(modal_ux, modal_uy, modal_uz)
-                    )
-                    num_nodes = modal_sx.shape[0]
-                    # Compute deformations for all nodes at this time
-                    deformations = temp_solver.compute_deformations(0, num_nodes)
-                    if deformations is not None:
-                        ux, uy, uz = deformations  # Each with shape (n_nodes, 1)
+        num_frames = len(self.precomputed_anim_times)
+        if num_frames == 0:
+            print("Animation frame skipped: No precomputed frames.")
+            self.stop_animation()
+            return
 
-                        # Retrieve the scale factor from the widget
-                        scale_factor = float(self.deformation_scale_edit.text())
+        # --- Get Data for Current Frame ---
+        try:
+            # Get scalars for the current frame
+            current_scalars = self.precomputed_scalars[:, self.current_anim_frame_index]
+            current_time = self.precomputed_anim_times[self.current_anim_frame_index]
 
-                        # Update mesh node positions: add computed displacements to original coordinates
-                        # (Assuming global variable node_coords holds the original positions)
-                        new_coords = node_coords + scale_factor * np.hstack((ux, uy, uz))
-                        self.current_mesh.points = new_coords
-                except Exception as e:
-                    print(f"Deformation update error: {e}")
+            # Get deformed coordinates if available
+            if self.is_deformation_included_in_anim and self.precomputed_coords is not None:
+                # Adjust slicing based on how precomputed_coords was stored, e.g., (num_nodes, 3, num_steps)
+                current_coords = self.precomputed_coords[:, :, self.current_anim_frame_index]
+                self.current_mesh.points = current_coords  # Update node positions
 
-            # Update the scalar bar range:
+            # Update scalars on the mesh
+            self.current_mesh[self.data_column_name] = current_scalars
+            # Ensure the active scalar is set correctly (might be redundant if mesh isn't recreated)
+            if self.current_mesh.active_scalars_name != self.data_column_name:
+                self.current_mesh.set_active_scalars(self.data_column_name)
+
+            # Update the scalar bar range if necessary (using fixed range from UI)
             fixed_min = self.scalar_min_spin.value()
             fixed_max = self.scalar_max_spin.value()
-            current_data_min = np.min(new_scalars)
-            current_data_max = np.max(new_scalars)
-            if abs(fixed_min - current_data_min) < 1e-6 and abs(fixed_max - current_data_max) < 1e-6:
-                self.current_actor.mapper.SetScalarRange(current_data_min, current_data_max)
-            else:
-                self.current_actor.mapper.SetScalarRange(fixed_min, fixed_max)
+            if self.current_actor:
+                # Check if range needs setting (e.g., first frame or if it changed)
+                current_range = self.current_actor.mapper.GetScalarRange()
+                if abs(current_range[0] - fixed_min) > 1e-6 or abs(current_range[1] - fixed_max) > 1e-6:
+                    self.current_actor.mapper.SetScalarRange(fixed_min, fixed_max)
+                    # Update scalar bar title if needed
+                    self.plotter.scalar_bar.SetTitle(self.data_column_name)
 
-            # Update (or create) the free-floating text actor
-            current_text = f"Time: {self.current_anim_time:.5f}"
+            # --- Update Time Text ---
+            # --- Update Time Text ---
+            time_text = f"Time: {current_time:.5f} s"
 
-            # Remove existing time text actor if present
+            # Remove the previous time text actor if it exists
+            # Use the name='anim_time_text' for safer removal
             if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
-                self.plotter.remove_actor(self.time_text_actor)
-                self.time_text_actor = None
+                # It's generally safer to remove by the actor object itself or a unique name
+                try:
+                    self.plotter.remove_actor(self.time_text_actor, render=False)
+                except ValueError:  # Actor might have already been removed somehow
+                    pass
+                self.time_text_actor = None  # Clear the reference after removal attempt
 
-            # Create a free-floating text actor with normalized viewport coordinates.
-            # For example, (0.8, 0.9) positions it near the upper-right.
-            self.time_text_actor = self.plotter.add_text(current_text,
+            # Add the new time text actor for the current frame
+            # Ensure a unique name if multiple text actors might exist, or just reuse 'anim_time_text'
+            self.time_text_actor = self.plotter.add_text(time_text,
                                                          position=(0.8, 0.9),
-                                                         viewport=True,
-                                                         font_size=10)
+                                                         viewport=False,
+                                                         font_size=10)  # Use a consistent name
 
+            # --- Render ---
             self.plotter.render()
 
-        except Exception as e:
-            QMessageBox.critical(self, "Animation Error", f"Failed to animate the results: {str(e)}")
+            # --- Profiling Logic ---
+            # Check if profiling is active *before* incrementing index
+            if self.profiler is not None:
+                self.profiled_frame_count += 1
+                if self.profiled_frame_count >= self.profile_target_frames:
+                    print(f"\n--- Stopping Profiling after {self.profiled_frame_count} frames ---")
+                    self.profiler.disable()
 
-        # profiler.disable()
-        # profiler.dump_stats("animation.prof")
+                    stats_filename = "animation_playback.prof"
+                    try:
+                        self.profiler.dump_stats(stats_filename)
+                        print(f"Profiling stats saved to '{stats_filename}'")
+
+                        # Print stats to console, sorted by cumulative time
+                        s = io.StringIO()
+                        # Sort by 'cumulative' (total time spent in function + callees)
+                        # Other options: 'time'/'tottime' (internal time), 'calls'
+                        stats = pstats.Stats(self.profiler, stream=s).sort_stats('cumulative')
+                        stats.print_stats(30) # Print top 30 functions
+                        print("\n--- cProfile Stats (Top 30 by Cumulative Time) ---")
+                        print(s.getvalue())
+                        print("--------------------------------------------------\n")
+
+                    except Exception as profile_err:
+                        print(f"Error processing profiling stats: {profile_err}")
+
+                    self.profiler = None # Stop checking after stats are processed
+
+
+            # --- Increment Frame Index for Next Call ---
+            if update_index:
+                self.current_anim_frame_index += 1
+                if self.current_anim_frame_index >= num_frames:
+                    self.current_anim_frame_index = 0  # Loop animation
+
+        except IndexError:
+            print(
+                f"Error: Frame index {self.current_anim_frame_index} out of bounds for precomputed data (size: {num_frames}). Stopping animation.")
+            self.stop_animation()
+        except Exception as e:
+            QMessageBox.critical(self, "Animation Error", f"Failed to update animation frame: {str(e)}")
+            print(f"Error updating frame {self.current_anim_frame_index}: {e}")
+            self.stop_animation()  # Stop on error
+
+    def _get_animation_time_steps(self):
+        """
+        Determines the time values and corresponding indices from global time_values
+        needed for the animation based on user settings.
+
+        Returns:
+            tuple: (
+                anim_times: np.array or None - The actual time values for each animation frame.
+                anim_indices: np.array or None - The indices in global time_values corresponding to anim_times.
+                error_message: str or None - An error message if inputs are invalid or no steps generated, otherwise None.
+            )
+        """
+        global time_values
+        # --- Input Validation ---
+        if time_values is None or len(time_values) == 0:
+            return None, None, "Global time_values not loaded or empty."
+
+        start_time = self.anim_start_spin.value()
+        end_time = self.anim_end_spin.value()
+
+        if start_time >= end_time:
+            return None, None, "Animation start time must be less than end time."
+
+        # Initialize as standard Python lists
+        anim_times_list = []
+        anim_indices_list = []
+
+        # --- Logic based on Time Step Mode ---
+        if self.time_step_mode_combo.currentText() == "Custom Time Step":
+            step = self.custom_step_spin.value()
+            if step <= 0:
+                return None, None, "Custom time step must be positive."
+
+            current_t = start_time
+            last_added_idx = -1  # Keep track of the last index added
+
+            # Loop through custom time steps
+            while current_t <= end_time:
+                # Find the index of the closest actual time point in the data
+                idx = np.argmin(np.abs(time_values - current_t))
+
+                # Ensure the found index corresponds to a time within the overall bounds
+                # (Handles cases where closest time might be outside start/end due to large steps)
+                # And ensure we don't add duplicate indices consecutively
+                if time_values[idx] >= start_time and time_values[idx] <= end_time and idx != last_added_idx:
+                    anim_indices_list.append(idx)
+                    anim_times_list.append(time_values[idx])  # Use the actual data time point
+                    last_added_idx = idx  # Update last added index
+
+                # Prevent infinite loops for very small steps, break if time doesn't advance significantly
+                if current_t + step <= current_t:
+                    print("Warning: Custom time step is too small, breaking loop.")
+                    break
+                current_t += step
+
+            # Ensure the time point closest to the requested end_time is included, if not already the last one
+            end_idx = np.argmin(np.abs(time_values - end_time))
+            if time_values[end_idx] >= start_time and time_values[end_idx] <= end_time:
+                if not anim_indices_list or end_idx != anim_indices_list[-1]:
+                    anim_indices_list.append(end_idx)
+                    anim_times_list.append(time_values[end_idx])
+
+        else:  # "Actual Data Time Steps"
+            nth = self.actual_interval_spin.value()
+            if nth <= 0:
+                return None, None, "Actual data step interval (Every nth) must be positive."
+
+            # Find indices of actual data points within the requested time range
+            valid_indices = np.where((time_values >= start_time) & (time_values <= end_time))[0]
+
+            if len(valid_indices) == 0:
+                return None, None, "No actual data time steps found within the specified range."
+
+            # Select every nth index from the valid ones
+            selected_indices_np = valid_indices[::nth]
+
+            # Convert to list for easier manipulation and checking
+            selected_indices_list = selected_indices_np.tolist()
+
+            # Ensure the very first point in range is included if skipped by nth
+            first_valid_idx = valid_indices[0]
+            if first_valid_idx not in selected_indices_list:
+                selected_indices_list.insert(0, first_valid_idx)
+
+            # Ensure the very last point in range is included if skipped by nth
+            last_valid_idx = valid_indices[-1]
+            if last_valid_idx not in selected_indices_list:
+                # Check if the list is empty before trying to access last element
+                if not selected_indices_list or last_valid_idx != selected_indices_list[-1]:
+                    selected_indices_list.append(last_valid_idx)
+
+            # Use the final list of indices
+            anim_indices_list = selected_indices_list
+            # Get the corresponding time values from the global array
+            anim_times_list = time_values[anim_indices_list].tolist()  # Convert result to list
+
+        # --- Final Check and Return ---
+        # Perform the emptiness check ON THE LISTS before returning/converting
+        if not anim_times_list:
+            return None, None, "No animation frames generated for the selected time range and step."
+
+        # If the lists are not empty, THEN convert to NumPy arrays and return
+        # Use np.unique to remove potential duplicates introduced by start/end point logic, preserving order
+        unique_indices, order_indices = np.unique(anim_indices_list, return_index=True)
+        final_indices = unique_indices[np.argsort(order_indices)]
+        final_times = time_values[final_indices]
+
+        return np.array(final_times), np.array(final_indices, dtype=int), None
+
+    def _estimate_animation_ram(self, num_nodes, num_anim_steps, include_deformation):
+        """
+        Estimates the RAM needed in GB for precomputing animation data.
+        """
+        element_size = np.dtype(NP_DTYPE).itemsize  # Size of float32
+
+        # RAM for scalars (Von Mises or S1)
+        scalar_ram = num_nodes * num_anim_steps * element_size
+
+        # RAM for deformed coordinates (if requested)
+        deformation_ram = 0
+        if include_deformation:
+            # Stores X, Y, Z coordinates for each node at each step
+            deformation_ram = num_nodes * 3 * num_anim_steps * element_size
+
+        total_ram_bytes = scalar_ram + deformation_ram
+        # Add a small buffer (e.g., 10%) for intermediate calculations/overhead
+        total_ram_bytes *= 1.1
+
+        return total_ram_bytes / (1024 ** 3)  # Convert bytes to GB
 
     def get_scalar_field_for_time(self, time_val):
         """
@@ -1536,7 +2015,7 @@ class DisplayTab(QWidget):
             scalars=self.data_column,
             cmap='jet',  # Changed colormap to 'jet' to mimic ANSYS Mechanical
             point_size=self.point_size.value(),
-            render_points_as_spheres=True,
+            render_points_as_spheres=False,
             below_color='gray',
             above_color='magenta',
             scalar_bar_args={
@@ -1809,9 +2288,33 @@ class MSUPSmartSolverGUI(QWidget):
         # Checkbox for Calculate Damage Index
         self.damage_index_checkbox = QCheckBox('Damage Index / Potential Damage')
         self.damage_index_checkbox.setStyleSheet("margin: 10px 0;")
+        self.damage_index_checkbox.toggled.connect(self.toggle_fatigue_params_visibility)
 
         # Connect checkbox signal to the method for controlling the visibility of the damage index checkbox
         self.von_mises_checkbox.toggled.connect(self.toggle_damage_index_checkbox_visibility)
+
+        # Create Fatigue Parameters group box (initially hidden)
+        self.fatigue_params_group = QGroupBox("Fatigue Parameters")
+        self.fatigue_params_group.setStyleSheet(group_box_style)
+        fatigue_group_main_layout = QHBoxLayout()
+        fatigue_inputs_layout = QVBoxLayout()
+        self.A_line_edit = QLineEdit()
+        self.A_line_edit.setPlaceholderText("Enter Fatigue Strength Coefficient [MPa]")
+        self.A_line_edit.setValidator(QDoubleValidator())
+        # Signal will be emitted when the user hits Enter or when the field loses focus:
+        self.A_line_edit.editingFinished.connect(lambda: print("A value changed:", self.A_line_edit.text()))
+        self.m_line_edit = QLineEdit()
+        self.m_line_edit.setPlaceholderText("Enter Fatigue Strength Exponent")
+        self.m_line_edit.setValidator(QDoubleValidator())
+        self.m_line_edit.editingFinished.connect(lambda: print("m value changed:", self.m_line_edit.text()))
+
+        # Add labels and line edits to the layout
+        fatigue_inputs_layout.addWidget(QLabel("σ’f"))
+        fatigue_inputs_layout.addWidget(self.A_line_edit)
+        fatigue_inputs_layout.addWidget(QLabel("b:"))
+        fatigue_inputs_layout.addWidget(self.m_line_edit)
+        self.fatigue_params_group.setLayout(fatigue_inputs_layout)
+        self.fatigue_params_group.setVisible(False)  # hide by default
 
         # LineEdit for Node ID input
         self.node_line_edit = QLineEdit()
@@ -1919,13 +2422,14 @@ class MSUPSmartSolverGUI(QWidget):
         self.single_node_group.setLayout(single_node_layout)
 
         # Horizontal layout to place Outputs and Single Node Expansion side by side
-        hbox = QHBoxLayout()
-        hbox.addWidget(self.output_group)  # Outputs on the left
-        hbox.addWidget(self.single_node_group)
+        hbox_user_inputs = QHBoxLayout()
+        hbox_user_inputs.addWidget(self.output_group)
+        hbox_user_inputs.addWidget(self.fatigue_params_group)
+        hbox_user_inputs.addWidget(self.single_node_group)
 
         # Adding elements to main layout
         main_layout.addWidget(file_group)
-        main_layout.addLayout(hbox)
+        main_layout.addLayout(hbox_user_inputs)
         main_layout.addWidget(self.solve_button)
         main_layout.addWidget(self.show_output_tab_widget)  # Add the tab widget for the log terminal
         main_layout.addWidget(self.progress_bar)
@@ -1957,6 +2461,9 @@ class MSUPSmartSolverGUI(QWidget):
             self.damage_index_checkbox.setVisible(True)
         else:
             self.damage_index_checkbox.setVisible(False)
+
+    def toggle_fatigue_params_visibility(self, checked):
+        self.fatigue_params_group.setVisible(checked)
 
     def toggle_single_node_solution_group(self):
         try:
@@ -2139,6 +2646,9 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.append(f"Deformations array shapes: UX {modal_ux.shape}, UY {modal_uy.shape}, UZ {modal_uz.shape}")
         except Exception as e:
             self.console_textbox.append(f"Error processing modal deformations file: {e}")
+        finally:
+            # After processing, update the time point controls in the DisplayTab.
+            self.update_time_and_animation_ui()
 
     def update_time_and_animation_ui(self):
         """
@@ -2238,6 +2748,19 @@ class MSUPSmartSolverGUI(QWidget):
 
             # Check for steady-state stress inclusion
             is_include_steady_state = self.steady_state_checkbox.isChecked()
+
+            # Check if Damage Index / Potential Damage is requested
+            if self.damage_index_checkbox.isChecked():
+                try:
+                    fatigue_A = float(self.A_line_edit.text())
+                    fatigue_m = float(self.m_line_edit.text())
+                except ValueError:
+                    QMessageBox.warning(self, "Invalid Input",
+                                        "Please enter valid numbers for fatigue parameters A and m.")
+                    return
+                # Save these values to the solver instance
+                self.solver.fatigue_A = fatigue_A
+                self.solver.fatigue_m = fatigue_m
 
             # # Initialize steady-state stress variables
             global steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz, steady_node_ids
@@ -2530,55 +3053,104 @@ class MatplotlibWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Create the figure and the canvas for embedding the plot
-        self.figure, self.ax = plt.subplots()
+        # --- Matplotlib canvas on the left ---
+        self.figure = plt.Figure()
         self.canvas = FigureCanvas(self.figure)
-
-        # Set size policy to make the canvas expand and shrink with the window
+        # make it expand/shrink with the window
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.canvas.updateGeometry()
 
-        # Create the layout and add the canvas to it
-        layout = QVBoxLayout()
-        layout.addWidget(self.canvas)
+        # --- Data table on the right ---
+        self.table = QTableView(self)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+        self.model = QStandardItemModel(self)
+        self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
+        self.table.setModel(self.model)
+
+        # Ctrl+C to copy the selected block
+        copy_sc = QShortcut(QKeySequence.Copy, self.table)
+        copy_sc.activated.connect(self.copy_selection)
+
+        # --- Split view ---
+        splitter = QSplitter(Qt.Horizontal, self)
+        splitter.addWidget(self.canvas)
+        splitter.addWidget(self.table)
+        splitter.setStretchFactor(0, 2)  # plot ~67%
+        splitter.setStretchFactor(1, 1)  # table ~33%
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(splitter)
         self.setLayout(layout)
 
     def update_plot(self, x, y, node_id=None, is_principal_stress=False, is_von_mises=False):
-        """Update the plot with new data and dynamically adjust the Y-axis label."""
-
-        # Clear the existing figure
+        # Clear the figure
         self.figure.clear()
-
-        # Create a single plot layout
         ax = self.figure.add_subplot(1, 1, 1)
 
-        # Determine which plot to create based on the active checkbox
+        # Plot and styling exactly as before
         if is_principal_stress:
             ax.plot(x, y, label=r'$\sigma_1$', color='red')
             ax.set_title(f"Principal Stress (Node ID: {node_id})" if node_id else "Principal Stress", fontsize=8)
             ax.set_ylabel(r'$\sigma_1$ [MPa]', fontsize=8)
         elif is_von_mises:
             ax.plot(x, y, label=r'$\sigma_{VM}$', color='blue')
-            ax.set_title(f"Von-Mises Stress (Node ID: {node_id})" if node_id else "Von-Mises Stress", fontsize=8)
+            ax.set_title(f"Von‑Mises Stress (Node ID: {node_id})" if node_id else "Von‑Mises Stress", fontsize=8)
             ax.set_ylabel(r'$\sigma_{VM}$ [MPa]', fontsize=8)
 
-        # Set common properties
         ax.set_xlabel('Time [seconds]', fontsize=8)
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=5))  # Increase major ticks
-        ax.grid(True, which='both', linestyle='-', linewidth=0.5)  # Enable grid
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+        ax.grid(True, which='both', linestyle='-', linewidth=0.5)
         ax.minorticks_on()
         ax.tick_params(axis='both', which='major', labelsize=8)
 
-        # Add max value text
+        # Max‑value text box
         max_y_value = np.max(y)
         textstr = f'Max Value: {max_y_value:.4f}'
-        ax.text(0.05, 0.95, textstr, transform=ax.transAxes,
-                fontsize=8, verticalalignment='top', horizontalalignment='left',
-                bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2'))
+        ax.text(
+            0.05, 0.95, textstr, transform=ax.transAxes,
+            fontsize=8, verticalalignment='top', horizontalalignment='left',
+            bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2')
+        )
 
-        # Adjust layout and redraw canvas
-        #self.figure.tight_layout()
         self.canvas.draw()
+
+        # Populate the table
+        self.model.removeRows(0, self.model.rowCount())
+        for xi, yi in zip(x, y):
+            items = [ QStandardItem(f"{xi:.5f}"),
+                      QStandardItem(f"{yi:.5f}") ]
+            self.model.appendRow(items)
+
+    def copy_selection(self):
+        """Copy the selected rectangular block of cells as TSV to the clipboard."""
+        sel = self.table.selectedIndexes()
+        if not sel:
+            return
+
+        rows = sorted(idx.row() for idx in sel)
+        cols = sorted(idx.column() for idx in sel)
+        r0, r1 = rows[0], rows[-1]
+        c0, c1 = cols[0], cols[-1]
+
+        lines = []
+
+        # 1) Header labels
+        headers = [
+            self.model.headerData(c, Qt.Horizontal)
+            for c in range(c0, c1 + 1)
+        ]
+        lines = ['\t'.join(headers)]
+
+        for r in range(r0, r1 + 1):
+            row_data = []
+            for c in range(c0, c1 + 1):
+                text = self.model.index(r, c).data() or ""
+                row_data.append(text)
+            lines.append('\t'.join(row_data))
+
+        QApplication.clipboard().setText('\n'.join(lines))
 
 class PlotlyWidget(QWidget):
     def __init__(self, parent=None):
@@ -2702,56 +3274,43 @@ class ModalCoordPlotWindow(QMainWindow):
 class PlotlyMaxWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # --- left: Plotly web view ---
         self.web_view = QWebEngineView(self)
-        layout = QVBoxLayout()
-        layout.addWidget(self.web_view)
-        self.setLayout(layout)
+
+        # --- right: Data table ---
+        self.table = QTableView(self)
+        # Allow rectangular selection, multi‑select with Shift/Ctrl
+        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+        # Model with 3 columns
+        self.model = QStandardItemModel(self)
+        self.model.setHorizontalHeaderLabels(["Time [s]", "SEQV [MPa]", "S1 [MPa]"])
+        self.table.setModel(self.model)
+
+        # Ctrl+C shortcut bound to copy_selection()
+        copy_sc = QShortcut(QKeySequence.Copy, self.table)
+        copy_sc.activated.connect(self.copy_selection)
+
+        # Splitter to hold plot + table
+        splitter = QSplitter(Qt.Horizontal, self)
+        splitter.addWidget(self.web_view)
+        splitter.addWidget(self.table)
+        splitter.setStretchFactor(0, 90)  # plot ~90%
+        splitter.setStretchFactor(1, 10)  # table ~10%
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(splitter)
+        self.setLayout(lay)
 
     def update_plot(self, time_values, vm_values=None, principal_values=None):
+        # 1) Build figure
         fig = go.Figure()
-
-        # If both metrics are provided, add two traces.
-        if vm_values is not None and principal_values is not None:
-            fig.add_trace(go.Scattergl(
-                x=time_values,
-                y=vm_values,
-                mode='lines',
-                name='Von Mises',
-                opacity=0.7,
-                line=dict(color='blue')
-            ))
-            fig.add_trace(go.Scattergl(
-                x=time_values,
-                y=principal_values,
-                mode='lines',
-                name='Max Principal',
-                opacity=0.7,
-                line=dict(color='red')
-            ))
-        # If only von Mises values are available, plot only that trace.
-        elif vm_values is not None:
-            fig.add_trace(go.Scattergl(
-                x=time_values,
-                y=vm_values,
-                mode='lines',
-                name='Von Mises',
-                opacity=0.7,
-                line=dict(color='blue')
-            ))
-        # If only principal stress values are available, plot that trace.
-        elif principal_values is not None:
-            fig.add_trace(go.Scattergl(
-                x=time_values,
-                y=principal_values,
-                mode='lines',
-                name='Max Principal',
-                opacity=0.7,
-                line=dict(color='red')
-            ))
-        else:
-            # If no data is provided, display a message.
-            fig.add_annotation(text="No data available", showarrow=False)
-
+        if vm_values is not None:
+            fig.add_trace(go.Scattergl(x=time_values, y=vm_values, mode='lines', name='Von Mises'))
+        if principal_values is not None:
+            fig.add_trace(go.Scattergl(x=time_values, y=principal_values, mode='lines', name='Principal'))
         fig.update_layout(
             xaxis_title="Time [s]",
             yaxis_title="Stress (MPa)",
@@ -2761,17 +3320,60 @@ class PlotlyMaxWidget(QWidget):
             legend=dict(font=dict(size=7))
         )
 
-        # Wrap the figure for dynamic resampling (improves performance on zoom)
-        resampler_fig = FigureResampler(fig, default_n_shown_samples=1000)
-        html = pyo.plot(resampler_fig, include_plotlyjs='cdn', output_type='div')
+        # 2) Wrap in resampler
+        resfig = FigureResampler(fig, default_n_shown_samples=50000)
+        html = pyo.plot(
+            resfig,
+            include_plotlyjs='cdn',
+            output_type='div'
+        )
         self.web_view.setHtml(html, QUrl("about:blank"))
+
+        # 3) Populate table
+        self.model.removeRows(0, self.model.rowCount())
+        for i, t in enumerate(time_values):
+            items = [
+                QStandardItem(f"{t:.5f}"),
+                QStandardItem(f"{vm_values[i]:.5f}") if vm_values is not None else QStandardItem(""),
+                QStandardItem(f"{principal_values[i]:.5f}") if principal_values is not None else QStandardItem("")
+            ]
+            self.model.appendRow(items)
+
+    def copy_selection(self):
+        """Copy the currently selected block of cells to the clipboard as TSV."""
+        sel = self.table.selectedIndexes()
+        if not sel:
+            return
+        # determine the extents of the selection
+        rows = sorted(idx.row() for idx in sel)
+        cols = sorted(idx.column() for idx in sel)
+        r0, r1 = rows[0], rows[-1]
+        c0, c1 = cols[0], cols[-1]
+
+        lines = []
+
+        # 1) Header labels
+        headers = [
+            self.model.headerData(c, Qt.Horizontal)
+            for c in range(c0, c1 + 1)
+        ]
+        lines = ['\t'.join(headers)]
+
+        for r in range(r0, r1 + 1):
+            row_data = []
+            for c in range(c0, c1 + 1):
+                idx = self.model.index(r, c)
+                text = idx.data() or ""
+                row_data.append(text)
+            lines.append('\t'.join(row_data))
+        QApplication.clipboard().setText('\n'.join(lines))
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.85.2')
+        self.setWindowTitle('MSUP Smart Solver - v0.90.0')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
