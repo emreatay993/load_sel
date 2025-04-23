@@ -36,6 +36,8 @@ from plotly_resampler import FigureResampler
 import io
 from scipy.signal import butter, filtfilt, detrend
 import imageio
+import tempfile
+import plotly.io as pio
 # endregion
 
 # region Define global variables
@@ -3482,8 +3484,8 @@ class PlotlyWidget(QWidget):
         resampler_fig = FigureResampler(fig, default_n_shown_samples=1000)
 
         # Generate HTML and display
-        html = pyo.plot(resampler_fig, include_plotlyjs='cdn', output_type='div')
-        self.web_view.setHtml(html, QUrl("about:blank"))
+        main_win = self.window()
+        main_win.load_fig_to_webview(resampler_fig, self.web_view)
 
 class ModalCoordCompositeWidget(QWidget):
     def __init__(self, parent=None):
@@ -3539,9 +3541,8 @@ class ModalCoordCompositeWidget(QWidget):
             margin=dict(l=40, r=40, t=10, b=40),
             showlegend=True
         )
-        # Generate HTML using inline Plotly JS or CDN as needed.
-        html = pyo.plot(fig, include_plotlyjs='cdn', output_type='div')
-        self.bar_plot_widget.web_view.setHtml(html, QUrl("about:blank"))
+        main_win = self.window()
+        main_win.load_fig_to_webview(fig, self.bar_plot_widget.web_view)
 
 class ModalCoordPlotWindow(QMainWindow):
     def __init__(self, composite_widget, parent=None):
@@ -3609,12 +3610,10 @@ class PlotlyMaxWidget(QWidget):
 
         # 2) Wrap in resampler
         resfig = FigureResampler(fig, default_n_shown_samples=50000)
-        html = pyo.plot(
-            resfig,
-            include_plotlyjs='cdn',
-            output_type='div'
-        )
-        self.web_view.setHtml(html, QUrl("about:blank"))
+
+        # Show the plot
+        main_win = self.window()
+        main_win.load_fig_to_webview(resfig, self.web_view)
 
         # 3) Populate table
         self.model.removeRows(0, self.model.rowCount())
@@ -3658,9 +3657,10 @@ class PlotlyMaxWidget(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.91.0')
+        self.setWindowTitle('MSUP Smart Solver - v0.91.1')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
@@ -3873,6 +3873,41 @@ class MainWindow(QMainWindow):
             # Update the navigator with the selected directory
             self.file_model.setRootPath(self.project_directory)
             self.tree_view.setRootIndex(self.file_model.index(self.project_directory))
+
+    def load_fig_to_webview(self, fig, web_view):
+        """Generates full HTML with embedded JS, saves to temp file, and loads."""
+        # Ensure this method exists in MainWindow
+        # (Copy the implementation from previous answers, e.g., response #10 or #12)
+        try:
+            # Handle FigureResampler object if passed
+            plotly_fig = fig.figure if hasattr(fig, 'figure') else fig
+
+            html_content = pio.to_html(plotly_fig,
+                                       full_html=True,
+                                       include_plotlyjs=True, # Embed JS
+                                       config={'responsive': True})
+
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as tmp_file:
+                 tmp_file.write(html_content)
+                 file_path = tmp_file.name
+                 self.temp_files.append(file_path)
+
+            web_view.setUrl(QUrl.fromLocalFile(file_path))
+            web_view.show()
+        except Exception as e:
+            print(f"Error loading figure to webview: {e}")
+            traceback.print_exc()
+            # Display error in webview
+            error_html = f"<html><body><h1>Error loading plot</h1><pre>{e}</pre><pre>{traceback.format_exc()}</pre></body></html>"
+            try: web_view.setHtml(error_html)
+            except Exception: pass # Ignore errors setting error html
+
+    def closeEvent(self, event):
+        """Clean up temporary files on application close."""
+        # Ensure this method exists in MainWindow
+        # (Copy the implementation from previous answers, e.g., response #16)
+        self.clear_plot_cache(show_message=False)
+        event.accept()
 # endregion
 
 # region Run the main GUI
