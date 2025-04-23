@@ -3876,8 +3876,6 @@ class MainWindow(QMainWindow):
 
     def load_fig_to_webview(self, fig, web_view):
         """Generates full HTML with embedded JS, saves to temp file, and loads."""
-        # Ensure this method exists in MainWindow
-        # (Copy the implementation from previous answers, e.g., response #10 or #12)
         try:
             # Handle FigureResampler object if passed
             plotly_fig = fig.figure if hasattr(fig, 'figure') else fig
@@ -3904,8 +3902,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up temporary files on application close."""
-        # Ensure this method exists in MainWindow
-        # (Copy the implementation from previous answers, e.g., response #16)
         self.clear_plot_cache(show_message=False)
         event.accept()
 # endregion
