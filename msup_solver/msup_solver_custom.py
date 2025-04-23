@@ -991,7 +991,7 @@ class DisplayTab(QWidget):
         # Polynomial-order spinbox (0–9)
         self.drift_order_spin = QSpinBox()
         self.drift_order_spin.setRange(0, 9)
-        self.drift_order_spin.setPrefix("Poly Order: ")
+        self.drift_order_spin.setPrefix("Polynomial Fit Function Order: ")
         self.drift_order_spin.setVisible(False)
         self.graphics_control_layout.addWidget(self.drift_order_spin)
 
