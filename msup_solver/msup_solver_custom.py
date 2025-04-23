@@ -204,6 +204,20 @@ def unwrap_mcf_file(input_file, output_file):
             f.write(line + "\n")
 
     return final_lines
+
+def poly_detrend_2d(data: np.ndarray, times: np.ndarray, order: int) -> np.ndarray:
+    """
+    Remove an nth-order polynomial trend from each row of `data`.
+    - data:   shape (n_series, n_samples)
+    - times:  1D array length n_samples
+    - order:  polynomial degree to remove
+    """
+    detrended = np.empty_like(data)
+    for i in range(data.shape[0]):
+        p = np.polyfit(times, data[i], order)
+        trend = np.polyval(p, times)
+        detrended[i] = data[i] - trend
+    return detrended
 # endregion
 
 # region Define global classes
@@ -829,7 +843,7 @@ class DisplayTab(QWidget):
         # Visualization controls
         self.point_size = QSpinBox()
         self.point_size.setRange(1, 100)
-        self.point_size.setValue(40)
+        self.point_size.setValue(5)
         self.point_size.setPrefix("Size: ")
         self.point_size.valueChanged.connect(self.update_point_size)
 
@@ -969,19 +983,22 @@ class DisplayTab(QWidget):
         self.graphics_control_layout.addWidget(self.deformation_scale_label)
         self.graphics_control_layout.addWidget(self.deformation_scale_edit)
 
-        # Remove‑Drift checkbox and cutoff frequency
+        # Remove-Drift checkbox
         self.remove_drift_checkbox = QCheckBox("Remove Drift")
         self.remove_drift_checkbox.setVisible(False)
-        self.remove_drift_checkbox.toggled.connect(
-            lambda checked: self.detrend_type_combo.setVisible(checked)
-        )
         self.graphics_control_layout.addWidget(self.remove_drift_checkbox)
 
-        self.detrend_type_combo = QComboBox()
-        self.detrend_type_combo.addItems(["constant", "linear"])
-        self.detrend_type_combo.setToolTip("constant: remove mean; linear: remove linear drift")
-        self.detrend_type_combo.setVisible(False)
-        self.graphics_control_layout.addWidget(self.detrend_type_combo)
+        # Polynomial-order spinbox (0–9)
+        self.drift_order_spin = QSpinBox()
+        self.drift_order_spin.setRange(0, 9)
+        self.drift_order_spin.setPrefix("Poly Order: ")
+        self.drift_order_spin.setVisible(False)
+        self.graphics_control_layout.addWidget(self.drift_order_spin)
+
+        # toggle visibility when checkbox is clicked
+        self.remove_drift_checkbox.toggled.connect(
+            lambda checked: self.drift_order_spin.setVisible(checked)
+        )
 
         # Add Save Animation Button ---
         self.save_anim_button = QPushButton("Save as Video/GIF")
@@ -1052,7 +1069,7 @@ class DisplayTab(QWidget):
             # Show Remove‑Drift only if modal deformations are loaded
             has_deforms = "modal_ux" in globals()
             self.remove_drift_checkbox.setVisible(has_deforms)
-            self.detrend_type_combo.setVisible(has_deforms and self.remove_drift_checkbox.isChecked())
+            self.drift_order_spin.setVisible(has_deforms and self.remove_drift_checkbox.isChecked())
 
             # Initialize plotter with points
             if "node_coords" in globals() and node_coords is not None:
@@ -1072,7 +1089,7 @@ class DisplayTab(QWidget):
             self.deformation_scale_label.setVisible(False)
             self.deformation_scale_edit.setVisible(False)
             self.remove_drift_checkbox.setVisible(False)
-            self.detrend_type_combo.setVisible(False)
+            self.drift_order_spin.setVisible(False)
 
     def update_time_point_results(self):
         """
@@ -1426,10 +1443,16 @@ class DisplayTab(QWidget):
 
                     # Apply chosen detrend
                     if self.remove_drift_checkbox.isChecked():
-                        dt_type = self.detrend_type_combo.currentText()  # "constant" or "linear"
-                        ux_anim = detrend(ux_anim, axis=1, type=dt_type)
-                        uy_anim = detrend(uy_anim, axis=1, type=dt_type)
-                        uz_anim = detrend(uz_anim, axis=1, type=dt_type)
+                        order = self.drift_order_spin.value()
+                        if order in (0, 1):
+                            detrend_type = "constant" if order == 0 else "linear"
+                            ux_anim = detrend(ux_anim, axis=1, type=detrend_type)
+                            uy_anim = detrend(uy_anim, axis=1, type=detrend_type)
+                            uz_anim = detrend(uz_anim, axis=1, type=detrend_type)
+                        else:
+                            ux_anim = poly_detrend_2d(ux_anim, anim_times, order)
+                            uy_anim = poly_detrend_2d(uy_anim, anim_times, order)
+                            uz_anim = poly_detrend_2d(uz_anim, anim_times, order)
 
                     # Stack displacements: (num_nodes, 3, num_anim_steps)
                     displacements_stacked = np.stack([ux_anim, uy_anim, uz_anim], axis=1)
@@ -2304,7 +2327,7 @@ class DisplayTab(QWidget):
             scalars=self.data_column,
             cmap='jet',  # Changed colormap to 'jet' to mimic ANSYS Mechanical
             point_size=self.point_size.value(),
-            render_points_as_spheres=False,
+            render_points_as_spheres=True,
             below_color='gray',
             above_color='magenta',
             scalar_bar_args={
@@ -3660,7 +3683,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.91.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.92.0')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
