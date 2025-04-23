@@ -1,6 +1,6 @@
 '''
 Author: Kamil Emre Atay (k5483)
-Version: 0.96.6
+Version: 0.96.8
 Script Name: we_mechload_viewer.py
 
 Tested in Python version 3.10.
@@ -300,8 +300,8 @@ class WE_load_plotter(QMainWindow):
         central_layout = QVBoxLayout(central_widget)
 
         # Create the tab widget and add your tabs.
-        tab_widget = QTabWidget(central_widget)
-        tab_widget.setStyleSheet("""
+        self.tab_widget = QTabWidget(central_widget)
+        self.tab_widget.setStyleSheet("""
             QTabBar::tab {
                 background: #00838f;
                 color: white;
@@ -314,6 +314,10 @@ class WE_load_plotter(QMainWindow):
             QTabBar::tab:selected {
                 background: #00acc1;
                 font-weight: normal; /* Remove bold */
+            }
+            QTabBar::tab:disabled {
+                background: #cccccc;
+                color: #777777;
             }
             QTabWidget::pane {
                 border-top: 2px solid #ccc;
@@ -331,26 +335,26 @@ class WE_load_plotter(QMainWindow):
             self.tab4 = self.create_tab("Time Domain Representation", self.setupTab4)
         compare_tab = self.create_tab("Compare Data", self.setupCompareTab)
         compare_part_loads_tab = self.create_tab("Compare Data (Part Loads)", self.setupComparePartLoadsTab)
-        settings_tab = self.create_tab("Settings", self.setupSettingsTab)
+        self.settings_tab = self.create_tab("Settings", self.setupSettingsTab)
 
-        tab_widget.addTab(self.tab1, "Single Data")
-        tab_widget.addTab(self.tab2, "Interface Data")
-        tab_widget.addTab(self.tab3, "Part Loads")
+        self.tab_widget.addTab(self.tab1, "Single Data")
+        self.tab_widget.addTab(self.tab2, "Interface Data")
+        self.tab_widget.addTab(self.tab3, "Part Loads")
         if 'FREQ' in self.df.columns:
-            tab_widget.addTab(self.tab4, "Time Domain Representation")
-        tab_widget.addTab(compare_tab, "Compare Data")
-        tab_widget.addTab(compare_part_loads_tab, "Compare Data (Part Loads)")
-        tab_widget.addTab(settings_tab, "Settings")
+            self.tab_widget.addTab(self.tab4, "Time Domain Representation")
+        self.tab_widget.addTab(compare_tab, "Compare Data")
+        self.tab_widget.addTab(compare_part_loads_tab, "Compare Data (Part Loads)")
+        self.tab_widget.addTab(self.settings_tab, "Settings")
 
         # Add the tab widget to the central layout.
-        central_layout.addWidget(tab_widget)
+        central_layout.addWidget(self.tab_widget)
         # Set the central widget of the QMainWindow.
         self.setCentralWidget(central_widget)
 
         # Update the window title and icon.
         folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
         parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
-        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.6    |    (Directory Folder: {parent_folder})")
+        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.8    |    (Directory Folder: {parent_folder})")
         icon_path = self.get_resource_path("icon.ico")
         self.setWindowIcon(QIcon(icon_path))
         self.showMaximized()
@@ -572,7 +576,7 @@ class WE_load_plotter(QMainWindow):
         self.desired_num_points_input = QLineEdit()
         self.desired_num_points_input.setPlaceholderText("Enter an Integer Number")
         self.desired_num_points_input.setFixedWidth(150)
-        self.desired_num_points_input.setText("2000")  # Set initial value
+        self.desired_num_points_input.setText("50000")  # Set initial value
         self.desired_num_points_input.textChanged.connect(self.update_all_transient_data_plots)
 
         # Enable the checkbox by default if the x data length is more than a certain number of data points
@@ -2206,7 +2210,7 @@ def after_post(this, solution):  # Do not edit this line
             folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
             parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
             # Rename the windows title so that directory is updated
-            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.6    |    (Directory Folder: {parent_folder})")
+            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.8    |    (Directory Folder: {parent_folder})")
 
             self.refresh_directory_tree()
 
@@ -2325,6 +2329,15 @@ def after_post(this, solution):  # Do not edit this line
         # If needed, you might selectively remove invalid selections without overriding the user’s multi‑selection.
 
         QMessageBox.information(self, "Data Loaded", "Data from selected folders loaded successfully!")
+
+        # disable all tabs except Single Data (index 0) and Settings (last index)
+        valid_count = len(self.tree_view.selectionModel().selectedRows())
+        total_tabs = self.tab_widget.count()
+        for idx in range(total_tabs):
+            # enable only the first tab and the settings tab
+            enable = (idx == 0) or (idx == total_tabs - 1)
+            self.tab_widget.setTabEnabled(idx, enable)
+
         self.update_all_transient_data_plots()
     # endregion
 
@@ -2984,7 +2997,8 @@ def after_post(this, solution):  # Do not edit this line
                      # Check grouping for multiple folders
                      if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() > 1:
                           fig = go.Figure() # Create empty figure to add traces
-                          temp_df_grouped = self.df.set_index(x_label) # Use original df for grouping structure
+                          domain_col = 'TIME' if 'TIME' in self.df.columns else 'FREQ'
+                          temp_df_grouped = self.df.set_index(domain_col) # Use original df as reference for grouping
                           for folder, group in temp_df_grouped.groupby('DataFolder'):
                                # Apply filter to the specific group data if needed
                                group_data_for_env = group[[selected_column]].copy()
