@@ -1,6 +1,6 @@
 '''
 Author: Kamil Emre Atay (k5483)
-Version: 0.96.3
+Version: 0.96.5
 Script Name: we_mechload_viewer.py
 
 Tested in Python version 3.10.
@@ -166,6 +166,7 @@ class WE_load_plotter(QMainWindow):
     def __init__(self, parent=None, raw_data_folder=None):
         super(WE_load_plotter, self).__init__(parent)
         self.raw_data_folder = raw_data_folder  # Store the raw data folder path
+        self.temp_files = []  # List to track temporary files
         self.init_variables()
         self.init_ui()
 
@@ -276,6 +277,12 @@ class WE_load_plotter(QMainWindow):
         open_action.triggered.connect(self.open_new_data)
         file_menu.addAction(open_action)
 
+        # Clear Plot Cache Action ---
+        file_menu.addSeparator() # Optional separator
+        clear_cache_action = QAction("Clear Plot Cache", self)
+        clear_cache_action.triggered.connect(self.clear_plot_cache)
+        file_menu.addAction(clear_cache_action)
+
         # Create and add the directory tree dock.
         self.create_directory_tree_dock()
 
@@ -343,7 +350,7 @@ class WE_load_plotter(QMainWindow):
         # Update the window title and icon.
         folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
         parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
-        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.3    |    (Directory Folder: {parent_folder})")
+        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.5    |    (Directory Folder: {parent_folder})")
         icon_path = self.get_resource_path("icon.ico")
         self.setWindowIcon(QIcon(icon_path))
         self.showMaximized()
@@ -2199,7 +2206,7 @@ def after_post(this, solution):  # Do not edit this line
             folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
             parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
             # Rename the windows title so that directory is updated
-            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.3    |    (Directory Folder: {parent_folder})")
+            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.5    |    (Directory Folder: {parent_folder})")
 
             self.refresh_directory_tree()
 
@@ -2627,9 +2634,11 @@ def after_post(this, solution):  # Do not edit this line
                     yaxis_title="Data"
                 )
 
-            web_view.setHtml(
-                fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            )
+            # web_view.setHtml(
+            #     fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
+            # )
+            self.load_fig_to_webview(fig, web_view)
+
         except Exception as e:
             QMessageBox.critical(None, 'Error', f"An error occurred while creating and styling figures: {str(e)}")
 
@@ -2649,6 +2658,36 @@ def after_post(this, solution):  # Do not edit this line
         df = pd.DataFrame(y_data_dict)
 
         self.create_and_style_figure(web_view, df, x_data, title)
+
+    def load_fig_to_webview(self, fig, web_view):
+        """Generates full HTML with embedded JS, saves to temp file, and loads."""
+        try:
+            # Generate full HTML with embedded Plotly.js
+            html_content = pio.to_html(fig,
+                                       full_html=True,         # Generate <html>, <head>, <body>
+                                       include_plotlyjs=True,  # Embed the JS library ('cdn' -> True)
+                                       config={'responsive': True}) # Make plot responsive
+
+            # Create a temporary file (delete=False is important here)
+            # Suffix helps identify the file type, encoding ensures compatibility
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as tmp_file:
+                 tmp_file.write(html_content)
+                 file_path = tmp_file.name
+                 self.temp_files.append(file_path) # Keep track for potential cleanup
+
+            # Load the local file URL
+            web_view.setUrl(QtCore.QUrl.fromLocalFile(file_path))
+            web_view.show() # Ensure it's visible
+
+        except Exception as e:
+            print(f"Error loading figure to webview: {e}")
+            traceback.print_exc()
+            try:
+                # Fallback: Display error message in the webview
+                error_html = f"<html><body><h1>Error loading plot</h1><pre>{e}</pre><pre>{traceback.format_exc()}</pre></body></html>"
+                web_view.setHtml(error_html)
+            except Exception as fallback_e:
+                 print(f"Error displaying fallback error message: {fallback_e}")
 
     def plot_with_rolling_min_max_envelope(self, df, x_data, columns, web_view, plot_title, x_label):
         if 'TIME' in self.df.columns and self.rolling_min_max_checkbox.isChecked():
@@ -2765,17 +2804,19 @@ def after_post(this, solution):  # Do not edit this line
                     elif self.spectrum_checkbox.isChecked():
                         # Apply FFT on the uniform time grid data
                         fft_df = rolling_fft(self.working_df_tab1[[value_col]], num_slices=400, add_resultant=True)
-                        heatmap = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=None,
+                        fig_spectrum = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=None,
                                                      var_to_process=value_col)
 
-                        heatmap.update_layout(
-                            margin=dict(l=20, r=20, t=35, b=35),
-                            font=dict(family='Open Sans', size=self.default_font_size, color='black')
-                        )
+                        # fig_spectrum.update_layout(
+                        #     margin=dict(l=20, r=20, t=35, b=35),
+                        #     font=dict(family='Open Sans', size=self.default_font_size, color='black')
+                        # ) # delete-later
 
-                        with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as tmp_file:
-                            pio.write_html(heatmap, file=tmp_file.name, include_plotlyjs='cdn', auto_open=False)
-                            self.spectrum_plot.setUrl(QtCore.QUrl.fromLocalFile(tmp_file.name))
+                        # with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as tmp_file:
+                        #     pio.write_html(fig_spectrum, file=tmp_file.name, include_plotlyjs='cdn', auto_open=False)
+                        #     self.spectrum_plot.setUrl(QtCore.QUrl.fromLocalFile(tmp_file.name)) #delete-later
+
+                        self.load_fig_to_webview(fig_spectrum, self.spectrum_plot)
                 except Exception as e:
                     QMessageBox.critical(None, 'Error', f"An error occurred while creating the spectrum plot: {str(e)}")
 
@@ -2866,7 +2907,7 @@ def after_post(this, solution):  # Do not edit this line
         selected_column = self.column_selector.currentText()
         if not selected_column:
             return
-    
+
         # Determine x-axis data and label based on domain.
         if 'FREQ' in self.df.columns:
             x_data = self.df['FREQ']
@@ -2874,15 +2915,15 @@ def after_post(this, solution):  # Do not edit this line
         else:
             x_data = self.df['TIME']
             x_label = 'Time [s]'
-    
+
         # Create a copy with x_data as index to preserve proper x-axis values.
         df_plot = self.df.copy()
         df_plot.index = x_data
-    
+
         # Create working DataFrame for the selected column.
         y_data_dict = {selected_column: df_plot[selected_column]}
         self.original_df_tab1, self.working_df_tab1 = self.create_dataframes(df_plot.index, x_label, y_data_dict)
-    
+
         # Apply Butterworth filter if enabled (for TIME domain).
         if 'TIME' in self.df.columns and self.filter_checkbox.isChecked():
             try:
@@ -2890,7 +2931,7 @@ def after_post(this, solution):  # Do not edit this line
                 self.working_df_tab1[selected_column] = filtered_y_data
             except Exception as e:
                 print(f"Error applying filter: {e}")
-    
+
         # Define custom hover template and legend settings.
         custom_hover = (
                 '%{fullData.name}<br>' +
@@ -2898,7 +2939,7 @@ def after_post(this, solution):  # Do not edit this line
                 '%{x}<br>Value: %{y:.3f}<extra></extra>'
         )
         legend_position = self.get_legend_position()
-    
+
         # Check if rolling min-max envelope option is enabled.
         if self.rolling_min_max_checkbox.isChecked():
             try:
@@ -2906,7 +2947,7 @@ def after_post(this, solution):  # Do not edit this line
             except ValueError:
                 desired_num_points = 2000
             is_plot_as_bars = self.plot_as_bars_checkbox.isChecked()
-    
+
             fig = go.Figure()
             # When multiple folders are present, group by 'DataFolder'.
             if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() > 1:
@@ -2953,7 +2994,7 @@ def after_post(this, solution):  # Do not edit this line
                     for trace in fig.data:
                         trace.name = self.df['DataFolder'].unique()[0]
                         trace.legendgroup = self.df['DataFolder'].unique()[0]
-    
+
             # Update layout without forcing a new color palette.
             fig.update_layout(
                 margin=dict(l=20, r=20, t=35, b=35),
@@ -3022,7 +3063,7 @@ def after_post(this, solution):  # Do not edit this line
             self.regular_plot.setHtml(
                 fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
             )
-    
+
         # Build the phase plot if the domain is frequency.
         if 'FREQ' in self.df.columns:
             phase_column = 'Phase_' + selected_column
@@ -3317,6 +3358,76 @@ def after_post(this, solution):  # Do not edit this line
         self.update_plots_for_selected_side_tab_2(selected_side)
         if 'FREQ' in self.df.columns:
             self.update_time_domain_plot()
+
+    def clear_plot_cache(self, show_message=True):
+        """Clears temporary plot files and associated web views."""
+        print("Clearing plot cache...")
+        files_to_remove = list(self.temp_files) # Copy list for safe iteration
+        cleared_count = 0
+        errors = 0
+
+        # Clear Web Views first (optional, but good practice)
+        plot_web_views = [
+            getattr(self, name, None) for name in [
+                'regular_plot', 'phase_plot', 'spectrum_plot',
+                't_series_plot', 'r_series_plot',
+                't_series_plot_tab3', 'r_series_plot_tab3',
+                'time_domain_plot', 'compare_regular_plot',
+                'compare_absolute_diff_plot', 'compare_percent_diff_plot',
+                'compare_t_series_plot', 'compare_r_series_plot'
+            ] if hasattr(self, name) # Ensure the attribute exists
+        ]
+
+        for view in plot_web_views:
+            if view: # Check if the view object is valid
+                try:
+                    # Using about:blank is a standard way to clear web views
+                    view.setUrl(QtCore.QUrl("about:blank"))
+                except Exception as e:
+                    print(f"Could not clear web view {view}: {e}")
+
+
+        # Delete Files
+        for file_path in files_to_remove:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    cleared_count += 1
+                    # print(f"Removed temp file: {file_path}") # Uncomment for debugging
+                # Remove from the original list even if it didn't exist (cleanup)
+                if file_path in self.temp_files:
+                    self.temp_files.remove(file_path)
+            except OSError as e:
+                print(f"Error removing temp file {file_path}: {e}")
+                errors += 1
+                # Keep file in self.temp_files if removal failed, maybe retry later?
+
+        print(f"Cache cleared: {cleared_count} files removed, {errors} errors.")
+
+        if show_message:
+            if errors > 0:
+                QMessageBox.warning(self, "Cache Cleared with Errors",
+                                     f"Cleared {cleared_count} plot cache file(s).\n"
+                                     f"Could not remove {errors} file(s). See console for details.")
+            elif cleared_count > 0:
+                QMessageBox.information(self, "Cache Cleared",
+                                        f"Cleared {cleared_count} plot cache file(s).")
+            else:
+                QMessageBox.information(self, "Cache Empty",
+                                        "The plot cache was already empty.")
+
+    def closeEvent(self, event):
+        """Clean up temporary files on application close."""
+        print("Cleaning up temporary plot files...")
+        for file_path in self.temp_files:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    # print(f"Removed temp file: {file_path}") # Uncomment for debugging
+            except OSError as e:
+                print(f"Error removing temp file {file_path}: {e}")
+        self.temp_files.clear() # Clear the list
+        event.accept() # Proceed with closing
     # endregion
 
 
