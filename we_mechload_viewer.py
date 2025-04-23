@@ -1,6 +1,6 @@
 '''
 Author: Kamil Emre Atay (k5483)
-Version: 0.96.5
+Version: 0.96.6
 Script Name: we_mechload_viewer.py
 
 Tested in Python version 3.10.
@@ -350,7 +350,7 @@ class WE_load_plotter(QMainWindow):
         # Update the window title and icon.
         folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
         parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
-        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.5    |    (Directory Folder: {parent_folder})")
+        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.6    |    (Directory Folder: {parent_folder})")
         icon_path = self.get_resource_path("icon.ico")
         self.setWindowIcon(QIcon(icon_path))
         self.showMaximized()
@@ -560,7 +560,7 @@ class WE_load_plotter(QMainWindow):
     # Add controls common to all tabs
     def add_common_controls(self, layout):
         # Checkbox for Rolling Min-Max Envelope
-        self.rolling_min_max_checkbox = QCheckBox("Show as Rolling Min-Max Envelope")
+        self.rolling_min_max_checkbox = QCheckBox("Show Plots as Rolling Min-Max Envelope")
         self.rolling_min_max_checkbox.stateChanged.connect(self.update_all_transient_data_plots)
 
         # Checkbox for Plot as Bars
@@ -2206,7 +2206,7 @@ def after_post(this, solution):  # Do not edit this line
             folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
             parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
             # Rename the windows title so that directory is updated
-            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.5    |    (Directory Folder: {parent_folder})")
+            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.6    |    (Directory Folder: {parent_folder})")
 
             self.refresh_directory_tree()
 
@@ -2514,8 +2514,8 @@ def after_post(this, solution):  # Do not edit this line
         x_data, x_label = self.get_x_axis_data_and_label()
 
         # Create actual plots
-        self.create_and_style_figure(t_plot, self.df[t_series_columns], x_data, 'Force Components')
-        self.create_and_style_figure(r_plot, self.df[r_series_columns], x_data, 'Moment Components')
+        self.create_and_style_figure(t_plot, self.df[t_series_columns], x_data, 'Translational Components')
+        self.create_and_style_figure(r_plot, self.df[r_series_columns], x_data, 'Rotational Components')
 
     def calculate_differences(self, df, df_compare, columns, is_freq_data):
         results = []
@@ -2634,9 +2634,6 @@ def after_post(this, solution):  # Do not edit this line
                     yaxis_title="Data"
                 )
 
-            # web_view.setHtml(
-            #     fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            # )
             self.load_fig_to_webview(fig, web_view)
 
         except Exception as e:
@@ -2665,7 +2662,7 @@ def after_post(this, solution):  # Do not edit this line
             # Generate full HTML with embedded Plotly.js
             html_content = pio.to_html(fig,
                                        full_html=True,         # Generate <html>, <head>, <body>
-                                       include_plotlyjs=True,  # Embed the JS library ('cdn' -> True)
+                                       include_plotlyjs=True,  # Embed the JS library
                                        config={'responsive': True}) # Make plot responsive
 
             # Create a temporary file (delete=False is important here)
@@ -2725,7 +2722,7 @@ def after_post(this, solution):  # Do not edit this line
                 yaxis_title="Data"
             )
 
-            web_view.setHtml(fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True}))
+            self.load_fig_to_webview(fig, web_view)
 
         else:
             self.create_and_style_figure(
@@ -2806,15 +2803,6 @@ def after_post(this, solution):  # Do not edit this line
                         fft_df = rolling_fft(self.working_df_tab1[[value_col]], num_slices=400, add_resultant=True)
                         fig_spectrum = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=None,
                                                      var_to_process=value_col)
-
-                        # fig_spectrum.update_layout(
-                        #     margin=dict(l=20, r=20, t=35, b=35),
-                        #     font=dict(family='Open Sans', size=self.default_font_size, color='black')
-                        # ) # delete-later
-
-                        # with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as tmp_file:
-                        #     pio.write_html(fig_spectrum, file=tmp_file.name, include_plotlyjs='cdn', auto_open=False)
-                        #     self.spectrum_plot.setUrl(QtCore.QUrl.fromLocalFile(tmp_file.name)) #delete-later
 
                         self.load_fig_to_webview(fig_spectrum, self.spectrum_plot)
                 except Exception as e:
@@ -2906,205 +2894,291 @@ def after_post(this, solution):  # Do not edit this line
     def update_plots_tab1(self):
         selected_column = self.column_selector.currentText()
         if not selected_column:
+            # Optionally clear the views if no column is selected
+            if hasattr(self, 'regular_plot'): self.regular_plot.setHtml("")
+            if hasattr(self, 'phase_plot'): self.phase_plot.setHtml("")
             return
 
-        # Determine x-axis data and label based on domain.
-        if 'FREQ' in self.df.columns:
-            x_data = self.df['FREQ']
-            x_label = 'Freq [Hz]'
-        else:
-            x_data = self.df['TIME']
-            x_label = 'Time [s]'
-
-        # Create a copy with x_data as index to preserve proper x-axis values.
-        df_plot = self.df.copy()
-        df_plot.index = x_data
-
-        # Create working DataFrame for the selected column.
-        y_data_dict = {selected_column: df_plot[selected_column]}
-        self.original_df_tab1, self.working_df_tab1 = self.create_dataframes(df_plot.index, x_label, y_data_dict)
-
-        # Apply Butterworth filter if enabled (for TIME domain).
-        if 'TIME' in self.df.columns and self.filter_checkbox.isChecked():
-            try:
-                filtered_y_data = self.apply_butterworth_filter(self.working_df_tab1[selected_column])
-                self.working_df_tab1[selected_column] = filtered_y_data
-            except Exception as e:
-                print(f"Error applying filter: {e}")
-
-        # Define custom hover template and legend settings.
-        custom_hover = (
-                '%{fullData.name}<br>' +
-                ('Hz: ' if 'FREQ' in self.df.columns else 'Time: ') +
-                '%{x}<br>Value: %{y:.3f}<extra></extra>'
-        )
-        legend_position = self.get_legend_position()
-
-        # Check if rolling min-max envelope option is enabled.
-        if self.rolling_min_max_checkbox.isChecked():
-            try:
-                desired_num_points = int(self.desired_num_points_input.text())
-            except ValueError:
-                desired_num_points = 2000
-            is_plot_as_bars = self.plot_as_bars_checkbox.isChecked()
-
-            fig = go.Figure()
-            # When multiple folders are present, group by 'DataFolder'.
-            if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() > 1:
-                for folder, group in df_plot.groupby('DataFolder'):
-                    group_data = group[[selected_column]]
-                    if 'TIME' in self.df.columns and self.filter_checkbox.isChecked():
-                        group_data[selected_column] = self.apply_butterworth_filter(group[selected_column])
-                    envelope_fig = rolling_min_max_envelope(
-                        group_data,
-                        opacity=0.6,
-                        desired_num_points=desired_num_points,
-                        plot_as_bars=is_plot_as_bars,
-                        plot_title=f'{selected_column} Plot - {folder}'
-                    )
-                    envelope_fig.update_layout(
-                        margin=dict(l=20, r=20, t=35, b=35),
-                        legend=dict(
-                            font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                            x=legend_position['x'],
-                            y=legend_position['y'],
-                            xanchor=legend_position.get('xanchor', 'auto'),
-                            yanchor=legend_position.get('yanchor', 'top'),
-                            bgcolor='rgba(255,255,255,0.5)'
-                        ),
-                        hoverlabel=dict(bgcolor='rgba(255,255,255,0.8)', font_size=self.hover_font_size),
-                        hovermode=self.hover_mode,
-                        font=dict(family='Open Sans', size=self.default_font_size, color='black'),
-                        showlegend=self.legend_visible,
-                        yaxis_title="Data"
-                    )
-                    for trace in envelope_fig.data:
-                        trace.name = folder
-                        trace.legendgroup = folder
-                        fig.add_trace(trace)
+        # Add error handling around data access
+        try:
+            # Determine x-axis data and label based on domain.
+            if 'FREQ' in self.df.columns:
+                x_data = self.df['FREQ']
+                x_label = 'Freq [Hz]'
+            elif 'TIME' in self.df.columns:
+                x_data = self.df['TIME']
+                x_label = 'Time [s]'
             else:
-                fig = rolling_min_max_envelope(
-                    self.working_df_tab1,
-                    opacity=0.6,
-                    desired_num_points=desired_num_points,
-                    plot_as_bars=is_plot_as_bars,
-                    plot_title=f'{selected_column} Plot'
-                )
-                if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() == 1:
-                    for trace in fig.data:
-                        trace.name = self.df['DataFolder'].unique()[0]
-                        trace.legendgroup = self.df['DataFolder'].unique()[0]
+                # Handle case where neither column exists
+                raise ValueError("DataFrame must contain 'FREQ' or 'TIME' column.")
 
-            # Update layout without forcing a new color palette.
-            fig.update_layout(
-                margin=dict(l=20, r=20, t=35, b=35),
-                legend=dict(
-                    font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                    x=legend_position['x'],
-                    y=legend_position['y'],
-                    xanchor=legend_position.get('xanchor', 'auto'),
-                    yanchor=legend_position.get('yanchor', 'top'),
-                    bgcolor='rgba(255,255,255,0.5)'
-                ),
-                hoverlabel=dict(bgcolor='rgba(255,255,255,0.8)', font_size=self.hover_font_size),
-                hovermode=self.hover_mode,
-                font=dict(family='Open Sans', size=self.default_font_size, color='black'),
-                showlegend=self.legend_visible,
-                yaxis_title="Data"
-                # No explicit colorway setting here, so the existing palette is used.
-            )
-            self.regular_plot.setHtml(
-                fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            )
-        else:
-            # Standard plot (without rolling envelope).
-            fig = go.Figure()
-            if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() > 1:
-                for folder, group in df_plot.groupby('DataFolder'):
-                    if 'TIME' in self.df.columns and self.filter_checkbox.isChecked():
-                        y_vals = self.apply_butterworth_filter(group[selected_column])
+            # Create a copy with x_data as index to preserve proper x-axis values.
+            # Ensure column exists before copying
+            if selected_column not in self.df.columns:
+                 raise KeyError(f"Selected column '{selected_column}' not found in DataFrame.")
+            if 'Phase_' + selected_column not in self.df.columns and 'FREQ' in self.df.columns:
+                 print(f"Warning: Phase column for '{selected_column}' not found.")
+                 # Decide how to handle this - perhaps disable phase plot? For now, it will error later.
+
+            df_plot = self.df.copy()
+            df_plot.index = x_data
+            df_plot.index.name = x_label # Set index name for axis labels
+
+            # Create working DataFrame for the selected column.
+            # Make sure data exists before creating dataframe
+            y_data_dict = {}
+            if selected_column in df_plot.columns:
+                 y_data_dict[selected_column] = df_plot[selected_column]
+
+            # create_dataframes now takes index directly
+            self.original_df_tab1, self.working_df_tab1 = self.create_dataframes(df_plot.index, x_label, y_data_dict)
+
+            # Apply Butterworth filter if enabled (for TIME domain). Check if working_df is valid.
+            if not self.working_df_tab1.empty and 'TIME' in self.df.columns and self.filter_checkbox.isChecked():
+                try:
+                    # Check if column exists after dataframe creation (should normally)
+                    if selected_column in self.working_df_tab1.columns:
+                         filtered_y_data = self.apply_butterworth_filter(self.working_df_tab1[selected_column])
+                         self.working_df_tab1[selected_column] = filtered_y_data
                     else:
-                        y_vals = group[selected_column]
-                    fig.add_trace(go.Scatter(
-                        x=group.index,
-                        y=y_vals,
-                        mode='lines',
-                        name=folder,
-                        hovertemplate=custom_hover
-                    ))
-            else:
-                y_vals = df_plot[selected_column]
-                if 'TIME' in self.df.columns and self.filter_checkbox.isChecked():
-                    y_vals = self.apply_butterworth_filter(y_vals)
-                fig.add_trace(go.Scatter(
-                    x=df_plot.index,
-                    y=y_vals,
-                    mode='lines',
-                    name=selected_column,
-                    hovertemplate=custom_hover
-                ))
-            fig.update_layout(
-                margin=dict(l=20, r=20, t=35, b=35),
-                legend=dict(
-                    font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                    x=legend_position['x'],
-                    y=legend_position['y'],
-                    xanchor=legend_position.get('xanchor', 'auto'),
-                    yanchor=legend_position.get('yanchor', 'top'),
-                    bgcolor='rgba(255,255,255,0.5)'
-                ),
-                hovermode=self.hover_mode,
-                hoverlabel=dict(bgcolor='rgba(255,255,255,0.8)',
-                                font=dict(family='Open Sans', size=self.hover_font_size, color='black')),
-                font=dict(family='Open Sans', size=self.default_font_size, color='black'),
-                showlegend=self.legend_visible,
-                yaxis_title="Data"
-            )
-            self.regular_plot.setHtml(
-                fig.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            )
+                         print(f"Warning: Column '{selected_column}' missing in working_df_tab1 for filtering.")
+                except Exception as e:
+                    print(f"Error applying filter: {e}")
 
-        # Build the phase plot if the domain is frequency.
-        if 'FREQ' in self.df.columns:
-            phase_column = 'Phase_' + selected_column
-            fig_phase = go.Figure()
-            if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() > 1:
-                for folder, group in df_plot.groupby('DataFolder'):
-                    fig_phase.add_trace(go.Scatter(
-                        x=group.index,
-                        y=group[phase_column],
-                        mode='lines',
-                        name=folder,
-                        hovertemplate=custom_hover
-                    ))
+            # Define custom hover template and legend settings.
+            custom_hover = (
+                    '%{fullData.name}<br>' +
+                    ('Hz: ' if 'FREQ' in self.df.columns else 'Time: ') +
+                    '%{x}<br>Value: %{y:.3f}<extra></extra>'
+            )
+            legend_position = self.get_legend_position()
+
+            # Check if rolling min-max envelope option is enabled. Check if checkbox exists.
+            rolling_checked = False
+            if hasattr(self, 'rolling_min_max_checkbox'):
+                 rolling_checked = self.rolling_min_max_checkbox.isChecked()
+
+            # --- Magnitude Plot Figure Creation ---
+            fig = None # Initialize fig
+            plot_title = f'{selected_column} Plot' # Base title
+
+            if rolling_checked and 'TIME' in self.df.columns:
+                # --- Rolling Envelope Figure ---
+                plot_title += ' (Envelope)'
+                # Checkbox visibility managed here
+                if hasattr(self, 'plot_as_bars_checkbox'): self.plot_as_bars_checkbox.setVisible(True)
+                if hasattr(self, 'desired_num_points_label'): self.desired_num_points_label.setVisible(True)
+                if hasattr(self, 'desired_num_points_input'): self.desired_num_points_input.setVisible(True)
+
+                desired_num_points = 50000 # Default
+                is_plot_as_bars = False # Default
+                try:
+                    if hasattr(self, 'desired_num_points_input'):
+                         desired_num_points = int(self.desired_num_points_input.text())
+                except ValueError: pass # Keep default
+                if hasattr(self, 'plot_as_bars_checkbox'):
+                     is_plot_as_bars = self.plot_as_bars_checkbox.isChecked()
+
+                # Ensure working df is valid before plotting
+                if not self.working_df_tab1.empty:
+                     # Check grouping for multiple folders
+                     if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() > 1:
+                          fig = go.Figure() # Create empty figure to add traces
+                          temp_df_grouped = self.df.set_index(x_label) # Use original df for grouping structure
+                          for folder, group in temp_df_grouped.groupby('DataFolder'):
+                               # Apply filter to the specific group data if needed
+                               group_data_for_env = group[[selected_column]].copy()
+                               if self.filter_checkbox.isChecked():
+                                    try:
+                                        group_data_for_env[selected_column] = self.apply_butterworth_filter(group[selected_column])
+                                    except Exception as e:
+                                        print(f"Error applying filter to group {folder}: {e}")
+
+                               # Generate envelope for the group
+                               envelope_fig = rolling_min_max_envelope(
+                                    group_data_for_env,
+                                    opacity=0.6,
+                                    desired_num_points=desired_num_points,
+                                    plot_as_bars=is_plot_as_bars,
+                                    # title set later
+                               )
+                               # Add traces from group envelope fig to main fig
+                               for trace in envelope_fig.data:
+                                    trace.name = folder # Set name for legend
+                                    trace.legendgroup = folder
+                                    fig.add_trace(trace)
+                     else:
+                          # Single folder or no folder column
+                          fig = rolling_min_max_envelope(
+                               self.working_df_tab1, # Use working df (potentially filtered)
+                               opacity=0.6,
+                               desired_num_points=desired_num_points,
+                               plot_as_bars=is_plot_as_bars,
+                               # title set later
+                          )
+                          # If single folder, name traces appropriately
+                          if fig and 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() == 1:
+                               unique_folder = self.df['DataFolder'].unique()[0]
+                               for trace in fig.data:
+                                    trace.name = unique_folder
+                                    trace.legendgroup = unique_folder
+                else:
+                     print("Working DataFrame is empty, cannot create envelope plot.")
+                     # fig remains None
+
             else:
-                fig_phase.add_trace(go.Scatter(
-                    x=df_plot.index,
-                    y=df_plot[phase_column],
-                    mode='lines',
-                    name=phase_column,
-                    hovertemplate=custom_hover
-                ))
-            fig_phase.update_layout(
-                margin=dict(l=20, r=20, t=35, b=35),
-                legend=dict(
-                    font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
-                    x=legend_position['x'],
-                    y=legend_position['y'],
-                    xanchor=legend_position.get('xanchor', 'auto'),
-                    yanchor=legend_position.get('yanchor', 'top'),
-                    bgcolor='rgba(255,255,255,0.5)'
-                ),
-                hovermode=self.hover_mode,
-                hoverlabel=dict(bgcolor='rgba(255,255,255,0.8)',
-                                font=dict(family='Open Sans', size=self.hover_font_size, color='black')),
-                font=dict(family='Open Sans', size=self.default_font_size, color='black'),
-                showlegend=self.legend_visible,
-                yaxis_title="Phase"
-            )
-            self.phase_plot.setHtml(
-                fig_phase.to_html(full_html=False, include_plotlyjs='cdn', config={'responsive': True})
-            )
+                # --- Standard plot (without rolling envelope) ---
+                 # Hide envelope controls
+                if 'TIME' in self.df.columns:
+                     if hasattr(self, 'plot_as_bars_checkbox'): self.plot_as_bars_checkbox.setVisible(False)
+                     if hasattr(self, 'desired_num_points_label'): self.desired_num_points_label.setVisible(False)
+                     if hasattr(self, 'desired_num_points_input'): self.desired_num_points_input.setVisible(False)
+
+                # Ensure working df is valid before plotting
+                if not self.working_df_tab1.empty:
+                     fig = go.Figure()
+                     # Check grouping for multiple folders
+                     if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() > 1:
+                          # Use working_df for plotting values (filtered if applicable)
+                          temp_df_grouped = self.working_df_tab1.copy()
+                          temp_df_grouped['DataFolder'] = self.df['DataFolder'].values # Add folder column back
+                          for folder, group in temp_df_grouped.groupby('DataFolder'):
+                               fig.add_trace(go.Scatter(
+                                    x=group.index,
+                                    y=group[selected_column], # Use potentially filtered data
+                                    mode='lines',
+                                    name=folder,
+                                    hovertemplate=custom_hover
+                               ))
+                     else:
+                          # Single folder or no folder column
+                           fig.add_trace(go.Scatter(
+                               x=self.working_df_tab1.index,
+                               y=self.working_df_tab1[selected_column], # Use potentially filtered data
+                               mode='lines',
+                               name=selected_column, # Or folder name if single folder
+                               hovertemplate=custom_hover
+                          ))
+                           # If single folder, name trace appropriately
+                           if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() == 1:
+                                fig.data[0].name = self.df['DataFolder'].unique()[0]
+                                fig.data[0].legendgroup = self.df['DataFolder'].unique()[0]
+
+                else:
+                    print("Working DataFrame is empty, cannot create standard plot.")
+                    # fig remains None
+
+
+            # --- Apply Final Layout and Load Magnitude Plot ---
+            if fig is not None:
+                # Update layout (common styling)
+                fig.update_layout(
+                    title=plot_title, # Apply title
+                    margin=dict(l=40, r=20, t=50, b=40),
+                    legend=dict(
+                        font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                        x=legend_position['x'], y=legend_position['y'],
+                        xanchor=legend_position.get('xanchor', 'auto'), yanchor=legend_position.get('yanchor', 'top'),
+                        bgcolor='rgba(255,255,255,0.6)'
+                    ),
+                    hoverlabel=dict(bgcolor='rgba(240, 240, 240, 0.9)', font_size=self.hover_font_size),
+                    hovermode=self.hover_mode,
+                    font=dict(family='Open Sans', size=self.default_font_size, color='black'),
+                    showlegend=self.legend_visible,
+                    xaxis_title=x_label, # Use determined x_label
+                    yaxis_title="Value"
+                )
+                # Replace the setHtml call with the helper function
+                self.load_fig_to_webview(fig, self.regular_plot) # <--- MODIFIED
+            else:
+                 # Handle case where fig couldn't be created
+                 self.regular_plot.setHtml(f"<html><body>Could not generate plot for {selected_column}.</body></html>")
+
+
+            # --- Phase Plot ---
+            if 'FREQ' in self.df.columns and hasattr(self, 'phase_plot'):
+                phase_column = 'Phase_' + selected_column
+                fig_phase = None # Initialize
+
+                if phase_column in df_plot.columns: # Check if phase column exists in original data copy
+                     # Create phase dataframe (no filtering applied to phase)
+                     y_data_dict_phase = {phase_column: df_plot[phase_column]}
+                     self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(df_plot.index, x_label, y_data_dict_phase)
+
+                     if not self.working_df_phase_tab1.empty:
+                          fig_phase = go.Figure()
+                          # Check grouping for multiple folders
+                          if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() > 1:
+                               temp_df_grouped = self.working_df_phase_tab1.copy()
+                               temp_df_grouped['DataFolder'] = self.df['DataFolder'].values
+                               for folder, group in temp_df_grouped.groupby('DataFolder'):
+                                    fig_phase.add_trace(go.Scatter(
+                                         x=group.index,
+                                         y=group[phase_column],
+                                         mode='lines',
+                                         name=folder,
+                                         hovertemplate=custom_hover
+                                    ))
+                          else:
+                               # Single folder or no folder column
+                               fig_phase.add_trace(go.Scatter(
+                                    x=self.working_df_phase_tab1.index,
+                                    y=self.working_df_phase_tab1[phase_column],
+                                    mode='lines',
+                                    name=phase_column, # Or folder name if single folder
+                                    hovertemplate=custom_hover
+                               ))
+                               if 'DataFolder' in self.df.columns and self.df['DataFolder'].nunique() == 1:
+                                    fig_phase.data[0].name = self.df['DataFolder'].unique()[0]
+                                    fig_phase.data[0].legendgroup = self.df['DataFolder'].unique()[0]
+
+                     else:
+                          print("Working phase DataFrame is empty.")
+                          # fig_phase remains None
+
+                else:
+                     print(f"Phase column '{phase_column}' not found.")
+                     # fig_phase remains None
+
+
+                # --- Apply Final Layout and Load Phase Plot ---
+                if fig_phase is not None:
+                     # Update layout
+                     fig_phase.update_layout(
+                          title=f'Phase {selected_column} Plot',
+                          margin=dict(l=40, r=20, t=50, b=40),
+                          legend=dict(
+                               font=dict(family='Open Sans', size=self.legend_font_size, color='black'),
+                               x=legend_position['x'], y=legend_position['y'],
+                               xanchor=legend_position.get('xanchor', 'auto'), yanchor=legend_position.get('yanchor', 'top'),
+                               bgcolor='rgba(255,255,255,0.6)'
+                          ),
+                          hovermode=self.hover_mode,
+                          hoverlabel=dict(bgcolor='rgba(240, 240, 240, 0.9)', font_size=self.hover_font_size),
+                          font=dict(family='Open Sans', size=self.default_font_size, color='black'),
+                          showlegend=self.legend_visible,
+                          xaxis_title=x_label, # Use determined x_label
+                          yaxis_title="Phase [deg]" # More specific title
+                     )
+                     # Replace the setHtml call with the helper function
+                     self.load_fig_to_webview(fig_phase, self.phase_plot) # <--- MODIFIED
+                else:
+                     # Handle case where phase fig couldn't be created
+                     self.phase_plot.setHtml(f"<html><body>Could not generate phase plot for {selected_column}.</body></html>")
+
+            # Clear phase plot if not frequency domain
+            elif hasattr(self, 'phase_plot'):
+                  self.phase_plot.setHtml("")
+
+
+        except Exception as e:
+             print(f"Error updating plots in Tab 1: {e}")
+             traceback.print_exc()
+             # Show error in the relevant plot views
+             error_html = f"<html><body>Error updating plot:<br><pre>{e}</pre><pre>{traceback.format_exc()}</pre></body></html>"
+             if hasattr(self, 'regular_plot'): self.regular_plot.setHtml(error_html)
+             if hasattr(self, 'phase_plot'): self.phase_plot.setHtml("") # Clear phase plot on error
+
 
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
