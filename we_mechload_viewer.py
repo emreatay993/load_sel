@@ -1,6 +1,6 @@
 '''
 Author: Kamil Emre Atay (k5483)
-Version: 0.96.8
+Version: 0.96.9
 Script Name: we_mechload_viewer.py
 
 Tested in Python version 3.10.
@@ -354,7 +354,7 @@ class WE_load_plotter(QMainWindow):
         # Update the window title and icon.
         folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
         parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
-        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.8    |    (Directory Folder: {parent_folder})")
+        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.9    |    (Directory Folder: {parent_folder})")
         icon_path = self.get_resource_path("icon.ico")
         self.setWindowIcon(QIcon(icon_path))
         self.showMaximized()
@@ -660,7 +660,7 @@ class WE_load_plotter(QMainWindow):
         legend_font_size_layout = QHBoxLayout()
         legend_font_size_label = QLabel("Legend Font Size")
         self.legend_font_size_selector = QComboBox()
-        self.legend_font_size_selector.addItems([str(size) for size in range(4, 21)])
+        self.legend_font_size_selector.addItems([str(size) for size in range(4, 30)])
         self.legend_font_size_selector.setCurrentText(str(self.legend_font_size))
         self.legend_font_size_selector.currentIndexChanged.connect(self.update_font_settings)
         legend_font_size_layout.addWidget(legend_font_size_label)
@@ -671,7 +671,7 @@ class WE_load_plotter(QMainWindow):
         default_font_size_layout = QHBoxLayout()
         default_font_size_label = QLabel("Default Font Size")
         self.default_font_size_selector = QComboBox()
-        self.default_font_size_selector.addItems([str(size) for size in range(8, 21)])
+        self.default_font_size_selector.addItems([str(size) for size in range(8, 30)])
         self.default_font_size_selector.setCurrentText(str(self.default_font_size))
         self.default_font_size_selector.currentIndexChanged.connect(self.update_font_settings)
         default_font_size_layout.addWidget(default_font_size_label)
@@ -1080,7 +1080,7 @@ class WE_load_plotter(QMainWindow):
                                         f"Data for {selected_side} has been extracted and converted.\n\nOriginal data saved to: {original_file_path}\nConverted data saved to: {file_path_selected_part_converted}.")
 
             combined_file_path = "extracted_loads_of_all_selected_parts_in_converted_units.csv"
-            df_selected_parts_combined.to_csv(combined_file_path, index=False)
+            df_selected_parts_combined_converted.to_csv(combined_file_path, index=False)
             QMessageBox.information(self, "Extraction Complete",
                                     f"Combined data for all sides has been saved to {combined_file_path}.")
 
@@ -1135,7 +1135,7 @@ class WE_load_plotter(QMainWindow):
                                         f"Data for {selected_side} has been extracted and converted.\n\nOriginal data saved to: {original_file_path}\nConverted data saved to: {file_path_selected_part_converted}.")
 
             file_path_selected_parts_combined = "extracted_loads_of_all_selected_parts_in_converted_units.csv"
-            df_selected_parts_combined.to_csv(file_path_selected_parts_combined, index=False)
+            df_selected_parts_combined_converted.to_csv(file_path_selected_parts_combined, index=False)
             QMessageBox.information(self, "Extraction Complete",
                                     f"Combined data for all sides has been saved to {file_path_selected_parts_combined}.")
 
@@ -1239,9 +1239,11 @@ class WE_load_plotter(QMainWindow):
         print("Updating the global variables...")
         # endregion
 
-        # Set Mechanical Units
+        # region Set Mechanical Units as Standard MKS
         ExtAPI.Application.ActiveUnitSystem = Ansys.ACT.Interfaces.Common.MechanicalUnitSystem.StandardMKS
-
+        scale_factor = 1000
+        # endregion
+      
         # region Initialize the list of frequency points extracted
         # Create a separate list for FREQ
         list_of_all_frequencies = self.df_extracted_loads_for_ansys["FREQ"].tolist()
@@ -1542,19 +1544,19 @@ class WE_load_plotter(QMainWindow):
             # endregion
 
             # region Define T1,T2,T3 and R1, R2, R3 loads via Command Objects
-            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx_real,"table_X_" + force_HR_index_name)
-            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy_real, "table_Y_" + force_HR_index_name)
-            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz_real, "table_Z_" + force_HR_index_name)
-            apdl_lines_RFxi = self.create_APDL_table(df_load_table_fx_imag,"table_Xi_" + force_HR_index_name)
-            apdl_lines_RFyi = self.create_APDL_table(df_load_table_fy_imag, "table_Yi_" + force_HR_index_name)
-            apdl_lines_RFzi = self.create_APDL_table(df_load_table_fz_imag, "table_Zi_" + force_HR_index_name)
+            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx_real * scale_factor,"table_X_" + force_HR_index_name)
+            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy_real * scale_factor, "table_Y_" + force_HR_index_name)
+            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz_real * scale_factor, "table_Z_" + force_HR_index_name)
+            apdl_lines_RFxi = self.create_APDL_table(df_load_table_fx_imag * scale_factor,"table_Xi_" + force_HR_index_name)
+            apdl_lines_RFyi = self.create_APDL_table(df_load_table_fy_imag * scale_factor, "table_Yi_" + force_HR_index_name)
+            apdl_lines_RFzi = self.create_APDL_table(df_load_table_fz_imag * scale_factor, "table_Zi_" + force_HR_index_name)
 
-            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx_real,"table_X_" + moment_HR_index_name)
-            apdl_lines_RMy = self.create_APDL_table(df_load_table_my_real, "table_Y_" + moment_HR_index_name)
-            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz_real, "table_Z_" + moment_HR_index_name)
-            apdl_lines_RMxi = self.create_APDL_table(df_load_table_mx_imag,"table_Xi_" + moment_HR_index_name)
-            apdl_lines_RMyi = self.create_APDL_table(df_load_table_my_imag, "table_Yi_" + moment_HR_index_name)
-            apdl_lines_RMzi = self.create_APDL_table(df_load_table_mz_imag, "table_Zi_" + moment_HR_index_name)
+            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx_real * scale_factor,"table_X_" + moment_HR_index_name)
+            apdl_lines_RMy = self.create_APDL_table(df_load_table_my_real * scale_factor, "table_Y_" + moment_HR_index_name)
+            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz_real * scale_factor, "table_Z_" + moment_HR_index_name)
+            apdl_lines_RMxi = self.create_APDL_table(df_load_table_mx_imag * scale_factor,"table_Xi_" + moment_HR_index_name)
+            apdl_lines_RMyi = self.create_APDL_table(df_load_table_my_imag * scale_factor, "table_Yi_" + moment_HR_index_name)
+            apdl_lines_RMzi = self.create_APDL_table(df_load_table_mz_imag * scale_factor, "table_Zi_" + moment_HR_index_name)
 
             # region Create APDL command snippet for force loads (only intended for APDL users)
             command_snippet_RF = analysis_HR.AddCommandSnippet()
@@ -1734,9 +1736,11 @@ class WE_load_plotter(QMainWindow):
         print("Updating the global variables...")
         # endregion
 
-        # Set Mechanical Units
+        # region Set Mechanical Units as Standard MKS
         ExtAPI.Application.ActiveUnitSystem = Ansys.ACT.Interfaces.Common.MechanicalUnitSystem.StandardMKS
-
+        scale_factor = 1000
+        # endregion
+      
         # region Helper function to partition long dataframes of time vs. force / moment tabular data
         @staticmethod
         def partition_dataframe_for_load_input(df, partition_size):
@@ -1984,13 +1988,13 @@ def after_post(this, solution):  # Do not edit this line
             command_snippet_RF.Name = "Commands_RF_" + interface_name
             command_snippet_RM.Name = "Commands_RM_" + interface_name
 
-            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx,"table_X_" + force_TR_index_name)
-            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy, "table_Y_" + force_TR_index_name)
-            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz, "table_Z_" + force_TR_index_name)
+            apdl_lines_RFx = self.create_APDL_table(df_load_table_fx * scale_factor,"table_X_" + force_TR_index_name)
+            apdl_lines_RFy = self.create_APDL_table(df_load_table_fy * scale_factor, "table_Y_" + force_TR_index_name)
+            apdl_lines_RFz = self.create_APDL_table(df_load_table_fz * scale_factor, "table_Z_" + force_TR_index_name)
 
-            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx,"table_X_" + moment_TR_index_name)
-            apdl_lines_RMy = self.create_APDL_table(df_load_table_my, "table_Y_" + moment_TR_index_name)
-            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz, "table_Z_" + moment_TR_index_name)
+            apdl_lines_RMx = self.create_APDL_table(df_load_table_mx * scale_factor,"table_X_" + moment_TR_index_name)
+            apdl_lines_RMy = self.create_APDL_table(df_load_table_my * scale_factor, "table_Y_" + moment_TR_index_name)
+            apdl_lines_RMz = self.create_APDL_table(df_load_table_mz * scale_factor, "table_Z_" + moment_TR_index_name)
 
             command_snippet_RF.AppendText(''.join(apdl_lines_RFx))
             command_snippet_RF.AppendText(''.join(apdl_lines_RFy))
@@ -2210,7 +2214,7 @@ def after_post(this, solution):  # Do not edit this line
             folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
             parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
             # Rename the windows title so that directory is updated
-            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.8    |    (Directory Folder: {parent_folder})")
+            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.9    |    (Directory Folder: {parent_folder})")
 
             self.refresh_directory_tree()
 
@@ -2410,7 +2414,7 @@ def after_post(this, solution):  # Do not edit this line
 
     def populate_side_selector_tab_2(self, interface):
         pattern = re.compile(r'I\d+[a-zA-Z]?\s*-\s*(.*?)(?=\s*\()')
-        relevant_columns = [col for col in self.df.columns if re.match(f"^{re.escape(interface)}(?=\D)", col)]
+        relevant_columns = [col for col in self.df.columns if re.match(rf"^{re.escape(interface)}(?=\D)", col)]
         sides = sorted(set(pattern.search(col).group(1).strip() for col in relevant_columns if pattern.search(col)))
 
         self.side_selector.clear()
@@ -2491,15 +2495,15 @@ def after_post(this, solution):  # Do not edit this line
 
             # Check individual conditions
             check_1 = not interface or re.match(r'^' + re.escape(interface) + r'([-\s]|$)', col)
-            """Find whether column name starts with the specified interface (e.g. "I1"), 
+            r"""Find whether column name starts with the specified interface (e.g. "I1"), 
             followed by either a hyphen (-), a whitespace (\s), or the end of the string ($)"""
 
             check_2_force = any(sub in col for sub in ["T1", "T2", "T3", "T2/T3"])
-            """If any of the substrings ("T1", "T2", "T3", "T2/T3") is found in the column name (col), 
+            r"""If any of the substrings ("T1", "T2", "T3", "T2/T3") is found in the column name (col), 
             the expression will evaluate to True."""
 
             check_2_moment = any(sub in col for sub in ["R1", "R2", "R3", "R2/R3"])
-            """If any of the substrings ("R1", "R2", "R3", "R2/R3") is found in the column name (col), 
+            r"""If any of the substrings ("R1", "R2", "R3", "R2/R3") is found in the column name (col), 
             the expression will evaluate to True."""
 
             check_3 = not col.startswith('Phase_')
@@ -3062,6 +3066,7 @@ def after_post(this, solution):  # Do not edit this line
                                     y=group[selected_column], # Use potentially filtered data
                                     mode='lines',
                                     name=folder,
+                                    opacity = 0.6
                                     hovertemplate=custom_hover
                                ))
                      else:
