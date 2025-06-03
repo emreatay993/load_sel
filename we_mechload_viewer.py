@@ -1,9 +1,9 @@
 '''
 Author: Kamil Emre Atay (k5483)
-Version: 0.96.9
+Version: 0.97.0
 Script Name: we_mechload_viewer.py
 
-Tested in Python version 3.10.
+Tested in Python version "3.10" and "3.12"
 Please use "requirements.txt file" supplied with this code to be able to compile it in the future by using pyinstaller.
 '''
 
@@ -22,7 +22,7 @@ from natsort import natsorted
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
 from PyQt5.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, QTabWidget, QLineEdit, QSpinBox,
                              QSplitter, QComboBox, QLabel, QSizePolicy, QPushButton, QCheckBox, QGroupBox,
-                             QDialog, QListWidget, QListWidgetItem, QMenuBar, QMenu, QAction,
+                             QDialog, QListWidget, QListWidgetItem, QMenuBar, QMenu, QAction, QDoubleSpinBox,
                              QDockWidget, QTreeView, QFileSystemModel, QMainWindow)
 from PyQt5.QtGui import QFont, QIcon
 import plotly.graph_objects as go
@@ -39,6 +39,7 @@ from matplotlib.figure import Figure
 import tempfile
 import plotly.io as pio
 from scipy.signal import butter, filtfilt
+from scipy.signal.windows import tukey
 
 print("Done.")
 # endregion
@@ -161,7 +162,6 @@ if __name__ == "__main__":
 
 # region Set up the main GUI and its functions
 class WE_load_plotter(QMainWindow):
-#######################################
     # region Initialize main window & tabs
     def __init__(self, parent=None, raw_data_folder=None):
         super(WE_load_plotter, self).__init__(parent)
@@ -266,7 +266,7 @@ class WE_load_plotter(QMainWindow):
         self.original_df_compare_r_series_tab = None
         self.working_df_compare_r_series_tab = None
 
-        self.number_limit_of_data_points_shown_for_each_trace = 10000
+        self.number_limit_of_data_points_shown_for_each_trace = 100000
 
     def init_ui(self):
         # Create a menu bar and add the File menu with an Open action.
@@ -354,7 +354,7 @@ class WE_load_plotter(QMainWindow):
         # Update the window title and icon.
         folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
         parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
-        self.setWindowTitle(f"WE MechLoad Viewer - v0.96.9    |    (Directory Folder: {parent_folder})")
+        self.setWindowTitle(f"WE MechLoad Viewer - v0.97.0    |    (Directory Folder: {parent_folder})")
         icon_path = self.get_resource_path("icon.ico")
         self.setWindowIcon(QIcon(icon_path))
         self.showMaximized()
@@ -376,7 +376,6 @@ class WE_load_plotter(QMainWindow):
     # endregion
 
     # region Initialize widgets & layouts inside each tab of the main window
-
     # "Single Data" tab
     def setupTab1(self, tab):
         self.splitter_tab1 = QSplitter(QtCore.Qt.Vertical)
@@ -463,6 +462,7 @@ class WE_load_plotter(QMainWindow):
         self.update_plots_tab1()
 
     # "Interface Data" tab
+
     def setupTab2(self, tab):
         layout = QVBoxLayout(tab)
         self.setupInterfaceSelector(layout)
@@ -479,6 +479,49 @@ class WE_load_plotter(QMainWindow):
         self.exclude_checkbox = QCheckBox(r"Filter out T2, T3, R2, and R3 from graphs")
         self.exclude_checkbox.stateChanged.connect(self.update_plots_tab3)
         upper_layout.addWidget(self.exclude_checkbox)
+
+        self.tukey_checkbox_tab3 = QCheckBox("Apply Tukey Window")
+        self.tukey_checkbox_tab3.stateChanged.connect(self.update_plots_tab3)
+        upper_layout.addWidget(self.tukey_checkbox_tab3)
+
+        self.tukey_alpha_spin = QDoubleSpinBox()
+        self.tukey_alpha_spin.setRange(0.1, 0.5)
+        self.tukey_alpha_spin.setSingleStep(0.05)
+        self.tukey_alpha_spin.setValue(0.1)
+        self.tukey_alpha_spin.setVisible(False)
+        self.tukey_alpha_spin.valueChanged.connect(self.update_plots_tab3)
+        upper_layout.addWidget(self.tukey_alpha_spin)
+
+        self.tukey_checkbox_tab3.stateChanged.connect(
+            lambda s: self.tukey_alpha_spin.setVisible(s == QtCore.Qt.Checked)
+        )
+
+        self.section_checkbox = QCheckBox("Section Data")
+        #self.section_checkbox.stateChanged.connect(self.update_plots_tab3)
+        upper_layout.addWidget(self.section_checkbox)
+
+        self.section_min_label = QLabel("Min Time [sec]")
+        self.section_min_input = QLineEdit()
+        self.section_min_label.setVisible(False)
+        self.section_min_input.setVisible(False)
+        self.section_min_input.returnPressed.connect(self.validate_section_min)
+
+        self.section_max_label = QLabel("Max Time [sec]")
+        self.section_max_input = QLineEdit()
+        self.section_max_label.setVisible(False)
+        self.section_max_input.setVisible(False)
+        self.section_max_input.returnPressed.connect(self.validate_section_max)
+
+        self.section_checkbox.stateChanged.connect(
+            lambda s: [w.setVisible(s == QtCore.Qt.Checked) for w in
+                       (self.section_min_label, self.section_min_input,
+                        self.section_max_label, self.section_max_input)]
+        )
+
+        upper_layout.addWidget(self.section_min_label)
+        upper_layout.addWidget(self.section_min_input)
+        upper_layout.addWidget(self.section_max_label)
+        upper_layout.addWidget(self.section_max_input)
 
         layout.addLayout(upper_layout)
 
@@ -562,6 +605,7 @@ class WE_load_plotter(QMainWindow):
         tab.setLayout(layout)
 
     # Add controls common to all tabs
+
     def add_common_controls(self, layout):
         # Checkbox for Rolling Min-Max Envelope
         self.rolling_min_max_checkbox = QCheckBox("Show Plots as Rolling Min-Max Envelope")
@@ -813,9 +857,8 @@ class WE_load_plotter(QMainWindow):
         splitter.addWidget(self.compare_r_series_plot)
         splitter.setSizes([self.height() // 2, self.height() // 2])
         layout.addWidget(splitter)
-    # endregion
 
-    # region Setting up the canvas of each plot area of each tab
+    # Setting up the canvas of each plot area of each tab
     def setupPlots(self, layout):
         splitter = QSplitter(QtCore.Qt.Vertical)
         self.t_series_plot = QtWebEngineWidgets.QWebEngineView()
@@ -1108,6 +1151,21 @@ class WE_load_plotter(QMainWindow):
 
                 df_selected_part = self.df[columns]
 
+                # Section Data filter
+                if getattr(self, 'section_checkbox', None) and self.section_checkbox.isChecked():
+                    t_min = self.section_min_spin.value()
+                    t_max = self.section_max_spin.value()
+                    df_selected_part = df_selected_part[
+                        (df_selected_part['TIME'] >= t_min) &
+                        (df_selected_part['TIME'] <= t_max)
+                        ]
+
+                # Apply Tukey window
+                if getattr(self, 'tukey_checkbox_tab3', None) and self.tukey_checkbox_tab3.isChecked():
+                    window = tukey(len(df_selected_part), self.tukey_alpha_spin.value())
+                    load_cols = [c for c in df_selected_part.columns if c != 'TIME']
+                    df_selected_part[load_cols] = df_selected_part[load_cols].multiply(window, axis=0)
+
                 # Ensure no duplicate TIME column in the combined DataFrame
                 if 'TIME' in df_selected_parts_combined.columns:
                     df_selected_part = df_selected_part.drop(columns=['TIME'], errors='ignore')
@@ -1243,7 +1301,7 @@ class WE_load_plotter(QMainWindow):
         ExtAPI.Application.ActiveUnitSystem = Ansys.ACT.Interfaces.Common.MechanicalUnitSystem.StandardMKS
         scale_factor = 1000
         # endregion
-      
+
         # region Initialize the list of frequency points extracted
         # Create a separate list for FREQ
         list_of_all_frequencies = self.df_extracted_loads_for_ansys["FREQ"].tolist()
@@ -1740,7 +1798,7 @@ class WE_load_plotter(QMainWindow):
         ExtAPI.Application.ActiveUnitSystem = Ansys.ACT.Interfaces.Common.MechanicalUnitSystem.StandardMKS
         scale_factor = 1000
         # endregion
-      
+
         # region Helper function to partition long dataframes of time vs. force / moment tabular data
         @staticmethod
         def partition_dataframe_for_load_input(df, partition_size):
@@ -2214,7 +2272,7 @@ def after_post(this, solution):  # Do not edit this line
             folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
             parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
             # Rename the windows title so that directory is updated
-            self.setWindowTitle(f"WE MechLoad Viewer - v0.96.9    |    (Directory Folder: {parent_folder})")
+            self.setWindowTitle(f"WE MechLoad Viewer - v0.97.0    |    (Directory Folder: {parent_folder})")
 
             self.refresh_directory_tree()
 
@@ -2346,6 +2404,7 @@ def after_post(this, solution):  # Do not edit this line
     # endregion
 
     # region Define the logic for each combobox
+
     def update_font_settings(self):
         self.legend_font_size = int(self.legend_font_size_selector.currentText())
         self.default_font_size = int(self.default_font_size_selector.currentText())
@@ -2530,9 +2589,33 @@ def after_post(this, solution):  # Do not edit this line
         # Use helper function to get x_data
         x_data, x_label = self.get_x_axis_data_and_label()
 
+        # Replace the block that builds/plots the data to avoid overwriting it before filtering
+        df_for_plot = self.df.copy()
+
+        # Section-based trimming
+        if ('TIME' in df_for_plot.columns
+            and getattr(self, 'section_checkbox', None)
+            and self.section_checkbox.isChecked()
+            and hasattr(self, 'section_min_value')
+            and hasattr(self, 'section_max_value')):
+
+            t_min = self.section_min_value
+            t_max = self.section_max_value
+            df_for_plot = df_for_plot[(df_for_plot['TIME'] >= t_min) & (df_for_plot['TIME'] <= t_max)]
+
+        # Apply Tukey window
+        if 'TIME' in df_for_plot.columns and getattr(self, 'tukey_checkbox_tab3', None) \
+                and self.tukey_checkbox_tab3.isChecked():
+            w = tukey(len(df_for_plot), self.tukey_alpha_spin.value())
+            cols = [c for c in df_for_plot.columns if c not in ('TIME', 'FREQ', 'NO')]
+            df_for_plot[cols] = df_for_plot[cols].multiply(w, axis=0)
+
+        # x-axis for the figure
+        x_data = df_for_plot['TIME'] if 'TIME' in df_for_plot.columns else df_for_plot['FREQ']
+
         # Create actual plots
-        self.create_and_style_figure(t_plot, self.df[t_series_columns], x_data, 'Translational Components')
-        self.create_and_style_figure(r_plot, self.df[r_series_columns], x_data, 'Rotational Components')
+        self.create_and_style_figure(t_plot, df_for_plot[t_series_columns], x_data, 'Translational Components')
+        self.create_and_style_figure(r_plot, df_for_plot[r_series_columns], x_data, 'Rotational Components')
 
     def calculate_differences(self, df, df_compare, columns, is_freq_data):
         results = []
@@ -2861,6 +2944,7 @@ def after_post(this, solution):  # Do not edit this line
     # endregion
 
     # region Main methods for updating the plots after a selection is made
+
     def update_plots_tab1_Yedek(self):
         selected_column = self.column_selector.currentText()
         if selected_column:
@@ -2906,7 +2990,6 @@ def after_post(this, solution):  # Do not edit this line
                 y_data_dict = {phase_column: self.df[phase_column]}
                 self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
                                                                                                  y_data_dict)
-
 
     def update_plots_tab1(self):
         selected_column = self.column_selector.currentText()
@@ -3066,7 +3149,7 @@ def after_post(this, solution):  # Do not edit this line
                                     y=group[selected_column], # Use potentially filtered data
                                     mode='lines',
                                     name=folder,
-                                    opacity = 0.6
+                                    opacity = 0.6,
                                     hovertemplate=custom_hover
                                ))
                      else:
@@ -3197,7 +3280,6 @@ def after_post(this, solution):  # Do not edit this line
              error_html = f"<html><body>Error updating plot:<br><pre>{e}</pre><pre>{traceback.format_exc()}</pre></body></html>"
              if hasattr(self, 'regular_plot'): self.regular_plot.setHtml(error_html)
              if hasattr(self, 'phase_plot'): self.phase_plot.setHtml("") # Clear phase plot on error
-
 
     def update_plots_tab2(self):
         interface = self.interface_selector.currentText()
@@ -3521,8 +3603,72 @@ def after_post(this, solution):  # Do not edit this line
                 print(f"Error removing temp file {file_path}: {e}")
         self.temp_files.clear() # Clear the list
         event.accept() # Proceed with closing
-    # endregion
 
+    def validate_section_min(self):
+        text = self.section_min_input.text().strip()
+        try:
+            val = float(text)
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter a numeric Min Time.")
+            self.section_min_input.clear()
+            return
+
+        times = self.df['TIME']
+        overall_min = times.min()
+        overall_max = times.max()
+        if val < overall_min or val > overall_max:
+            QMessageBox.warning(
+                self,
+                "Out of Range",
+                f"Min Time must be between {overall_min} and {overall_max}."
+            )
+            self.section_min_input.clear()
+            return
+
+        if hasattr(self, 'section_max_value') and val >= self.section_max_value:
+            QMessageBox.warning(self, "Invalid Range", "Min Time must be less than Max Time.")
+            self.section_min_input.clear()
+            return
+
+        closest_idx = (np.abs(times - val)).idxmin()
+        closest = times.iloc[closest_idx]
+        self.section_min_value = float(closest)
+        self.section_min_input.setText(f"{closest}")
+        self.update_plots_tab3()
+
+    def validate_section_max(self):
+        text = self.section_max_input.text().strip()
+        try:
+            val = float(text)
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter a numeric Max Time.")
+            self.section_max_input.clear()
+            return
+
+        times = self.df['TIME']
+        overall_min = times.min()
+        overall_max = times.max()
+        if val < overall_min or val > overall_max:
+            QMessageBox.warning(
+                self,
+                "Out of Range",
+                f"Max Time must be between {overall_min} and {overall_max}."
+            )
+            self.section_max_input.clear()
+            return
+
+        if hasattr(self, 'section_min_value') and val <= self.section_min_value:
+            QMessageBox.warning(self, "Invalid Range", "Max Time must be greater than Min Time.")
+            self.section_max_input.clear()
+            return
+
+        closest_idx = (np.abs(times - val)).idxmin()
+        closest = times.iloc[closest_idx]
+        self.section_max_value = float(closest)
+        self.section_max_input.setText(f"{closest}")
+        self.update_plots_tab3()
+
+    # endregion
 
 #######################################
 # endregion
