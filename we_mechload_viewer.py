@@ -1,6 +1,6 @@
 '''
 Author: Kamil Emre Atay (k5483)
-Version: 0.97.0
+Version: 0.97.1
 Script Name: we_mechload_viewer.py
 
 Tested in Python version "3.10" and "3.12"
@@ -354,7 +354,7 @@ class WE_load_plotter(QMainWindow):
         # Update the window title and icon.
         folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
         parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
-        self.setWindowTitle(f"WE MechLoad Viewer - v0.97.0    |    (Directory Folder: {parent_folder})")
+        self.setWindowTitle(f"WE MechLoad Viewer - v0.97.1    |    (Directory Folder: {parent_folder})")
         icon_path = self.get_resource_path("icon.ico")
         self.setWindowIcon(QIcon(icon_path))
         self.showMaximized()
@@ -2272,7 +2272,7 @@ def after_post(this, solution):  # Do not edit this line
             folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
             parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
             # Rename the windows title so that directory is updated
-            self.setWindowTitle(f"WE MechLoad Viewer - v0.97.0    |    (Directory Folder: {parent_folder})")
+            self.setWindowTitle(f"WE MechLoad Viewer - v0.97.1    |    (Directory Folder: {parent_folder})")
 
             self.refresh_directory_tree()
 
@@ -2328,6 +2328,9 @@ def after_post(this, solution):  # Do not edit this line
                     "Invalid Folder",
                     f"Folder '{os.path.basename(folder)}' does not contain the required input files.\n\nSkipping this folder."
                 )
+                # Remove navigation highlight for skipped / invalid folder
+                with QtCore.QSignalBlocker(self.tree_view.selectionModel()):
+                        self.tree_view.selectionModel().select(index, QtCore.QItemSelectionModel.Deselect)
                 continue
 
             try:
@@ -2349,6 +2352,9 @@ def after_post(this, solution):  # Do not edit this line
                         "Domain Mismatch",
                         f"Folder '{os.path.basename(folder)}' has data type '{folder_data_type}', but the program is initialized as '{DATA_DOMAIN}'.\nSkipping this folder."
                     )
+                    # deselect mismatching-domain folder
+                    with QtCore.QSignalBlocker(self.tree_view.selectionModel()):
+                        self.tree_view.selectionModel().select(index, QtCore.QItemSelectionModel.Deselect)
                     continue
 
                 header_files = [os.path.join(folder, f) for f in files if f.endswith("max.pld")]
@@ -2381,8 +2387,10 @@ def after_post(this, solution):  # Do not edit this line
                 return
 
         if not combined_dfs:
+            print("No valid data found in selected folders.")
             return
 
+        # Concatenate valid Dataframes
         new_df = pd.concat(combined_dfs, ignore_index=True)
         self.df = new_df
         self.df.to_csv("full_data.csv", index=False)
@@ -2392,15 +2400,22 @@ def after_post(this, solution):  # Do not edit this line
 
         QMessageBox.information(self, "Data Loaded", "Data from selected folders loaded successfully!")
 
-        # disable all tabs except Single Data (index 0) and Settings (last index)
-        valid_count = len(self.tree_view.selectionModel().selectedRows())
+        # Decide which tabs to enable
+        num_loaded_folders = len(combined_dfs)  # 1 → single, >1 → multiple
         total_tabs = self.tab_widget.count()
+
+        # Disable all tabs except Single Data (index 0) and Settings (last index) in multi-folder mode
         for idx in range(total_tabs):
-            # enable only the first tab and the settings tab
-            enable = (idx == 0) or (idx == total_tabs - 1)
+            if num_loaded_folders > 1:  # multi-folder mode
+                enable = (idx == 0) or (idx == total_tabs - 1)
+            else:  # single-folder mode
+                enable = True
             self.tab_widget.setTabEnabled(idx, enable)
 
         self.update_all_transient_data_plots()
+
+        num_valid_folders = len(valid_indexes)
+        print(f"Loaded {num_valid_folders} valid folder(s).")
     # endregion
 
     # region Define the logic for each combobox
@@ -2936,7 +2951,7 @@ def after_post(this, solution):  # Do not edit this line
                 working_df = original_df.copy()
                 return original_df, working_df
             else:
-                print("Warning: Length mismatch between X and Y data values.")
+                print("Warning: Length mismatch between X and Y data values. This is likely due to initialization.")
                 return None, None
         except Exception as e:
             print(f"Error in create_dataframes: {str(e)}")
