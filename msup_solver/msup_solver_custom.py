@@ -505,6 +505,65 @@ class MSUPSmartSolverTransient(QObject):
 
         return s1, s2, s3
 
+  def compute_principal_stresses_cardano(sx, sy, sz, txy, tyz, txz):      # NOT TESTED WITH REAL VALUES, STILL BETA!!!
+    """
+    Analytic principal-stress routine.
+    Inputs : six 1-D, preferrably float64 (can still be float32, but be careful) arrays of equal length N
+    Return : (N,3) array, σ₁ ≤ σ₂ ≤ σ₃
+    """
+    N   = sx.size
+    out = np.empty((N, 3), np.float64)
+
+    two_pi_3 = 2.0943951023931953                # 2π/3
+    tiny_p   = 1.0e-12                           # hydrostatic threshold
+
+    for i in prange(N):
+        # invariants
+        I1 = sx[i] + sy[i] + sz[i]
+        I2 = (sx[i]*sy[i] + sy[i]*sz[i] + sz[i]*sx[i]
+              - txy[i]**2 - tyz[i]**2 - txz[i]**2)
+        I3 = (sx[i]*sy[i]*sz[i]
+              + 2*txy[i]*tyz[i]*txz[i]
+              - sx[i]*tyz[i]**2
+              - sy[i]*txz[i]**2
+              - sz[i]*txy[i]**2)
+
+        # depressed cubic  y³ + p y + q = 0
+        p = I2 - I1*I1/3.0
+        q = (2.0*I1*I1*I1)/27.0 - I1*I2/3.0 + I3
+
+        # Check for nearly-hydrostatic conditions
+        if abs(p) < tiny_p and abs(q) < tiny_p:
+            s = I1/3.0
+            out[i, 0] = out[i, 1] = out[i, 2] = s
+            continue
+
+        minus_p_over_3 = -p/3.0                 # ≥ 0 for real roots
+        sqrt_m  = math.sqrt(minus_p_over_3)
+        cos_arg = q / (2.0 * sqrt_m**3)
+
+        # clip to [-1, 1] to avoid nan from acos
+        if   cos_arg >  1.0: cos_arg =  1.0
+        elif cos_arg < -1.0: cos_arg = -1.0
+
+        phi  = math.acos(cos_arg) / 3.0
+        amp  = 2.0 * sqrt_m
+
+        s1 = I1/3.0 + amp * math.cos(phi)
+        s2 = I1/3.0 + amp * math.cos(phi - two_pi_3)
+        s3 = I1/3.0 + amp * math.cos(phi + two_pi_3)
+
+        # sort ascending
+        if s1 > s2: s1, s2 = s2, s1
+        if s2 > s3: s2, s3 = s3, s2
+        if s1 > s2: s1, s2 = s2, s1
+
+        out[i, 0] = s1
+        out[i, 1] = s2
+        out[i, 2] = s3
+
+    return out
+  
     def process_results(self, calculate_damage=False, calculate_von_mises=False, calculate_principal_stress=False):
         """Process stress results to compute potential (relative) fatigue damage."""
         # region Initialization
@@ -3683,7 +3742,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.92.0')
+        self.setWindowTitle('MSUP Smart Solver - v0.92.1')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
