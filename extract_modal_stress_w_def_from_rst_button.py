@@ -99,7 +99,7 @@ except Exception as e:
 stress_csv_path = os.path.join(modal_solution.WorkingDir, "modal_stress_tensor_w_coords.csv")
 num_rows = len(normal_stress_results[(1, "XAxis")])  # Assumes same length for all result lists
 
-with open(stress_csv_path, mode='w', newline='') as file:
+with open(stress_csv_path, mode='wb') as file:
     writer = csv.writer(file)
     # Header: node info followed by stress components for each mode
     header = ["NodeID", "X", "Y", "Z"]
@@ -174,7 +174,7 @@ for mode in range(1, num_modes + 1):
 deformation_csv_path = os.path.join(modal_solution.WorkingDir, "modal_directional_deformation_w_coords.csv")
 num_rows = len(directional_deformation_results[(1, "XAxis")])  # Assumes same length for all result lists
 
-with open(deformation_csv_path, mode='w', newline='') as file:
+with open(deformation_csv_path, mode='wb') as file:
     writer = csv.writer(file)
     # Header: node info followed by deformation components for each mode
     header = ["NodeID", "X", "Y", "Z"]
