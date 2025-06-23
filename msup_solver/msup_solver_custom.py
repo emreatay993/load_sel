@@ -38,6 +38,7 @@ from scipy.signal import butter, filtfilt, detrend
 import imageio
 import tempfile
 import plotly.io as pio
+
 # endregion
 
 # region Define global variables
@@ -55,6 +56,8 @@ IS_WRITE_TO_DISK_TIMES_OF_MAX_VON_STRESS_AT_EACH_NODE = True
 
 # Set OpenBLAS to use all available CPU cores
 os.environ["OPENBLAS_NUM_THREADS"] = str(os.cpu_count())
+
+
 # endregion
 
 # region Define global functions
@@ -79,11 +82,12 @@ def rainflow_counter(series):
                 stack.pop(-3)
     # Count residuals
     for i in range(len(stack) - 1):
-        cycles.append((abs(stack[i] - stack[i+1]), 0.5))
+        cycles.append((abs(stack[i] - stack[i + 1]), 0.5))
     # Convert cycles to ranges and counts
     ranges = np.array([c[0] for c in cycles])
     counts = np.array([c[1] for c in cycles])
     return ranges, counts
+
 
 @njit(parallel=True)
 def compute_potential_damage_for_all_nodes(sigma_vm, A, m):
@@ -96,6 +100,7 @@ def compute_potential_damage_for_all_nodes(sigma_vm, A, m):
         damage = np.sum(counts / (A / ((ranges + 1e-10) ** m)))
         damages[i] = damage
     return damages
+
 
 def get_node_index_from_id(node_id, node_ids):
     """
@@ -114,6 +119,7 @@ def get_node_index_from_id(node_id, node_ids):
     except IndexError:
         print(f"Node ID {node_id} not found in the list of nodes.")
         return None
+
 
 def unwrap_mcf_file(input_file, output_file):
     """
@@ -205,6 +211,7 @@ def unwrap_mcf_file(input_file, output_file):
 
     return final_lines
 
+
 def poly_detrend_2d(data: np.ndarray, times: np.ndarray, order: int) -> np.ndarray:
     """
     Remove an nth-order polynomial trend from each row of `data`.
@@ -218,6 +225,8 @@ def poly_detrend_2d(data: np.ndarray, times: np.ndarray, order: int) -> np.ndarr
         trend = np.polyval(p, times)
         detrended[i] = data[i] - trend
     return detrended
+
+
 # endregion
 
 # region Define global classes
@@ -291,11 +300,11 @@ class MSUPSmartSolverTransient(QObject):
         print(f"Available system RAM: {self.available_memory:.2f} GB")
         print(f"Allocated system RAM: {self.allocated_memory:.2f} GB")
 
-    def estimate_chunk_size(self, num_nodes, num_time_points, calculate_von_mises, calculate_principal_stress,
+    def estimate_chunk_size(self, num_nodes, num_time_points, calculate_von_mises, calculate_max_principal_stress,
                             calculate_damage):
         """Calculate the optimal chunk size for processing based on available memory."""
         available_memory = psutil.virtual_memory().available * self.RAM_PERCENT
-        memory_per_node = self.get_memory_per_node(num_time_points, calculate_von_mises, calculate_principal_stress,
+        memory_per_node = self.get_memory_per_node(num_time_points, calculate_von_mises, calculate_max_principal_stress,
                                                    calculate_damage)
         max_nodes_per_iteration = available_memory // memory_per_node
         return max(1, int(max_nodes_per_iteration))  # Ensure at least one node per chunk
@@ -305,11 +314,11 @@ class MSUPSmartSolverTransient(QObject):
         total_memory = chunk_size * memory_per_node
         return total_memory / (1024 ** 3)  # Convert bytes to GB
 
-    def get_memory_per_node(self, num_time_points, calculate_von_mises, calculate_principal_stress, calculate_damage):
+    def get_memory_per_node(self, num_time_points, calculate_von_mises, calculate_max_principal_stress, calculate_damage):
         num_arrays = 6  # For actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
         if calculate_von_mises:
             num_arrays += 1  # For sigma_vm
-        if calculate_principal_stress:
+        if calculate_max_principal_stress:
             num_arrays += 3  # For s1, s2, s3
         if calculate_damage:
             num_arrays += 1  # For signed_von_mises
@@ -322,7 +331,8 @@ class MSUPSmartSolverTransient(QObject):
         # Create a mapping from steady_node_ids to steady_stress
         steady_node_dict = dict(zip(steady_node_ids.flatten(), steady_stress.flatten()))
         # Create an array for mapped steady stress
-        mapped_steady_stress = np.array([steady_node_dict.get(node_id, 0.0) for node_id in modal_node_ids], dtype=NP_DTYPE)
+        mapped_steady_stress = np.array([steady_node_dict.get(node_id, 0.0) for node_id in modal_node_ids],
+                                        dtype=NP_DTYPE)
         return mapped_steady_stress
 
     def compute_normal_stresses(self, start_idx, end_idx):
@@ -347,12 +357,12 @@ class MSUPSmartSolverTransient(QObject):
 
     def compute_normal_stresses_for_a_single_node(self, selected_node_idx):
         """Compute actual stresses using matrix multiplication."""
-        actual_sx = torch.matmul(self.modal_sx[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
-        actual_sy = torch.matmul(self.modal_sy[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
-        actual_sz = torch.matmul(self.modal_sz[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
-        actual_sxy = torch.matmul(self.modal_sxy[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
-        actual_syz = torch.matmul(self.modal_syz[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
-        actual_sxz = torch.matmul(self.modal_sxz[selected_node_idx: selected_node_idx +1, :], self.modal_coord)
+        actual_sx = torch.matmul(self.modal_sx[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+        actual_sy = torch.matmul(self.modal_sy[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+        actual_sz = torch.matmul(self.modal_sz[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+        actual_sxy = torch.matmul(self.modal_sxy[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+        actual_syz = torch.matmul(self.modal_syz[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+        actual_sxz = torch.matmul(self.modal_sxz[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
 
         # Add steady-state stresses if included
         if self.is_steady_state_included:
@@ -459,7 +469,7 @@ class MSUPSmartSolverTransient(QObject):
                 I1 = sx + sy + sz  # First invariant
                 I2 = (sx * sy + sy * sz + sz * sx) - (sxy ** 2 + syz ** 2 + sxz ** 2)  # Second invariant
                 I3 = (sx * sy * sz + 2 * sxy * syz * sxz) - (
-                            sx * syz ** 2 + sy * sxz ** 2 + sz * sxy ** 2)  # Third invariant
+                        sx * syz ** 2 + sy * sxz ** 2 + sz * sxy ** 2)  # Third invariant
 
                 # Compute coefficients of the characteristic equation: λ^3 - I1*λ^2 + I2*λ - I3 = 0
                 a = -1
@@ -505,67 +515,74 @@ class MSUPSmartSolverTransient(QObject):
 
         return s1, s2, s3
 
-  def compute_principal_stresses_cardano(sx, sy, sz, txy, tyz, txz):      # NOT TESTED WITH REAL VALUES, STILL BETA!!!
-    """
-    Analytic principal-stress routine.
-    Inputs : six 1-D, preferrably float64 (can still be float32, but be careful) arrays of equal length N
-    Return : (N,3) array, σ₁ ≤ σ₂ ≤ σ₃
-    """
-    N   = sx.size
-    out = np.empty((N, 3), np.float64)
+    @staticmethod
+    def compute_principal_stresses_cardano(sx, sy, sz, txy, tyz, txz):  # NOT TESTED WITH REAL VALUES, STILL BETA!!!
+        """
+        Analytic principal-stress routine.
+        Inputs : six 1-D, preferrably float64 (can still be float32, but be careful) arrays of equal length N
+        Return : (N,3) array, σ₁ ≤ σ₂ ≤ σ₃
+        """
+        N = sx.size
+        out = np.empty((N, 3), np.float64)
 
-    two_pi_3 = 2.0943951023931953                # 2π/3
-    tiny_p   = 1.0e-12                           # hydrostatic threshold
+        two_pi_3 = 2.0943951023931953  # 2π/3
+        tiny_p = 1.0e-12  # hydrostatic threshold
 
-    for i in prange(N):
-        # invariants
-        I1 = sx[i] + sy[i] + sz[i]
-        I2 = (sx[i]*sy[i] + sy[i]*sz[i] + sz[i]*sx[i]
-              - txy[i]**2 - tyz[i]**2 - txz[i]**2)
-        I3 = (sx[i]*sy[i]*sz[i]
-              + 2*txy[i]*tyz[i]*txz[i]
-              - sx[i]*tyz[i]**2
-              - sy[i]*txz[i]**2
-              - sz[i]*txy[i]**2)
+        for i in prange(N):
+            # invariants
+            I1 = sx[i] + sy[i] + sz[i]
+            I2 = (sx[i] * sy[i] + sy[i] * sz[i] + sz[i] * sx[i]
+                  - txy[i] ** 2 - tyz[i] ** 2 - txz[i] ** 2)
+            I3 = (sx[i] * sy[i] * sz[i]
+                  + 2 * txy[i] * tyz[i] * txz[i]
+                  - sx[i] * tyz[i] ** 2
+                  - sy[i] * txz[i] ** 2
+                  - sz[i] * txy[i] ** 2)
 
-        # depressed cubic  y³ + p y + q = 0
-        p = I2 - I1*I1/3.0
-        q = (2.0*I1*I1*I1)/27.0 - I1*I2/3.0 + I3
+            # depressed cubic  y³ + p y + q = 0
+            p = I2 - I1 * I1 / 3.0
+            q = (2.0 * I1 * I1 * I1) / 27.0 - I1 * I2 / 3.0 + I3
 
-        # Check for nearly-hydrostatic conditions
-        if abs(p) < tiny_p and abs(q) < tiny_p:
-            s = I1/3.0
-            out[i, 0] = out[i, 1] = out[i, 2] = s
-            continue
+            # Check for nearly-hydrostatic conditions
+            if abs(p) < tiny_p and abs(q) < tiny_p:
+                s = I1 / 3.0
+                out[i, 0] = out[i, 1] = out[i, 2] = s
+                continue
 
-        minus_p_over_3 = -p/3.0                 # ≥ 0 for real roots
-        sqrt_m  = math.sqrt(minus_p_over_3)
-        cos_arg = q / (2.0 * sqrt_m**3)
+            minus_p_over_3 = -p / 3.0  # ≥ 0 for real roots
+            sqrt_m = math.sqrt(minus_p_over_3)
+            cos_arg = q / (2.0 * sqrt_m ** 3)
 
-        # clip to [-1, 1] to avoid nan from acos
-        if   cos_arg >  1.0: cos_arg =  1.0
-        elif cos_arg < -1.0: cos_arg = -1.0
+            # clip to [-1, 1] to avoid nan from acos
+            if cos_arg > 1.0:
+                cos_arg = 1.0
+            elif cos_arg < -1.0:
+                cos_arg = -1.0
 
-        phi  = math.acos(cos_arg) / 3.0
-        amp  = 2.0 * sqrt_m
+            phi = math.acos(cos_arg) / 3.0
+            amp = 2.0 * sqrt_m
 
-        s1 = I1/3.0 + amp * math.cos(phi)
-        s2 = I1/3.0 + amp * math.cos(phi - two_pi_3)
-        s3 = I1/3.0 + amp * math.cos(phi + two_pi_3)
+            s1 = I1 / 3.0 + amp * math.cos(phi)
+            s2 = I1 / 3.0 + amp * math.cos(phi - two_pi_3)
+            s3 = I1 / 3.0 + amp * math.cos(phi + two_pi_3)
 
-        # sort ascending
-        if s1 > s2: s1, s2 = s2, s1
-        if s2 > s3: s2, s3 = s3, s2
-        if s1 > s2: s1, s2 = s2, s1
+            # sort ascending
+            if s1 > s2: s1, s2 = s2, s1
+            if s2 > s3: s2, s3 = s3, s2
+            if s1 > s2: s1, s2 = s2, s1
 
-        out[i, 0] = s1
-        out[i, 1] = s2
-        out[i, 2] = s3
+            out[i, 0] = s1
+            out[i, 1] = s2
+            out[i, 2] = s3
 
-    return out
-  
-    def process_results(self, calculate_damage=False, calculate_von_mises=False, calculate_principal_stress=False):
-        """Process stress results to compute potential (relative) fatigue damage."""
+        return out
+
+    def process_results(self,
+                        calculate_damage=False,
+                        calculate_von_mises=False,
+                        calculate_max_principal_stress=False,
+                        calculate_min_principal_stress=False):
+        """Process stress results in batch to compute user requested outputs and their max/min values over time."""
         # region Initialization
         # Initialize tensor size
         num_nodes, num_modes = self.modal_sx.shape
@@ -579,36 +596,45 @@ class MSUPSmartSolverTransient(QObject):
         # region Get the chunk size based on selected options
         chunk_size = self.estimate_chunk_size(
             num_nodes, num_time_points,
-            calculate_von_mises, calculate_principal_stress, calculate_damage
+            calculate_von_mises, calculate_max_principal_stress, calculate_damage
         )
 
         num_iterations = (num_nodes + chunk_size - 1) // chunk_size
         print(f"Estimated number of iterations to avoid memory overflow: {num_iterations}")
 
         memory_per_node = self.get_memory_per_node(
-            num_time_points, calculate_von_mises, calculate_principal_stress, calculate_damage
+            num_time_points, calculate_von_mises, calculate_max_principal_stress, calculate_damage
         )
         memory_required_per_iteration = self.estimate_ram_required_per_iteration(chunk_size, memory_per_node)
         print(f"Estimated RAM required per iteration: {memory_required_per_iteration:.2f} GB\n")
         # endregion
 
         # region Create temporary (memmap) files
-        if calculate_principal_stress:
+        if calculate_max_principal_stress:
             # Create memmap files for storing the maximum principal stresses per node (s1)
             s1_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_s1_stress.dat'),
                                       dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
             s1_max_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_s1_stress.dat'),
                                            dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
 
+        if calculate_min_principal_stress:
+            self.min_over_time_s3 = np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
+
+            s3_min_memmap = np.memmap(os.path.join(self.output_directory, 'min_s3_stress.dat'),
+                                      dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+            s3_min_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_min_s3_stress.dat'),
+                                           dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+
         if calculate_von_mises:
             # Create memmap files for storing the maximum von Mises stresses per node
             von_mises_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_von_mises_stress.dat'),
-                                             dtype=RESULT_DTYPE, mode='w+',shape=(num_nodes,))
-            von_mises_max_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_von_mises_stress.dat'),
-                                                  dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+                                             dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+            von_mises_max_time_memmap = np.memmap(
+                os.path.join(self.output_directory, 'time_of_max_von_mises_stress.dat'),
+                dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
 
         if calculate_damage:
-            potential_damage_memmap = np.memmap(os.path.join(self.output_directory,'potential_damage_results.dat'),
+            potential_damage_memmap = np.memmap(os.path.join(self.output_directory, 'potential_damage_results.dat'),
                                                 dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
         # endregion
 
@@ -644,13 +670,14 @@ class MSUPSmartSolverTransient(QObject):
                 von_mises_max_time_memmap[start_idx:end_idx] = time_of_max_von_mises_stress_per_node
                 print(f"Elapsed time for max von Mises stress and time: {(time.time() - start_time):.3f} seconds")
 
-            if calculate_principal_stress:
+            if calculate_max_principal_stress or calculate_min_principal_stress:
                 # Calculate principal stresses
                 start_time = time.time()
                 s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz,
                                                              actual_sxy, actual_syz, actual_sxz)
                 print(f"Elapsed time for principal stresses: {(time.time() - start_time):.3f} seconds")
 
+            if calculate_max_principal_stress:
                 # Update global max for s1 (maximum principal stress)
                 chunk_max = np.max(s1, axis=0)
                 self.max_over_time_s1 = np.maximum(self.max_over_time_s1, chunk_max)
@@ -664,6 +691,19 @@ class MSUPSmartSolverTransient(QObject):
                 s1_max_time_memmap[start_idx:end_idx] = time_of_max_s1_per_node
                 print(f"Elapsed time for max principal stress (s1) and time: {(time.time() - start_time):.3f} seconds")
 
+            if calculate_min_principal_stress:
+                # global minima over time (element-wise)
+                chunk_min = np.min(s3, axis=0)
+                self.min_over_time_s3 = np.minimum(self.min_over_time_s3, chunk_min)
+
+                # per-node minimum & its time index
+                min_s3_per_node = np.min(s3, axis=1)
+                time_indices = np.argmin(s3, axis=1)
+                time_of_min_s3_per_node = time_values[time_indices]
+
+                s3_min_memmap[start_idx:end_idx] = min_s3_per_node
+                s3_min_time_memmap[start_idx:end_idx] = time_of_min_s3_per_node
+
             # Calculate potential damage index for all nodes in the chunk
             if calculate_damage:
                 start_time = time.time()
@@ -675,7 +715,7 @@ class MSUPSmartSolverTransient(QObject):
                 # Instead of hardcoding, use fatigue parameters if they have been set; otherwise, fall back to defaults.
                 A = self.fatigue_A if hasattr(self, 'fatigue_A') else 1
                 m = self.fatigue_m if hasattr(self, 'fatigue_m') else -3
-                potential_damages = compute_potential_damage_for_all_nodes(signed_von_mises, A,m)
+                potential_damages = compute_potential_damage_for_all_nodes(signed_von_mises, A, m)
                 potential_damage_memmap[start_idx:end_idx] = potential_damages
                 print(f"Elapsed time for damage index calculation: {(time.time() - start_time):.3f} seconds")
             # endregion
@@ -686,7 +726,7 @@ class MSUPSmartSolverTransient(QObject):
 
             if calculate_von_mises:
                 del sigma_vm
-            if calculate_principal_stress:
+            if calculate_max_principal_stress:
                 del s1, s2, s3
 
             gc.collect()
@@ -709,9 +749,12 @@ class MSUPSmartSolverTransient(QObject):
         if calculate_von_mises:
             von_mises_max_memmap.flush()
             von_mises_max_time_memmap.flush()
-        if calculate_principal_stress:
+        if calculate_max_principal_stress:
             s1_max_memmap.flush()
             s1_max_time_memmap.flush()
+        if calculate_min_principal_stress:
+            s3_min_memmap.flush()
+            s3_min_time_memmap.flush()
         if calculate_damage:
             potential_damage_memmap.flush()
         # endregion
@@ -726,7 +769,7 @@ class MSUPSmartSolverTransient(QObject):
                                     os.path.join(self.output_directory, "time_of_max_von_mises_stress.dat"),
                                     os.path.join(self.output_directory, "time_of_max_von_mises_stress.csv"),
                                     "Time_of_SVM_Max")
-        if calculate_principal_stress:
+        if calculate_max_principal_stress:
             self.convert_dat_to_csv(df_node_ids, num_nodes,
                                     os.path.join(self.output_directory, "max_s1_stress.dat"),
                                     os.path.join(self.output_directory, "max_s1_stress.csv"),
@@ -735,6 +778,16 @@ class MSUPSmartSolverTransient(QObject):
                                     os.path.join(self.output_directory, "time_of_max_s1_stress.dat"),
                                     os.path.join(self.output_directory, "time_of_max_s1_stress.csv"),
                                     "Time_of_S1_Max")
+        if calculate_min_principal_stress:
+            self.convert_dat_to_csv(df_node_ids, num_nodes,
+                                    os.path.join(self.output_directory, "min_s3_stress.dat"),
+                                    os.path.join(self.output_directory, "min_s3_stress.csv"),
+                                    "S3_Min")
+
+            self.convert_dat_to_csv(df_node_ids, num_nodes,
+                                    os.path.join(self.output_directory, "time_of_min_s3_stress.dat"),
+                                    os.path.join(self.output_directory, "time_of_min_s3_stress.csv"),
+                                    "Time_of_S3_Min")
         if calculate_damage:
             self.convert_dat_to_csv(df_node_ids, num_nodes,
                                     os.path.join(self.output_directory, "potential_damage_results.dat"),
@@ -742,18 +795,23 @@ class MSUPSmartSolverTransient(QObject):
                                     "Potential Damage (Damage Index)")
         # endregion
 
-    def process_results_for_a_single_node(self, selected_node_idx, calculate_von_mises=False, calculate_principal_stress=False):
+    def process_results_for_a_single_node(self,
+                                          selected_node_idx,
+                                          calculate_von_mises=False,
+                                          calculate_max_principal_stress=False,
+                                          calculate_min_principal_stress=False):
         """
         Process results for a single node and return the stress data for plotting.
 
         Parameters:
         - selected_node_idx: The index of the node to process.
         - calculate_von_mises: Boolean flag to compute Von Mises stress.
-        - calculate_principal_stress: Boolean flag to compute Principal Stress.
+        - calculate_max_principal_stress: Boolean flag to compute Max Principal Stress.
+        - calculate_min_principal_stress: Boolean flag to compute Min Principal Stress.
 
         Returns:
         - time_points: Array of time points for the selected node.
-        - stress_values: Array of stress values (either Von Mises or Principal Stress).
+        - stress_values: Array of stress values (either Von Mises or Max/Min Principal Stress).
         """
 
         # region Initialization & reassignment of variables
@@ -774,13 +832,17 @@ class MSUPSmartSolverTransient(QObject):
 
             return np.arange(sigma_vm.shape[1]), sigma_vm[0, :]  # time_points, stress_values
 
-        if calculate_principal_stress:
+        if calculate_max_principal_stress:
             # Compute Principal Stresses for the selected node
             s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
                                                          actual_sxz)
             print(f"Principal Stresses calculated for Node {selected_node_id}\n")
 
             return np.arange(s1.shape[1]), s1[0, :]  # time_indices, stress_values
+
+        if calculate_min_principal_stress:
+            s1, s2, s3 = self.compute_principal_stresses(...)
+            return np.arange(s3.shape[1]), s3[0, :]  # S₃ min history
 
         # Return none if no output is requested
         return None, None
@@ -805,6 +867,7 @@ class MSUPSmartSolverTransient(QObject):
             print(f"Successfully converted {dat_filename} to {csv_filename}.")
         except Exception as e:
             print(f"Error converting {dat_filename} to {csv_filename}: {e}")
+
 
 class Logger(QObject):
     def __init__(self, text_edit, flush_interval=200):
@@ -837,6 +900,7 @@ class Logger(QObject):
     def flush(self):
         self.flush_buffer()
 
+
 class DisplayTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -847,19 +911,19 @@ class DisplayTab(QWidget):
         self.last_hover_time = 0  # For frame rate throttling
         self.hover_annotation = None
         self.hover_observer = None  # Track hover callback observer
-        self.anim_timer = None       # timer for animation
+        self.anim_timer = None  # timer for animation
         self.time_text_actor = None
         self.current_anim_time = 0.0  # current time in the animation
         self.animation_paused = False
         self.temp_solver = None
 
         # Attributes for Precomputation
-        self.precomputed_scalars = None          # (num_nodes, num_anim_steps)
-        self.precomputed_coords = None           # (num_nodes, 3, num_anim_steps) or similar
-        self.precomputed_anim_times = None       # (num_anim_steps,) - actual time values for each frame
-        self.current_anim_frame_index = 0      # Index for accessing precomputed arrays
-        self.data_column_name = "Stress"         # Default/placeholder name for scalars
-        self.is_deformation_included_in_anim = False # Track if deformation was computed
+        self.precomputed_scalars = None  # (num_nodes, num_anim_steps)
+        self.precomputed_coords = None  # (num_nodes, 3, num_anim_steps) or similar
+        self.precomputed_anim_times = None  # (num_anim_steps,) - actual time values for each frame
+        self.current_anim_frame_index = 0  # Index for accessing precomputed arrays
+        self.data_column_name = "Stress"  # Default/placeholder name for scalars
+        self.is_deformation_included_in_anim = False  # Track if deformation was computed
 
         self.init_ui()
 
@@ -1061,11 +1125,11 @@ class DisplayTab(QWidget):
 
         # Add Save Animation Button ---
         self.save_anim_button = QPushButton("Save as Video/GIF")
-        self.save_anim_button.setStyleSheet(button_style) # Apply the style
+        self.save_anim_button.setStyleSheet(button_style)  # Apply the style
         self.save_anim_button.clicked.connect(self.save_animation)
-        self.save_anim_button.setEnabled(False) # Initially disabled
-        self.save_anim_button.setToolTip("Save the precomputed animation frames as MP4 or GIF.\nRequires 'imageio' and 'ffmpeg' (for MP4).")
-
+        self.save_anim_button.setEnabled(False)  # Initially disabled
+        self.save_anim_button.setToolTip(
+            "Save the precomputed animation frames as MP4 or GIF.\nRequires 'imageio' and 'ffmpeg' (for MP4).")
 
         # Add widgets to the animation layout
         self.anim_layout.addWidget(self.time_step_mode_combo)
@@ -1079,7 +1143,7 @@ class DisplayTab(QWidget):
         self.anim_layout.addWidget(self.pause_button)
         self.anim_layout.addWidget(self.stop_button)
         self.anim_layout.addWidget(self.save_anim_button)
-        #self.anim_layout.addStretch()
+        # self.anim_layout.addStretch()
 
         self.anim_group = QGroupBox("Animation Controls")
         self.anim_group.setStyleSheet(group_box_style)
@@ -1180,7 +1244,7 @@ class DisplayTab(QWidget):
 
         # Determine which stress type is selected.
         compute_von = main_tab.von_mises_checkbox.isChecked()
-        compute_principal = main_tab.principal_stress_checkbox.isChecked()
+        compute_principal = main_tab.max_principal_stress_checkbox.isChecked()
 
         if not (compute_von or compute_principal):
             QMessageBox.warning(self, "No Selection",
@@ -1375,7 +1439,7 @@ class DisplayTab(QWidget):
         # --- 2. Determine Required Outputs ---
         main_tab = self.window().batch_solver_tab  # Access main tab for settings
         compute_von = main_tab.von_mises_checkbox.isChecked()
-        compute_principal = main_tab.principal_stress_checkbox.isChecked()
+        compute_principal = main_tab.max_principal_stress_checkbox.isChecked()
         compute_deformation = main_tab.deformations_checkbox.isChecked()
 
         if not (compute_von or compute_principal):
@@ -1550,11 +1614,11 @@ class DisplayTab(QWidget):
         # Update the mesh with the first frame's data before starting timer
         # We probably don't want to include this first update in the loop profile
         try:
-             self.animate_frame(update_index=False)
+            self.animate_frame(update_index=False)
         except Exception as e:
-             QMessageBox.critical(self, "Animation Error", f"Failed initial frame render: {str(e)}")
-             self.stop_animation() # Stop if initial render fails
-             return
+            QMessageBox.critical(self, "Animation Error", f"Failed initial frame render: {str(e)}")
+            self.stop_animation()  # Stop if initial render fails
+            return
 
         # Now start the timer for subsequent frames
         self.anim_timer = QTimer(self)
@@ -1569,7 +1633,7 @@ class DisplayTab(QWidget):
 
         # Ensure save button remains enabled if precomputation succeeded
         if self.precomputed_scalars is not None:
-             self.save_anim_button.setEnabled(True) # Redundant check, but safe
+            self.save_anim_button.setEnabled(True)  # Redundant check, but safe
 
         # Remove static time text if it exists from previous single time point updates
         if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
@@ -1666,10 +1730,10 @@ class DisplayTab(QWidget):
             return
 
         if not self._update_mesh_for_frame(self.current_anim_frame_index):
-             print(f"Animation frame skipped: Failed to update mesh for index {self.current_anim_frame_index}.")
-             # Attempt to stop gracefully if data seems inconsistent
-             self.stop_animation()
-             return
+            print(f"Animation frame skipped: Failed to update mesh for index {self.current_anim_frame_index}.")
+            # Attempt to stop gracefully if data seems inconsistent
+            self.stop_animation()
+            return
 
         # --- Render ---
         # Render happens *after* mesh update now
@@ -1683,8 +1747,8 @@ class DisplayTab(QWidget):
                 if self.current_anim_frame_index >= num_frames:
                     self.current_anim_frame_index = 0  # Loop animation
             else:
-                 # Should not happen if called correctly, but safety check
-                 self.stop_animation()
+                # Should not happen if called correctly, but safety check
+                self.stop_animation()
 
     def _update_mesh_for_frame(self, frame_index):
         """Updates the mesh data (scalars and optionally points) for a given frame index."""
@@ -1694,8 +1758,8 @@ class DisplayTab(QWidget):
 
         num_frames = len(self.precomputed_anim_times)
         if frame_index < 0 or frame_index >= num_frames:
-             print(f"Error: Invalid frame index {frame_index} for {num_frames} frames.")
-             return False # Invalid index
+            print(f"Error: Invalid frame index {frame_index} for {num_frames} frames.")
+            return False  # Invalid index
 
         try:
             current_scalars = self.precomputed_scalars[:, frame_index]
@@ -1704,26 +1768,25 @@ class DisplayTab(QWidget):
             # Get deformed coordinates if available and enabled
             if self.is_deformation_included_in_anim and self.precomputed_coords is not None:
                 if frame_index >= self.precomputed_coords.shape[2]:
-                     print(f"Error: Frame index {frame_index} out of bounds for precomputed coordinates.")
-                     return False
+                    print(f"Error: Frame index {frame_index} out of bounds for precomputed coordinates.")
+                    return False
                 current_coords = self.precomputed_coords[:, :, frame_index]
                 # Ensure mesh object still exists
                 if self.current_mesh is not None:
-                     self.current_mesh.points = current_coords  # Update node positions
+                    self.current_mesh.points = current_coords  # Update node positions
                 else:
-                     print("Error: Current mesh is None, cannot update points.")
-                     return False
-
+                    print("Error: Current mesh is None, cannot update points.")
+                    return False
 
             # Update scalars on the mesh
             if self.current_mesh is not None:
-                 self.current_mesh[self.data_column_name] = current_scalars
-                 # Ensure the active scalar is set correctly
-                 if self.current_mesh.active_scalars_name != self.data_column_name:
-                     self.current_mesh.set_active_scalars(self.data_column_name)
+                self.current_mesh[self.data_column_name] = current_scalars
+                # Ensure the active scalar is set correctly
+                if self.current_mesh.active_scalars_name != self.data_column_name:
+                    self.current_mesh.set_active_scalars(self.data_column_name)
             else:
-                 print("Error: Current mesh is None, cannot update scalars.")
-                 return False
+                print("Error: Current mesh is None, cannot update scalars.")
+                return False
 
             # Update the scalar bar range if necessary (using fixed range from UI)
             fixed_min = self.scalar_min_spin.value()
@@ -1741,22 +1804,28 @@ class DisplayTab(QWidget):
             # --- Update Time Text ---
             time_text = f"Time: {current_time:.5f} s"
             if hasattr(self, 'time_text_actor') and self.time_text_actor is not None:
-                 # Check if actor still exists in renderer before trying to set input
-                 try:
-                      # VTKPythonCore could throw errors if the underlying VTK object is deleted
-                      if self.time_text_actor.GetViewProps() is not None:
-                           self.time_text_actor.SetInput(time_text)
-                      else: # Underlying object gone, recreate
-                           # Safer to attempt removal by ref first
-                           self.plotter.remove_actor(self.time_text_actor, render=False)
-                           self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False, font_size=10)
-                 except (AttributeError, ReferenceError): # Actor might have been garbage collected or VTK object deleted
-                      # Attempt removal if reference still exists
-                      try: self.plotter.remove_actor(self.time_text_actor, render=False)
-                      except: pass
-                      self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False, font_size=10)
+                # Check if actor still exists in renderer before trying to set input
+                try:
+                    # VTKPythonCore could throw errors if the underlying VTK object is deleted
+                    if self.time_text_actor.GetViewProps() is not None:
+                        self.time_text_actor.SetInput(time_text)
+                    else:  # Underlying object gone, recreate
+                        # Safer to attempt removal by ref first
+                        self.plotter.remove_actor(self.time_text_actor, render=False)
+                        self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False,
+                                                                     font_size=10)
+                except (
+                AttributeError, ReferenceError):  # Actor might have been garbage collected or VTK object deleted
+                    # Attempt removal if reference still exists
+                    try:
+                        self.plotter.remove_actor(self.time_text_actor, render=False)
+                    except:
+                        pass
+                    self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False,
+                                                                 font_size=10)
             else:
-                self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False, font_size=10)
+                self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False,
+                                                             font_size=10)
 
             return True
 
@@ -1775,13 +1844,13 @@ class DisplayTab(QWidget):
         # Update mesh data, scalar bar, time text for the target frame
         if not self._update_mesh_for_frame(frame_index):
             print(f"Warning: Failed to update mesh for frame {frame_index} before capture.")
-            return None # Indicate failure
+            return None  # Indicate failure
 
         # Render the scene *after* updating
         self.plotter.render()
         # Allow the event loop to process the render command, might help prevent blank frames
         QApplication.processEvents()
-        time.sleep(0.01) # Small delay, sometimes helps ensure rendering completes before screenshot
+        time.sleep(0.01)  # Small delay, sometimes helps ensure rendering completes before screenshot
 
         # Capture screenshot
         try:
@@ -1790,8 +1859,8 @@ class DisplayTab(QWidget):
             if self.plotter and self.plotter.renderer:
                 frame_image = self.plotter.screenshot(transparent_background=False, return_img=True, window_size=None)
                 if frame_image is None:
-                     print(f"Warning: Screenshot returned None for frame {frame_index}.")
-                     return None
+                    print(f"Warning: Screenshot returned None for frame {frame_index}.")
+                    return None
                 return frame_image
             else:
                 print(f"Error: Plotter or renderer invalid for frame {frame_index}.")
@@ -1816,50 +1885,51 @@ class DisplayTab(QWidget):
         # Use project directory if available in the main window
         default_dir = ""
         if hasattr(self.window(), 'project_directory') and self.window().project_directory:
-             default_dir = self.window().project_directory
-        elif self.file_path.text(): # Fallback to directory of loaded viz file
-             default_dir = os.path.dirname(self.file_path.text())
+            default_dir = self.window().project_directory
+        elif self.file_path.text():  # Fallback to directory of loaded viz file
+            default_dir = os.path.dirname(self.file_path.text())
 
         fileName, selectedFilter = QFileDialog.getSaveFileName(self,
-                                                        "Save Animation", default_dir,
-                                                        "MP4 Video (*.mp4);;Animated GIF (*.gif)",
-                                                        "MP4 Video (*.mp4)", # Default filter
-                                                        options=options)
+                                                               "Save Animation", default_dir,
+                                                               "MP4 Video (*.mp4);;Animated GIF (*.gif)",
+                                                               "MP4 Video (*.mp4)",  # Default filter
+                                                               options=options)
         if not fileName:
-            return # User cancelled
+            return  # User cancelled
 
         # Determine format and ensure correct extension
         file_format = ""
         if selectedFilter == "MP4 Video (*.mp4)":
             file_format = "MP4"
             if not fileName.lower().endswith(".mp4"):
-                 fileName += ".mp4"
+                fileName += ".mp4"
         elif selectedFilter == "Animated GIF (*.gif)":
-             file_format = "GIF"
-             if not fileName.lower().endswith(".gif"):
-                 fileName += ".gif"
-        else: # If filter somehow is unexpected, try deriving from extension
-             if fileName.lower().endswith(".mp4"):
-                 file_format = "MP4"
-             elif fileName.lower().endswith(".gif"):
-                 file_format = "GIF"
-             else: # Add default extension if none provided and filter unknown
-                 QMessageBox.warning(self, "Cannot Determine Format", "Could not determine file format. Please use .mp4 or .gif extension.")
-                 # Defaulting to MP4, force extension
-                 # file_format = "MP4"
-                 # if not fileName.lower().endswith(".mp4"): fileName += ".mp4"
-                 return
-
+            file_format = "GIF"
+            if not fileName.lower().endswith(".gif"):
+                fileName += ".gif"
+        else:  # If filter somehow is unexpected, try deriving from extension
+            if fileName.lower().endswith(".mp4"):
+                file_format = "MP4"
+            elif fileName.lower().endswith(".gif"):
+                file_format = "GIF"
+            else:  # Add default extension if none provided and filter unknown
+                QMessageBox.warning(self, "Cannot Determine Format",
+                                    "Could not determine file format. Please use .mp4 or .gif extension.")
+                # Defaulting to MP4, force extension
+                # file_format = "MP4"
+                # if not fileName.lower().endswith(".mp4"): fileName += ".mp4"
+                return
 
         fps = 1000.0 / self.anim_interval_spin.value()
         print(f"---Saving animation...---")
         print(f"Attempting to save {num_frames} frames to '{fileName}' as {file_format} at {fps:.2f} FPS.")
 
         # --- Progress Dialog ---
-        progress = QProgressDialog("Saving animation frames...", "Cancel", 0, num_frames, self.window()) # Parent to main window
-        progress.setWindowModality(Qt.WindowModal) # Block interaction with main window
+        progress = QProgressDialog("Saving animation frames...", "Cancel", 0, num_frames,
+                                   self.window())  # Parent to main window
+        progress.setWindowModality(Qt.WindowModal)  # Block interaction with main window
         progress.setWindowTitle("Saving Animation")
-        progress.setMinimumDuration(1000) # Show only if saving takes > 1 second
+        progress.setMinimumDuration(1000)  # Show only if saving takes > 1 second
         progress.setValue(0)
         # Don't call progress.show() yet, wait until first frame attempt
 
@@ -1870,13 +1940,12 @@ class DisplayTab(QWidget):
 
         # Pause the live animation timer if it's running
         if was_timer_active:
-             self.anim_timer.stop()
-             print("Live animation timer paused for saving.")
-
+            self.anim_timer.stop()
+            print("Live animation timer paused for saving.")
 
         # --- Saving Loop (using imageio writer for memory efficiency) ---
         cancelled = False
-        writer = None # Initialize writer to None
+        writer = None  # Initialize writer to None
         try:
             # Prepare writer arguments
             writer_kwargs = {'fps': fps}
@@ -1885,32 +1954,31 @@ class DisplayTab(QWidget):
                 # quality can be set (0-10, 10 is highest, default is often 5)
                 writer_kwargs.update({'macro_block_size': None, 'pixelformat': 'yuv420p', 'quality': 7})
             elif file_format == 'GIF':
-                 # loop=0 means infinite loop
-                 # palettesize can affect colors/size
-                 # subrectangles=True might optimize for smaller GIFs if only parts change (unlikely here)
-                 writer_kwargs.update({'macro_block_size': None, 'loop': 0, 'palettesize': 256})
-
+                # loop=0 means infinite loop
+                # palettesize can affect colors/size
+                # subrectangles=True might optimize for smaller GIFs if only parts change (unlikely here)
+                writer_kwargs.update({'macro_block_size': None, 'loop': 0, 'palettesize': 256})
 
             # --- Preserve Camera State ---
             # GetState() returns a dictionary or tuple, depending on VTK version
             initial_camera_state = None
             if self.plotter and self.plotter.camera:
-                 # Let's try the dictionary method first, common in newer PyVista/VTK
-                 try:
-                     initial_camera_state = self.plotter.camera.GetState()
-                     print("Saved camera state (dict/tuple).")
-                 except AttributeError: # Fallback for older versions possibly returning tuple directly from position etc.
-                      initial_camera_state = (
-                          self.plotter.camera.position,
-                          self.plotter.camera.focal_point,
-                          self.plotter.camera.up
-                      )
-                      print("Saved camera state (pos/focal/up).")
-
+                # Let's try the dictionary method first, common in newer PyVista/VTK
+                try:
+                    initial_camera_state = self.plotter.camera.GetState()
+                    print("Saved camera state (dict/tuple).")
+                except AttributeError:  # Fallback for older versions possibly returning tuple directly from position etc.
+                    initial_camera_state = (
+                        self.plotter.camera.position,
+                        self.plotter.camera.focal_point,
+                        self.plotter.camera.up
+                    )
+                    print("Saved camera state (pos/focal/up).")
 
             # Start the writer *before* the loop
-            writer = imageio.get_writer(fileName, format=file_format, mode='I', **writer_kwargs) # mode='I' for multiple images
-            progress.show() # Show progress dialog now writer is ready
+            writer = imageio.get_writer(fileName, format=file_format, mode='I',
+                                        **writer_kwargs)  # mode='I' for multiple images
+            progress.show()  # Show progress dialog now writer is ready
 
             for i in range(num_frames):
                 if progress.wasCanceled():
@@ -1920,64 +1988,64 @@ class DisplayTab(QWidget):
 
                 # --- Restore Camera State before capturing each frame ---
                 if initial_camera_state is not None and self.plotter and self.plotter.camera:
-                     try:
-                         if isinstance(initial_camera_state, dict):
-                             self.plotter.camera.SetState(initial_camera_state)
-                         elif isinstance(initial_camera_state, tuple) and len(initial_camera_state) == 3: # pos/focal/up tuple
-                             self.plotter.camera.position = initial_camera_state[0]
-                             self.plotter.camera.focal_point = initial_camera_state[1]
-                             self.plotter.camera.up = initial_camera_state[2]
-                         # No else needed, if it's not recognized, we just don't restore
-                     except Exception as cam_err:
-                          print(f"Warning: Could not restore camera state for frame {i}: {cam_err}")
-
+                    try:
+                        if isinstance(initial_camera_state, dict):
+                            self.plotter.camera.SetState(initial_camera_state)
+                        elif isinstance(initial_camera_state, tuple) and len(
+                                initial_camera_state) == 3:  # pos/focal/up tuple
+                            self.plotter.camera.position = initial_camera_state[0]
+                            self.plotter.camera.focal_point = initial_camera_state[1]
+                            self.plotter.camera.up = initial_camera_state[2]
+                        # No else needed, if it's not recognized, we just don't restore
+                    except Exception as cam_err:
+                        print(f"Warning: Could not restore camera state for frame {i}: {cam_err}")
 
                 # Capture the frame using the helper function
                 frame_image = self._capture_animation_frame(i)
 
-                if frame_image is None: # Handle potential errors during capture
+                if frame_image is None:  # Handle potential errors during capture
                     # Option 1: Skip frame (video might look glitchy)
                     print(f"Warning: Skipping frame {i} due to capture failure.")
                     # Option 2: Abort saving
                     # raise RuntimeError(f"Failed to capture frame {i}")
                     # Let's skip for now, user can retry if it looks bad
-                    progress.setValue(i + 1) # Still update progress
+                    progress.setValue(i + 1)  # Still update progress
                     QApplication.processEvents()
-                    continue # Go to next frame
+                    continue  # Go to next frame
 
-                writer.append_data(frame_image) # Append frame to file
+                writer.append_data(frame_image)  # Append frame to file
                 progress.setValue(i + 1)
-                QApplication.processEvents() # Keep UI responsive, update progress
+                QApplication.processEvents()  # Keep UI responsive, update progress
 
         except ImportError as e:
-             # Specific error for missing backend
-             error_msg = f"ImportError: {e}. Cannot save animation.\n\n"
-             if file_format == 'MP4':
-                 error_msg += "Saving MP4 requires 'ffmpeg'. Please install it.\nTry: pip install imageio[ffmpeg]"
-             else:
-                 error_msg += "Ensure 'imageio' is installed correctly."
-             QMessageBox.critical(self, "Missing Dependency", error_msg)
-             print(error_msg)
-             cancelled = True # Treat as cancellation
+            # Specific error for missing backend
+            error_msg = f"ImportError: {e}. Cannot save animation.\n\n"
+            if file_format == 'MP4':
+                error_msg += "Saving MP4 requires 'ffmpeg'. Please install it.\nTry: pip install imageio[ffmpeg]"
+            else:
+                error_msg += "Ensure 'imageio' is installed correctly."
+            QMessageBox.critical(self, "Missing Dependency", error_msg)
+            print(error_msg)
+            cancelled = True  # Treat as cancellation
         except Exception as e:
             error_msg = f"Failed to save animation:\n{type(e).__name__}: {e}\n\n"
             error_msg += "Check write permissions for the directory.\n"
             if file_format == 'MP4':
-                 error_msg += "Ensure 'ffmpeg' is installed and accessible.\n"
+                error_msg += "Ensure 'ffmpeg' is installed and accessible.\n"
             error_msg += "Check console output for more details."
             QMessageBox.critical(self, "Save Error", error_msg)
-            print(f"Imageio save error: {type(e).__name__}: {e}") # Log detailed error
-            cancelled = True # Treat error as cancellation for cleanup logic
+            print(f"Imageio save error: {type(e).__name__}: {e}")  # Log detailed error
+            cancelled = True  # Treat error as cancellation for cleanup logic
         finally:
             # --- Cleanup ---
             if writer is not None:
                 try:
-                    writer.close() # Ensure writer is closed
+                    writer.close()  # Ensure writer is closed
                     print("Imageio writer closed.")
                 except Exception as close_err:
                     print(f"Error closing imageio writer: {close_err}")
 
-            progress.close() # Ensure progress dialog is closed
+            progress.close()  # Ensure progress dialog is closed
 
             # --- Restore original animation state ---
             print("Restoring plotter state...")
@@ -1985,52 +2053,48 @@ class DisplayTab(QWidget):
             # Use a try-except block for robustness
             try:
                 self._update_mesh_for_frame(original_frame_index)
-                self.plotter.render() # Render the restored state
+                self.plotter.render()  # Render the restored state
                 print(f"Restored view to frame {original_frame_index}.")
             except Exception as restore_err:
-                 print(f"Warning: Could not fully restore plotter state: {restore_err}")
-
+                print(f"Warning: Could not fully restore plotter state: {restore_err}")
 
             # Restore live animation timer if it was running *and* wasn't paused originally
             if was_timer_active and not original_is_paused:
                 # Check if timer still exists (might be None if stop_animation was called)
                 if self.anim_timer:
-                     self.anim_timer.start(self.anim_interval_spin.value())
-                     print("Live animation timer restarted.")
-                else: # Recreate timer if needed (edge case)
-                     print("Recreating live animation timer.")
-                     self.anim_timer = QTimer(self)
-                     self.anim_timer.timeout.connect(self.animate_frame)
-                     self.anim_timer.start(self.anim_interval_spin.value())
+                    self.anim_timer.start(self.anim_interval_spin.value())
+                    print("Live animation timer restarted.")
+                else:  # Recreate timer if needed (edge case)
+                    print("Recreating live animation timer.")
+                    self.anim_timer = QTimer(self)
+                    self.anim_timer.timeout.connect(self.animate_frame)
+                    self.anim_timer.start(self.anim_interval_spin.value())
             elif was_timer_active and original_is_paused:
-                 print("Leaving live animation timer paused (was paused before saving).")
-
+                print("Leaving live animation timer paused (was paused before saving).")
 
             # Ensure paused state is correct
             self.animation_paused = original_is_paused
 
-
             # --- Clean up potentially incomplete/cancelled file ---
             if cancelled and os.path.exists(fileName):
-                 try:
-                      print(f"Attempting to remove cancelled/incomplete file: {fileName}")
-                      os.remove(fileName)
-                      print("File removed.")
-                 except OSError as remove_error:
-                      print(f"Could not remove cancelled/incomplete file: {remove_error}")
-
+                try:
+                    print(f"Attempting to remove cancelled/incomplete file: {fileName}")
+                    os.remove(fileName)
+                    print("File removed.")
+                except OSError as remove_error:
+                    print(f"Could not remove cancelled/incomplete file: {remove_error}")
 
         # --- Final Feedback ---
         if not cancelled:
             QMessageBox.information(self, "Save Successful", f"Animation successfully saved to:\n{fileName}")
             print("---Animation saving process finished.---\n")
         else:
-             # Message box already shown for error, only show warning for user cancellation
-             if not progress.wasCanceled(): # i.e., cancelled due to an error
-                 pass # Error message already shown
-             else: # Cancelled by user clicking button
-                 QMessageBox.warning(self, "Save Cancelled", "Animation saving was cancelled by user.")
-             print("Animation saving process aborted.")
+            # Message box already shown for error, only show warning for user cancellation
+            if not progress.wasCanceled():  # i.e., cancelled due to an error
+                pass  # Error message already shown
+            else:  # Cancelled by user clicking button
+                QMessageBox.warning(self, "Save Cancelled", "Animation saving was cancelled by user.")
+            print("Animation saving process aborted.")
 
     def _get_animation_time_steps(self):
         """
@@ -2200,7 +2264,7 @@ class DisplayTab(QWidget):
         # 1) Check which output is selected in the main GUI:
         main_tab = self.main_window.batch_solver_tab
         compute_von = main_tab.von_mises_checkbox.isChecked()
-        compute_principal = main_tab.principal_stress_checkbox.isChecked()
+        compute_principal = main_tab.max_principal_stress_checkbox.isChecked()
         # If neither is selected, return zeros (or you could raise an error).
         if not (compute_von or compute_principal):
             return np.zeros(self.current_mesh.n_points, dtype=np.float32)
@@ -2338,7 +2402,7 @@ class DisplayTab(QWidget):
             if not self.camera_widget:
                 self.camera_widget = self.plotter.add_camera_orientation_widget()
                 self.camera_widget.EnabledOn()
-            #self.plotter.enable_point_picking(point_size=self.point_size.value())
+            # self.plotter.enable_point_picking(point_size=self.point_size.value())
             self.update_visualization()
             self.plotter.reset_camera()
             self.plotter.camera.zoom(1)
@@ -2425,7 +2489,7 @@ class DisplayTab(QWidget):
         #     zlabel='Z',
         #     interactive=False  # Disable dynamic updates
         # )
-        #self.plotter.reset_camera()
+        # self.plotter.reset_camera()
 
     def setup_hover_annotation(self):
         """Set up hover callback to display node ID and value"""
@@ -2505,6 +2569,7 @@ class DisplayTab(QWidget):
     def __del__(self):
         """Ensure proper cleanup"""
         self.clear_visualization()
+
 
 class MSUPSmartSolverGUI(QWidget):
     def __init__(self, parent=None):
@@ -2595,7 +2660,8 @@ class MSUPSmartSolverGUI(QWidget):
         self.coord_file_button.setFont(QFont('Arial', 8))
         self.coord_file_path = QLineEdit()
         self.coord_file_path.setReadOnly(True)
-        self.coord_file_path.setStyleSheet("background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
+        self.coord_file_path.setStyleSheet(
+            "background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
 
         # Modal Stress File Section
         self.stress_file_button = QPushButton('Read Modal Stress File (.csv)')
@@ -2603,7 +2669,8 @@ class MSUPSmartSolverGUI(QWidget):
         self.stress_file_button.setFont(QFont('Arial', 8))
         self.stress_file_path = QLineEdit()
         self.stress_file_path.setReadOnly(True)
-        self.stress_file_path.setStyleSheet("background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
+        self.stress_file_path.setStyleSheet(
+            "background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
 
         # Checkbox for "Include Steady-State Stress Field"
         self.steady_state_checkbox = QCheckBox("Include Steady-State Stress Field")
@@ -2634,7 +2701,8 @@ class MSUPSmartSolverGUI(QWidget):
         self.deformations_file_path = QLineEdit()
         self.deformations_file_button.setStyleSheet(button_style)
         self.deformations_file_path.setReadOnly(True)
-        self.deformations_file_path.setStyleSheet("background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
+        self.deformations_file_path.setStyleSheet(
+            "background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
         self.deformations_file_button.clicked.connect(self.select_deformations_file)
 
         # Initially hide the deformations file controls until the checkbox is checked.
@@ -2647,9 +2715,12 @@ class MSUPSmartSolverGUI(QWidget):
         self.time_history_checkbox.toggled.connect(self.toggle_single_node_solution_group)
 
         # Checkbox for Calculate Principal Stress
-        self.principal_stress_checkbox = QCheckBox('Max Principal Stress')
-        self.principal_stress_checkbox.setStyleSheet("margin: 10px 0;")
-        self.principal_stress_checkbox.toggled.connect(self.update_single_node_plot_based_on_checkboxes)
+        self.max_principal_stress_checkbox = QCheckBox('Max Principal Stress')
+        self.max_principal_stress_checkbox.setStyleSheet("margin: 10px 0;")
+        self.max_principal_stress_checkbox.toggled.connect(self.update_single_node_plot_based_on_checkboxes)
+        self.min_principal_stress_checkbox = QCheckBox("Min Principal Stress")
+        self.min_principal_stress_checkbox.setStyleSheet("margin: 10px 0;")
+        self.min_principal_stress_checkbox.toggled.connect(self.update_single_node_plot_based_on_checkboxes)
 
         # Checkbox for Calculate Von-Mises Stress
         self.von_mises_checkbox = QCheckBox('Von-Mises Stress')
@@ -2775,7 +2846,8 @@ class MSUPSmartSolverGUI(QWidget):
         self.output_group.setStyleSheet(group_box_style)
         output_layout = QVBoxLayout()
         output_layout.addWidget(self.time_history_checkbox)
-        output_layout.addWidget(self.principal_stress_checkbox)
+        output_layout.addWidget(self.max_principal_stress_checkbox)
+        output_layout.addWidget(self.min_principal_stress_checkbox)
         output_layout.addWidget(self.von_mises_checkbox)
         output_layout.addWidget(self.damage_index_checkbox)
         self.output_group.setLayout(output_layout)
@@ -2840,7 +2912,7 @@ class MSUPSmartSolverGUI(QWidget):
         try:
             if self.time_history_checkbox.isChecked():
                 # Enable mutual exclusivity for stress checkboxes in Time History Mode
-                self.principal_stress_checkbox.toggled.connect(self.on_principal_stress_toggled)
+                self.max_principal_stress_checkbox.toggled.connect(self.on_principal_stress_toggled)
                 self.von_mises_checkbox.toggled.connect(self.on_von_mises_toggled)
 
                 # Show single node group and plot tab
@@ -2849,7 +2921,7 @@ class MSUPSmartSolverGUI(QWidget):
                     self.show_output_tab_widget.indexOf(self.plot_single_node_tab), True)
             else:
                 # Remove mutual exclusivity when Time History Mode is off
-                self.principal_stress_checkbox.toggled.disconnect(self.on_principal_stress_toggled)
+                self.max_principal_stress_checkbox.toggled.disconnect(self.on_principal_stress_toggled)
                 self.von_mises_checkbox.toggled.disconnect(self.on_von_mises_toggled)
 
                 # Hide single node group and plot tab
@@ -2861,13 +2933,13 @@ class MSUPSmartSolverGUI(QWidget):
 
     def on_principal_stress_toggled(self):
         """Disable Von-Mises checkbox if Principal Stress checkbox is activated in Time History Mode."""
-        if self.time_history_checkbox.isChecked() and self.principal_stress_checkbox.isChecked():
+        if self.time_history_checkbox.isChecked() and self.max_principal_stress_checkbox.isChecked():
             self.von_mises_checkbox.setChecked(False)
 
     def on_von_mises_toggled(self):
         """Disable Principal Stress checkbox if Von-Mises checkbox is activated in Time History Mode."""
         if self.time_history_checkbox.isChecked() and self.von_mises_checkbox.isChecked():
-            self.principal_stress_checkbox.setChecked(False)
+            self.max_principal_stress_checkbox.setChecked(False)
 
     def update_single_node_plot(self):
         """Updates the placeholder plot inside the MatplotlibWidget."""
@@ -2879,7 +2951,7 @@ class MSUPSmartSolverGUI(QWidget):
         """Update the plot based on the state of the 'Principal Stress' and 'Von Mises Stress' checkboxes."""
         try:
             # Retrieve the checkbox states
-            is_principal_stress = self.principal_stress_checkbox.isChecked()
+            is_principal_stress = self.max_principal_stress_checkbox.isChecked()
             is_von_mises = self.von_mises_checkbox.isChecked()
 
             # Dummy data for the plot (replace this with actual data when available)
@@ -2940,7 +3012,8 @@ class MSUPSmartSolverGUI(QWidget):
 
             # Update the Plot (Modal Coordinates) tab
             self.plot_modal_coords_tab.update_plot(time_values, modal_coord)
-            self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab), True)
+            self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab),
+                                                      True)
         except Exception as e:
             self.console_textbox.append(f"Error processing modal coordinate file: {e}")
         finally:
@@ -2986,8 +3059,10 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.append(f"Modal stress tensor shape (m x n): {df.shape}")
             self.console_textbox.append(f"Node IDs tensor shape: {df_node_ids.shape}\n")
             self.console_textbox.append(f"Normal stress components extracted: SX, SY, SZ, SXY, SYZ, SXZ")
-            self.console_textbox.append(f"SX shape: {modal_sx.shape}, SY shape: {modal_sy.shape}, SZ shape: {modal_sz.shape}")
-            self.console_textbox.append(f"SXY shape: {modal_sz.shape}, SYZ shape: {modal_syz.shape}, SXZ shape: {modal_sxz.shape}\n")
+            self.console_textbox.append(
+                f"SX shape: {modal_sx.shape}, SY shape: {modal_sy.shape}, SZ shape: {modal_sz.shape}")
+            self.console_textbox.append(
+                f"SXY shape: {modal_sz.shape}, SYZ shape: {modal_syz.shape}, SXZ shape: {modal_sxz.shape}\n")
             self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
         except Exception as e:
             self.console_textbox.append(f"Error processing modal stress file: {e}")
@@ -3014,7 +3089,8 @@ class MSUPSmartSolverGUI(QWidget):
             modal_uy = df.filter(regex='(?i)^uy_').to_numpy().astype(NP_DTYPE)
             modal_uz = df.filter(regex='(?i)^uz_').to_numpy().astype(NP_DTYPE)
             self.console_textbox.append(f"Successfully processed modal deformations file: {filename}")
-            self.console_textbox.append(f"Deformations array shapes: UX {modal_ux.shape}, UY {modal_uy.shape}, UZ {modal_uz.shape}")
+            self.console_textbox.append(
+                f"Deformations array shapes: UX {modal_ux.shape}, UY {modal_uy.shape}, UZ {modal_uz.shape}")
         except Exception as e:
             self.console_textbox.append(f"Error processing modal deformations file: {e}")
         finally:
@@ -3033,7 +3109,9 @@ class MSUPSmartSolverGUI(QWidget):
             print("Could not update display time controls:", e)
 
     def select_steady_state_file(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, 'Open Steady-State Stress File (Node numbers should be included)', '', 'Stress field exported from ANSYS Mechanical (*.txt)')
+        file_name, _ = QFileDialog.getOpenFileName(self,
+                                                   'Open Steady-State Stress File (Node numbers should be included)',
+                                                   '', 'Stress field exported from ANSYS Mechanical (*.txt)')
         if file_name:
             self.steady_state_file_path.setText(file_name)
             self.process_steady_state_file(file_name)
@@ -3062,9 +3140,12 @@ class MSUPSmartSolverGUI(QWidget):
             steady_sx = df['SX (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SX (MPa)' in df.columns else None
             steady_sy = df['SY (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SY (MPa)' in df.columns else None
             steady_sz = df['SZ (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SZ (MPa)' in df.columns else None
-            steady_sxy = df['SXY (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SXY (MPa)' in df.columns else None
-            steady_syz = df['SYZ (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SYZ (MPa)' in df.columns else None
-            steady_sxz = df['SXZ (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SXZ (MPa)' in df.columns else None
+            steady_sxy = df['SXY (MPa)'].to_numpy().reshape(-1, 1).astype(
+                NP_DTYPE) if 'SXY (MPa)' in df.columns else None
+            steady_syz = df['SYZ (MPa)'].to_numpy().reshape(-1, 1).astype(
+                NP_DTYPE) if 'SYZ (MPa)' in df.columns else None
+            steady_sxz = df['SXZ (MPa)'].to_numpy().reshape(-1, 1).astype(
+                NP_DTYPE) if 'SXZ (MPa)' in df.columns else None
 
             # Log extracted components and their shapes if they are present
             stress_components = {
@@ -3107,12 +3188,14 @@ class MSUPSmartSolverGUI(QWidget):
             # Get the current date and time
             current_time = datetime.now()
 
-            self.console_textbox.append(f"\n******************* BEGIN SOLVE ********************\nDatetime: {current_time}\n\n")
+            self.console_textbox.append(
+                f"\n******************* BEGIN SOLVE ********************\nDatetime: {current_time}\n\n")
 
             # Check if the checkboxes are checked
             calculate_damage = self.damage_index_checkbox.isChecked()
             calculate_von_mises = self.von_mises_checkbox.isChecked()
-            calculate_principal_stress = self.principal_stress_checkbox.isChecked()
+            calculate_max_principal_stress = self.max_principal_stress_checkbox.isChecked()
+            calculate_min_principal_stress = self.min_principal_stress_checkbox.isChecked()
 
             # Check if "Time History Mode" is enabled
             is_time_history_mode = self.time_history_checkbox.isChecked()
@@ -3139,12 +3222,12 @@ class MSUPSmartSolverGUI(QWidget):
             # If steady-state stress inclusion is requested
             if is_include_steady_state:
                 if (steady_sx is None or
-                    steady_sy is None or
-                    steady_sz is None or
-                    steady_sxy is None or
-                    steady_syz is None or
-                    steady_sxz is None or
-                    steady_node_ids is None):
+                        steady_sy is None or
+                        steady_sz is None or
+                        steady_sxy is None or
+                        steady_syz is None or
+                        steady_sxz is None or
+                        steady_node_ids is None):
                     self.console_textbox.append("Error: Steady-state stress data is not processed yet.")
                     self.progress_bar.setVisible(False)
                     return
@@ -3195,13 +3278,14 @@ class MSUPSmartSolverGUI(QWidget):
                 time_indices, stress_values = self.solver.process_results_for_a_single_node(
                     selected_node_idx,
                     calculate_von_mises=calculate_von_mises,
-                    calculate_principal_stress=calculate_principal_stress,
+                    calculate_max_principal_stress=calculate_max_principal_stress,
+                    calculate_min_principal_stress=calculate_min_principal_stress,
                 )
 
                 if time_indices is not None and stress_values is not None:
                     # Plot the time history of the selected stress component
                     self.plot_single_node_tab.update_plot(time_values, stress_values, selected_node_id,
-                                                          is_principal_stress=calculate_principal_stress,
+                                                          is_principal_stress=calculate_max_principal_stress,
                                                           is_von_mises=calculate_von_mises)
 
                 self.progress_bar.setVisible(False)  # Hide progress bar for single-node operation
@@ -3219,7 +3303,7 @@ class MSUPSmartSolverGUI(QWidget):
                 steady_sxz=steady_sxz,
                 steady_node_ids=steady_node_ids,
                 modal_node_ids=df_node_ids,
-                output_directory = output_directory
+                output_directory=output_directory
             )
 
             # Connect the solver's progress signal to the progress bar update slot
@@ -3230,13 +3314,15 @@ class MSUPSmartSolverGUI(QWidget):
             self.solver.process_results(
                 calculate_damage=calculate_damage,
                 calculate_von_mises=calculate_von_mises,
-                calculate_principal_stress=calculate_principal_stress
+                calculate_max_principal_stress=calculate_max_principal_stress,
+                calculate_min_principal_stress = calculate_min_principal_stress
             )
             end_time_main_calc = time.time() - start_time
 
             current_time = datetime.now()
 
-            self.console_textbox.append(f"******************** END SOLVE *********************\nDatetime: {current_time}\n\n")
+            self.console_textbox.append(
+                f"******************** END SOLVE *********************\nDatetime: {current_time}\n\n")
 
             # Log the completion
             self.console_textbox.append(f"Main calculation routine completed in: {end_time_main_calc:.2f} seconds")
@@ -3247,13 +3333,26 @@ class MSUPSmartSolverGUI(QWidget):
             if not self.time_history_checkbox.isChecked():
                 # Automatically determine which maximum arrays were computed
                 vm_data = self.solver.max_over_time_svm if self.von_mises_checkbox.isChecked() else None
-                principal_data = self.solver.max_over_time_s1 if self.principal_stress_checkbox.isChecked() else None
+                principal_data = self.solver.max_over_time_s1 if self.max_principal_stress_checkbox.isChecked() else None
 
                 if not hasattr(self, 'plot_max_over_time_tab'):
                     self.plot_max_over_time_tab = PlotlyMaxWidget()
                     modal_tab_index = self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab)
                     self.show_output_tab_widget.insertTab(modal_tab_index + 1, self.plot_max_over_time_tab,
                                                           "Maximum Over Time")
+
+                if calculate_min_principal_stress:
+                    if not hasattr(self, 'plot_min_over_time_tab'):
+                        self.plot_min_over_time_tab = PlotlyMaxWidget()  # same widget works
+                        idx = self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab)
+                        self.show_output_tab_widget.insertTab(idx + 2,
+                                                              self.plot_min_over_time_tab, "Minimum Over Time")
+
+                    self.plot_min_over_time_tab.update_plot(time_values,
+                                                            principal_values=self.solver.min_over_time_s3,
+                                                            principal_label="S3 [MPa]")
+                    self.show_output_tab_widget.setTabVisible(
+                        self.show_output_tab_widget.indexOf(self.plot_min_over_time_tab), True)
 
                 self.plot_max_over_time_tab.update_plot(time_values, vm_values=vm_data, principal_values=principal_data)
                 self.show_output_tab_widget.setTabVisible(
@@ -3314,7 +3413,7 @@ class MSUPSmartSolverGUI(QWidget):
             y_data = [0, 0, 0, 0, 0]
 
             # Check checkbox states
-            is_principal_stress = self.principal_stress_checkbox.isChecked()
+            is_principal_stress = self.max_principal_stress_checkbox.isChecked()
             is_von_mises = self.von_mises_checkbox.isChecked()
 
             # Update plot widget
@@ -3344,7 +3443,7 @@ class MSUPSmartSolverGUI(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error processing entered Node ID: {e}")
 
-    #region Handle mouse-based UI functionality
+    # region Handle mouse-based UI functionality
     def dragEnterEvent(self, event):
         """Accept the drag event if it contains URLs."""
         if event.mimeData().hasUrls():
@@ -3395,9 +3494,10 @@ class MSUPSmartSolverGUI(QWidget):
                 return True
             target_widget = target_widget.parent()  # Move up the parent hierarchy
         return False
-    #endregion
 
-    #region Handle keyboard-based UI functionality
+    # endregion
+
+    # region Handle keyboard-based UI functionality
     def toggle_modal_coord_fullscreen_plot(self):
         # Only act if the current output tab is the Plot (Modal Coordinates) tab.
         if self.show_output_tab_widget.currentWidget() != self.plot_modal_coords_tab:
@@ -3418,7 +3518,8 @@ class MSUPSmartSolverGUI(QWidget):
         else:
             self.modal_plot_window.close()
             self.modal_plot_window = None
-    #endregion
+    # endregion
+
 
 class MatplotlibWidget(QWidget):
     def __init__(self, parent=None):
@@ -3490,8 +3591,8 @@ class MatplotlibWidget(QWidget):
         # Populate the table
         self.model.removeRows(0, self.model.rowCount())
         for xi, yi in zip(x, y):
-            items = [ QStandardItem(f"{xi:.5f}"),
-                      QStandardItem(f"{yi:.5f}") ]
+            items = [QStandardItem(f"{xi:.5f}"),
+                     QStandardItem(f"{yi:.5f}")]
             self.model.appendRow(items)
 
     def copy_selection(self):
@@ -3522,6 +3623,7 @@ class MatplotlibWidget(QWidget):
             lines.append('\t'.join(row_data))
 
         QApplication.clipboard().setText('\n'.join(lines))
+
 
 class PlotlyWidget(QWidget):
     def __init__(self, parent=None):
@@ -3568,6 +3670,7 @@ class PlotlyWidget(QWidget):
         # Generate HTML and display
         main_win = self.window()
         main_win.load_fig_to_webview(resampler_fig, self.web_view)
+
 
 class ModalCoordCompositeWidget(QWidget):
     def __init__(self, parent=None):
@@ -3626,6 +3729,7 @@ class ModalCoordCompositeWidget(QWidget):
         main_win = self.window()
         main_win.load_fig_to_webview(fig, self.bar_plot_widget.web_view)
 
+
 class ModalCoordPlotWindow(QMainWindow):
     def __init__(self, composite_widget, parent=None):
         super().__init__(parent)
@@ -3640,6 +3744,7 @@ class ModalCoordPlotWindow(QMainWindow):
     def closeEvent(self, event):
         # When closed, simply accept the event.
         event.accept()
+
 
 class PlotlyMaxWidget(QWidget):
     def __init__(self, parent=None):
@@ -3656,7 +3761,7 @@ class PlotlyMaxWidget(QWidget):
 
         # Model with 3 columns
         self.model = QStandardItemModel(self)
-        self.model.setHorizontalHeaderLabels(["Time [s]", "SEQV [MPa]", "S1 [MPa]"])
+        self.model.setHorizontalHeaderLabels(["Time [s]", "SEQV [MPa]", "S1 or S3"])
         self.table.setModel(self.model)
 
         # Ctrl+C shortcut bound to copy_selection()
@@ -3674,13 +3779,13 @@ class PlotlyMaxWidget(QWidget):
         lay.addWidget(splitter)
         self.setLayout(lay)
 
-    def update_plot(self, time_values, vm_values=None, principal_values=None):
+    def update_plot(self, time_values, vm_values=None, principal_values=None, principal_label: str = "S1 [MPa]"):
         # 1) Build figure
         fig = go.Figure()
         if vm_values is not None:
             fig.add_trace(go.Scattergl(x=time_values, y=vm_values, mode='lines', name='Von Mises'))
         if principal_values is not None:
-            fig.add_trace(go.Scattergl(x=time_values, y=principal_values, mode='lines', name='Principal'))
+            fig.add_trace(go.Scattergl(x=time_values, y=principal_values, mode='lines', name=principal_label.split()[0]))
         fig.update_layout(
             xaxis_title="Time [s]",
             yaxis_title="Stress (MPa)",
@@ -3698,6 +3803,7 @@ class PlotlyMaxWidget(QWidget):
         main_win.load_fig_to_webview(resfig, self.web_view)
 
         # 3) Populate table
+        self.model.setHorizontalHeaderLabels(["Time [s]", "SEQV [MPa]", principal_label])
         self.model.removeRows(0, self.model.rowCount())
         for i, t in enumerate(time_values):
             items = [
@@ -3736,13 +3842,14 @@ class PlotlyMaxWidget(QWidget):
             lines.append('\t'.join(row_data))
         QApplication.clipboard().setText('\n'.join(lines))
 
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.92.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.93.0')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
@@ -3843,11 +3950,11 @@ class MainWindow(QMainWindow):
         self.navigator_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
 
         # Get the Desktop path dynamically
-        #desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+        # desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
 
         # Create file system model
         self.file_model = QFileSystemModel()
-        #self.file_model.setRootPath(desktop_path)  # Initially Desktop, updates when project directory is selected
+        # self.file_model.setRootPath(desktop_path)  # Initially Desktop, updates when project directory is selected
         self.file_model.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)  # Show all files & folders
 
         # Apply file type filter
@@ -3857,7 +3964,7 @@ class MainWindow(QMainWindow):
         # Create Tree View
         self.tree_view = QTreeView()
         self.tree_view.setModel(self.file_model)
-        #self.tree_view.setRootIndex(self.file_model.index(desktop_path))  # Start at Desktop
+        # self.tree_view.setRootIndex(self.file_model.index(desktop_path))  # Start at Desktop
         self.tree_view.setHeaderHidden(False)  # Show headers for resizing
         self.tree_view.setMinimumWidth(240)  # Set a reasonable width
         self.tree_view.setSortingEnabled(True)  # Allow sorting of files/folders
@@ -3935,7 +4042,7 @@ class MainWindow(QMainWindow):
         toggle_navigator_action.setText("Navigator")  # Rename action
         view_menu.addAction(toggle_navigator_action)
 
-        #Enable drag and drop on the TreeView
+        # Enable drag and drop on the TreeView
         self.tree_view.setDragEnabled(True)
         self.tree_view.setAcceptDrops(True)
         self.tree_view.setDropIndicatorShown(True)
@@ -3964,13 +4071,13 @@ class MainWindow(QMainWindow):
 
             html_content = pio.to_html(plotly_fig,
                                        full_html=True,
-                                       include_plotlyjs=True, # Embed JS
+                                       include_plotlyjs=True,  # Embed JS
                                        config={'responsive': True})
 
             with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as tmp_file:
-                 tmp_file.write(html_content)
-                 file_path = tmp_file.name
-                 self.temp_files.append(file_path)
+                tmp_file.write(html_content)
+                file_path = tmp_file.name
+                self.temp_files.append(file_path)
 
             web_view.setUrl(QUrl.fromLocalFile(file_path))
             web_view.show()
@@ -3979,13 +4086,17 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
             # Display error in webview
             error_html = f"<html><body><h1>Error loading plot</h1><pre>{e}</pre><pre>{traceback.format_exc()}</pre></body></html>"
-            try: web_view.setHtml(error_html)
-            except Exception: pass # Ignore errors setting error html
+            try:
+                web_view.setHtml(error_html)
+            except Exception:
+                pass  # Ignore errors setting error html
 
     def closeEvent(self, event):
         """Clean up temporary files on application close."""
         self.clear_plot_cache(show_message=False)
         event.accept()
+
+
 # endregion
 
 # region Run the main GUI
