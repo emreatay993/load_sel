@@ -56,8 +56,6 @@ IS_WRITE_TO_DISK_TIMES_OF_MAX_VON_STRESS_AT_EACH_NODE = True
 
 # Set OpenBLAS to use all available CPU cores
 os.environ["OPENBLAS_NUM_THREADS"] = str(os.cpu_count())
-
-
 # endregion
 
 # region Define global functions
@@ -516,66 +514,142 @@ class MSUPSmartSolverTransient(QObject):
         return s1, s2, s3
 
     @staticmethod
-    def compute_principal_stresses_cardano(sx, sy, sz, txy, tyz, txz):  # NOT TESTED WITH REAL VALUES, STILL BETA!!!
+    @njit(parallel=True)
+    def compute_principal_stresses_cardano(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
         """
-        Analytic principal-stress routine.
-        Inputs : six 1-D, preferrably float64 (can still be float32, but be careful) arrays of equal length N
-        Return : (N,3) array, σ₁ ≤ σ₂ ≤ σ₃
+        Calculates the three principal stresses from the six components of stress.
+
+        -- What are Principal Stresses? --
+        At any point within a stressed material, you can imagine a tiny cube. If you rotate
+        this cube, the stresses on its faces will change. Principal stresses are found at the
+        specific orientation where the "scraping" forces (shear stresses) on the faces
+        disappear completely, leaving only "push/pull" forces (normal stresses).
+
+        These three principal stresses, typically named s1, s2, and s3, represent the
+        maximum, middle, and minimum push/pull stress at that point. They are fundamental
+        in engineering for predicting when a material might fail.
+
+        -- How This Function Works --
+        This function takes 2D arrays of the six standard stress components as input.
+        For each point in these arrays, it uses an analytical method (Cardano's formula for
+        solving cubic equations) to calculate the three principal stresses.
+
+        Args:
+            sx (np.ndarray): 2D array of normal stresses in the X-direction. Shape is (num_nodes, num_time_points).
+            sy (np.ndarray): 2D array of normal stresses in the Y-direction.
+            sz (np.ndarray): 2D array of normal stresses in the Z-direction.
+            sxy (np.ndarray): 2D array of XY shear stresses.
+            syz (np.ndarray): 2D array of YZ shear stresses.
+            sxz (np.ndarray): 2D array of XZ shear stresses.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]: A tuple containing three 2D arrays (s1, s2, s3).
+            - s1: The maximum (most positive) principal stress at each point.
+            - s2: The intermediate principal stress at each point.
+            - s3: The minimum (most negative) principal stress at each point.
         """
-        N = sx.size
-        out = np.empty((N, 3), np.float64)
+        # Read the dimensions (e.g., height and width) from the input stress array.
+        # This tells us how many nodes and time points we need to process.
+        num_nodes, num_time_points = sx.shape
 
-        two_pi_3 = 2.0943951023931953  # 2π/3
-        tiny_p = 1.0e-12  # hydrostatic threshold
+        # Create empty 2D arrays filled with zeros to hold our final results.
+        # Pre-allocating memory like this is more efficient than building the arrays on the fly.
+        s1_out = np.zeros((num_nodes, num_time_points), dtype=NP_DTYPE)
+        s2_out = np.zeros_like(s1_out)
+        s3_out = np.zeros_like(s1_out)
 
-        for i in prange(N):
-            # invariants
-            I1 = sx[i] + sy[i] + sz[i]
-            I2 = (sx[i] * sy[i] + sy[i] * sz[i] + sz[i] * sx[i]
-                  - txy[i] ** 2 - tyz[i] ** 2 - txz[i] ** 2)
-            I3 = (sx[i] * sy[i] * sz[i]
-                  + 2 * txy[i] * tyz[i] * txz[i]
-                  - sx[i] * tyz[i] ** 2
-                  - sy[i] * txz[i] ** 2
-                  - sz[i] * txy[i] ** 2)
+        # --- Pre-calculate mathematical constants to avoid recalculating them inside the loop ---
+        two_pi_3 = 2.0943951023931953  # This is 2 * pi / 3, used in the trigonometric solution.
+        tiny_p = 1.0e-12  # A very small number used as a tolerance for a special case.
 
-            # depressed cubic  y³ + p y + q = 0
-            p = I2 - I1 * I1 / 3.0
-            q = (2.0 * I1 * I1 * I1) / 27.0 - I1 * I2 / 3.0 + I3
+        # These nested loops ensure we perform the calculation for every node at every time step.
+        # `prange` is Numba's "parallel range," which splits the work of this outer loop
+        # across multiple CPU cores automatically.
+        for i in prange(num_nodes):
+            for j in range(num_time_points):
+                # For the current point (node `i`, time `j`), get the six stress values.
+                s_x = sx[i, j]
+                s_y = sy[i, j]
+                s_z = sz[i, j]
+                s_xy = sxy[i, j]
+                s_yz = syz[i, j]
+                s_xz = sxz[i, j]
 
-            # Check for nearly-hydrostatic conditions
-            if abs(p) < tiny_p and abs(q) < tiny_p:
-                s = I1 / 3.0
-                out[i, 0] = out[i, 1] = out[i, 2] = s
-                continue
+                # --- Step 1: Calculate Stress Invariants (I1, I2, I3) ---
+                # To find the principal stresses, we first calculate three special values called
+                # "invariants." They are called this because their values don't change even if you
+                # rotate the object. They are fundamental properties of the stress state.
+                I1 = s_x + s_y + s_z
+                I2 = (s_x * s_y + s_y * s_z + s_z * s_x
+                      - s_xy ** 2 - s_yz ** 2 - s_xz ** 2)
+                I3 = (s_x * s_y * s_z
+                      + 2 * s_xy * s_yz * s_xz
+                      - s_x * s_yz ** 2
+                      - s_y * s_xz ** 2
+                      - s_z * s_xy ** 2)
 
-            minus_p_over_3 = -p / 3.0  # ≥ 0 for real roots
-            sqrt_m = math.sqrt(minus_p_over_3)
-            cos_arg = q / (2.0 * sqrt_m ** 3)
+                # --- Step 2: Formulate the Cubic Equation ---
+                # The three principal stresses are the mathematical roots of a cubic polynomial equation
+                # defined by the invariants. To solve it, we convert it into a simpler "depressed"
+                # form: y³ + p*y + q = 0. The variables `p` and `q` are the coefficients for this equation.
+                p = I2 - I1 ** 2 / 3.0
+                q = (2.0 * I1 ** 3) / 27.0 - (I1 * I2) / 3.0 + I3
 
-            # clip to [-1, 1] to avoid nan from acos
-            if cos_arg > 1.0:
-                cos_arg = 1.0
-            elif cos_arg < -1.0:
-                cos_arg = -1.0
+                # --- Step 3: Check for the special "Hydrostatic" case ---
+                # This `if` statement checks for a simple case where an object is stressed equally
+                # in all directions (like being deep underwater). In this case, `p` and `q` are
+                # effectively zero, and all three principal stresses are equal.
+                # This check handles that case directly and avoids division-by-zero errors in the
+                # more complex calculations below, making the function more robust.
+                if abs(p) < tiny_p and abs(q) < tiny_p:
+                    s_hydro = I1 / 3.0
+                    s1_out[i, j] = s_hydro
+                    s2_out[i, j] = s_hydro
+                    s3_out[i, j] = s_hydro
+                    continue  # Skip to the next point in the loop
 
-            phi = math.acos(cos_arg) / 3.0
-            amp = 2.0 * sqrt_m
+                # --- Step 4: Solve the Cubic Equation using the Trigonometric Method ---
+                # For the general case, the roots are found using a reliable and stable trigonometric
+                # formula (related to Viète's formulas).
+                minus_p_over_3 = -p / 3.0
+                # For real stresses, minus_p_over_3 must be non-negative, so sqrt is safe.
+                sqrt_m = math.sqrt(minus_p_over_3)
+                cos_arg = q / (2.0 * sqrt_m ** 3)
 
-            s1 = I1 / 3.0 + amp * math.cos(phi)
-            s2 = I1 / 3.0 + amp * math.cos(phi - two_pi_3)
-            s3 = I1 / 3.0 + amp * math.cos(phi + two_pi_3)
+                # This is a numerical safety check. Due to tiny computer precision errors, `cos_arg`
+                # might be slightly outside the valid [-1, 1] range for the `acos` function.
+                # This code nudges it back into range to prevent a crash.
+                if cos_arg > 1.0:
+                    cos_arg = 1.0
+                elif cos_arg < -1.0:
+                    cos_arg = -1.0
 
-            # sort ascending
-            if s1 > s2: s1, s2 = s2, s1
-            if s2 > s3: s2, s3 = s3, s2
-            if s1 > s2: s1, s2 = s2, s1
+                # These lines are the core of the trigonometric solution formula.
+                phi = math.acos(cos_arg) / 3.0
+                amp = 2.0 * sqrt_m
 
-            out[i, 0] = s1
-            out[i, 1] = s2
-            out[i, 2] = s3
+                # The final formulas give us the three roots, which are our principal stresses.
+                s1 = I1 / 3.0 + amp * math.cos(phi)
+                s2 = I1 / 3.0 + amp * math.cos(phi - two_pi_3)
+                s3 = I1 / 3.0 + amp * math.cos(phi + two_pi_3)
 
-        return out
+                # --- Step 5: Sort the Results ---
+                # The formulas don't guarantee which of s1, s2, or s3 is the largest.
+                # This block of code performs a simple sort to ensure that s1 is always the
+                # maximum value, s2 is the middle, and s3 is the minimum. This is the standard
+                # engineering convention.
+                if s1 < s2: s1, s2 = s2, s1
+                if s2 < s3: s2, s3 = s3, s2
+                if s1 < s2: s1, s2 = s2, s1
+
+                # --- Step 6: Store the Final Results ---
+                # Assign the sorted principal stresses to their correct place in our output arrays.
+                s1_out[i, j] = s1
+                s2_out[i, j] = s2
+                s3_out[i, j] = s3
+
+        # After the loops have finished, return the three complete 2D arrays of results.
+        return s1_out, s2_out, s3_out
 
     def process_results(self,
                         calculate_damage=False,
@@ -3849,7 +3923,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.93.0')
+        self.setWindowTitle('MSUP Smart Solver - v0.93.1')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
