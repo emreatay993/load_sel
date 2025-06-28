@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButt
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
                              QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
                              QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut, QSplitter,
-                             QAbstractItemView, QTableView, QProgressDialog)
+                             QAbstractItemView, QTableView, QProgressDialog, QDialog, QDialogButtonBox)
 from PyQt5.QtGui import (QPalette, QColor, QFont, QTextCursor, QKeySequence, QDoubleValidator, QStandardItemModel,
                          QStandardItem, QKeySequence)
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths, QTimer
@@ -42,9 +42,17 @@ import plotly.io as pio
 # endregion
 
 # region Define global variables
-NP_DTYPE = np.float32
-TORCH_DTYPE = torch.float32
-RESULT_DTYPE = 'float32'
+RAM_PERCENT = 0.9 # Default RAM allocation percentage based on free RAM
+DEFAULT_PRECISION = 'Single'
+
+if DEFAULT_PRECISION == 'Single':
+    NP_DTYPE = np.float32
+    TORCH_DTYPE = torch.float32
+    RESULT_DTYPE = 'float32'
+elif DEFAULT_PRECISION == 'Double':
+    NP_DTYPE = np.float64
+    TORCH_DTYPE = torch.float64
+    RESULT_DTYPE = 'float64'
 
 IS_GPU_ACCELERATION_ENABLED = False
 
@@ -56,6 +64,8 @@ IS_WRITE_TO_DISK_TIMES_OF_MAX_VON_STRESS_AT_EACH_NODE = True
 
 # Set OpenBLAS to use all available CPU cores
 os.environ["OPENBLAS_NUM_THREADS"] = str(os.cpu_count())
+
+
 # endregion
 
 # region Define global functions
@@ -244,7 +254,7 @@ class MSUPSmartSolverTransient(QObject):
         self.TORCH_DTYPE = TORCH_DTYPE
         self.RESULT_DTYPE = RESULT_DTYPE
         self.ELEMENT_SIZE = np.dtype(self.NP_DTYPE).itemsize
-        self.RAM_PERCENT = 0.1
+        self.RAM_PERCENT = RAM_PERCENT
         self.device = torch.device("cuda" if IS_GPU_ACCELERATION_ENABLED and torch.cuda.is_available() else "cpu")
 
         self.modal_coord = torch.tensor(modal_coord, dtype=self.TORCH_DTYPE).to(self.device)
@@ -312,7 +322,8 @@ class MSUPSmartSolverTransient(QObject):
         total_memory = chunk_size * memory_per_node
         return total_memory / (1024 ** 3)  # Convert bytes to GB
 
-    def get_memory_per_node(self, num_time_points, calculate_von_mises, calculate_max_principal_stress, calculate_damage):
+    def get_memory_per_node(self, num_time_points, calculate_von_mises, calculate_max_principal_stress,
+                            calculate_damage):
         num_arrays = 6  # For actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
         if calculate_von_mises:
             num_arrays += 1  # For sigma_vm
@@ -515,7 +526,7 @@ class MSUPSmartSolverTransient(QObject):
 
     @staticmethod
     @njit(parallel=True)
-    def compute_principal_stresses_cardano(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
+    def compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
         """
         Calculates the three principal stresses from the six components of stress.
 
@@ -550,7 +561,7 @@ class MSUPSmartSolverTransient(QObject):
         """
         # Read the dimensions (e.g., height and width) from the input stress array.
         # This tells us how many nodes and time points we need to process.
-        num_nodes, num_time_points = sx.shape
+        num_nodes, num_time_points = actual_sx.shape
 
         # Create empty 2D arrays filled with zeros to hold our final results.
         # Pre-allocating memory like this is more efficient than building the arrays on the fly.
@@ -568,12 +579,12 @@ class MSUPSmartSolverTransient(QObject):
         for i in prange(num_nodes):
             for j in range(num_time_points):
                 # For the current point (node `i`, time `j`), get the six stress values.
-                s_x = sx[i, j]
-                s_y = sy[i, j]
-                s_z = sz[i, j]
-                s_xy = sxy[i, j]
-                s_yz = syz[i, j]
-                s_xz = sxz[i, j]
+                s_x = actual_sx[i, j]
+                s_y = actual_sy[i, j]
+                s_z = actual_sz[i, j]
+                s_xy = actual_sxy[i, j]
+                s_yz = actual_syz[i, j]
+                s_xz = actual_sxz[i, j]
 
                 # --- Step 1: Calculate Stress Invariants (I1, I2, I3) ---
                 # To find the principal stresses, we first calculate three special values called
@@ -1889,7 +1900,8 @@ class DisplayTab(QWidget):
                         self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False,
                                                                      font_size=10)
                 except (
-                AttributeError, ReferenceError):  # Actor might have been garbage collected or VTK object deleted
+                        AttributeError,
+                        ReferenceError):  # Actor might have been garbage collected or VTK object deleted
                     # Attempt removal if reference still exists
                     try:
                         self.plotter.remove_actor(self.time_text_actor, render=False)
@@ -3389,7 +3401,7 @@ class MSUPSmartSolverGUI(QWidget):
                 calculate_damage=calculate_damage,
                 calculate_von_mises=calculate_von_mises,
                 calculate_max_principal_stress=calculate_max_principal_stress,
-                calculate_min_principal_stress = calculate_min_principal_stress
+                calculate_min_principal_stress=calculate_min_principal_stress
             )
             end_time_main_calc = time.time() - start_time
 
@@ -3859,7 +3871,8 @@ class PlotlyMaxWidget(QWidget):
         if vm_values is not None:
             fig.add_trace(go.Scattergl(x=time_values, y=vm_values, mode='lines', name='Von Mises'))
         if principal_values is not None:
-            fig.add_trace(go.Scattergl(x=time_values, y=principal_values, mode='lines', name=principal_label.split()[0]))
+            fig.add_trace(
+                go.Scattergl(x=time_values, y=principal_values, mode='lines', name=principal_label.split()[0]))
         fig.update_layout(
             xaxis_title="Time [s]",
             yaxis_title="Stress (MPa)",
@@ -3923,7 +3936,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.93.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.93.2')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
@@ -3965,6 +3978,9 @@ class MainWindow(QMainWindow):
         self.setMenuBar(self.menu_bar)
         self.menu_bar.setStyleSheet(menu_bar_style)
 
+        # Create the Navigator (File Explorer)
+        self.create_navigator()
+
         # Add "File" menu
         file_menu = self.menu_bar.addMenu("File")
 
@@ -3972,6 +3988,20 @@ class MainWindow(QMainWindow):
         select_dir_action = QAction("Select Project Directory", self)
         select_dir_action.triggered.connect(self.select_project_directory)
         file_menu.addAction(select_dir_action)
+
+        # Add a "View" menu option to show/hide Navigator
+        view_menu = self.menu_bar.addMenu("View")
+        toggle_navigator_action = self.navigator_dock.toggleViewAction()
+        toggle_navigator_action.setText("Navigator")
+        view_menu.addAction(toggle_navigator_action)
+
+        # Add Settings menu
+        settings_menu = self.menu_bar.addMenu("Settings")
+
+        # Add "Advanced" action under Settings menu
+        advanced_settings_action = QAction("Advanced", self)
+        advanced_settings_action.triggered.connect(self.open_advanced_settings)
+        settings_menu.addAction(advanced_settings_action)
 
         # Create a QTabWidget
         self.tab_widget = QTabWidget()
@@ -4013,9 +4043,6 @@ class MainWindow(QMainWindow):
 
         # Variable to store selected project directory
         self.project_directory = None
-
-        # Create the Navigator (File Explorer)
-        self.create_navigator()
 
     def create_navigator(self):
         """Create a dockable navigator showing project directory contents."""
@@ -4110,12 +4137,6 @@ class MainWindow(QMainWindow):
         self.navigator_dock.setWidget(self.tree_view)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.navigator_dock)  # Add it to the left
 
-        # Add a "View" menu option to show/hide Navigator
-        view_menu = self.menu_bar.addMenu("View")
-        toggle_navigator_action = self.navigator_dock.toggleViewAction()
-        toggle_navigator_action.setText("Navigator")  # Rename action
-        view_menu.addAction(toggle_navigator_action)
-
         # Enable drag and drop on the TreeView
         self.tree_view.setDragEnabled(True)
         self.tree_view.setAcceptDrops(True)
@@ -4170,7 +4191,134 @@ class MainWindow(QMainWindow):
         self.clear_plot_cache(show_message=False)
         event.accept()
 
+    def open_advanced_settings(self):
+        """Opens the advanced settings dialog and applies changes if accepted."""
+        dialog = AdvancedSettingsDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            settings = dialog.get_settings()
+            self.apply_advanced_settings(settings)
+            QMessageBox.information(self, "Settings Applied",
+                                    "New advanced settings have been applied.\n"
+                                    "They will be used for the next solve operation.")
 
+    def apply_advanced_settings(self, settings):
+        """Updates the global variables based on the dialog's settings."""
+        global RAM_PERCENT, DEFAULT_PRECISION, IS_GPU_ACCELERATION_ENABLED
+        global NP_DTYPE, TORCH_DTYPE, RESULT_DTYPE
+
+        # Update the primary global variables
+        RAM_PERCENT = settings["ram_percent"]
+        DEFAULT_PRECISION = settings["precision"]
+        IS_GPU_ACCELERATION_ENABLED = settings["gpu_acceleration"]
+
+        # Update the derived precision-related variables
+        if DEFAULT_PRECISION == 'Single':
+            NP_DTYPE = np.float32
+            TORCH_DTYPE = torch.float32
+            RESULT_DTYPE = 'float32'
+        elif DEFAULT_PRECISION == 'Double':
+            NP_DTYPE = np.float64
+            TORCH_DTYPE = torch.float64
+            RESULT_DTYPE = 'float64'
+
+        print("\n--- Advanced settings updated ---")
+        print(f"  RAM Allocation: {RAM_PERCENT * 100:.0f}%")
+        print(f"  Solver Precision: {DEFAULT_PRECISION}")
+        print(f"  GPU Acceleration: {'Enabled' if IS_GPU_ACCELERATION_ENABLED else 'Disabled'}")
+        print("---------------------------------")
+
+
+class AdvancedSettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Advanced Settings")
+        self.setMinimumWidth(400)
+
+        # --- Define fonts for different elements ---
+        main_font = QFont()
+        main_font.setPointSize(10)  # Main font for labels and controls
+
+        group_title_font = QFont()
+        group_title_font.setPointSize(10)
+
+        # --- Current values for reference ---
+        global_settings_text = (
+            f"Current settings:\n"
+            f"- Precision: {DEFAULT_PRECISION}\n"
+            f"- RAM Limit: {RAM_PERCENT * 100:.0f}%\n"
+            f"- GPU Acceleration: {'Enabled' if IS_GPU_ACCELERATION_ENABLED else 'Disabled'}"
+        )
+        self.current_settings_label = QLabel(global_settings_text)
+        # Style this label specifically for a 'console' look
+        self.current_settings_label.setStyleSheet("""
+            background-color: #f0f0f0; 
+            border: 1px solid #dcdcdc; 
+            padding: 8px; 
+            border-radius: 3px;
+            font-family: Consolas, Courier New, monospace;
+            font-size: 9pt;
+        """)
+
+        # --- Create widgets for modification ---
+        self.ram_label = QLabel("Set RAM Allocation (%):")
+        self.ram_spinbox = QSpinBox()
+        self.ram_spinbox.setRange(10, 95)
+        self.ram_spinbox.setValue(int(RAM_PERCENT * 100))
+        self.ram_spinbox.setToolTip("Set the maximum percentage of available RAM the solver can use. It will based on allowable free memory.")
+
+        self.precision_label = QLabel("Set Solver Precision:")
+        self.precision_combobox = QComboBox()
+        self.precision_combobox.addItems(["Single", "Double"])
+        self.precision_combobox.setCurrentText(DEFAULT_PRECISION)
+        self.precision_combobox.setToolTip(
+            "Single precision is faster and uses less memory.\nDouble precision is more accurate but slower.")
+
+        self.gpu_checkbox = QCheckBox("Enable GPU Acceleration (if available)")
+        self.gpu_checkbox.setChecked(IS_GPU_ACCELERATION_ENABLED)
+        self.gpu_checkbox.setToolTip("Uses the GPU for matrix multiplication if a compatible NVIDIA GPU is found and CUDA is installed in the system.")
+
+        # --- Apply font to the widgets ---
+        self.ram_label.setFont(main_font)
+        self.ram_spinbox.setFont(main_font)
+        self.precision_label.setFont(main_font)
+        self.precision_combobox.setFont(main_font)
+        self.gpu_checkbox.setFont(main_font)
+
+        # --- Layout ---
+        layout = QGridLayout()
+        layout.setSpacing(15)
+        layout.addWidget(self.ram_label, 0, 0)
+        layout.addWidget(self.ram_spinbox, 0, 1)
+        layout.addWidget(self.precision_label, 1, 0)
+        layout.addWidget(self.precision_combobox, 1, 1)
+        layout.addWidget(self.gpu_checkbox, 2, 0, 1, 2)
+
+        # --- GroupBox to hold the settings ---
+        settings_group = QGroupBox("Modify Global Parameters")
+        settings_group.setFont(group_title_font)
+        settings_group.setLayout(layout)
+
+        # --- OK and Cancel buttons ---
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        self.buttons.setFont(main_font)  # Apply font to buttons
+
+        # --- Main layout for the dialog ---
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(self.current_settings_label)
+        main_layout.addWidget(settings_group)
+        main_layout.addStretch()  # Add a spacer
+        main_layout.addWidget(self.buttons)
+        self.setLayout(main_layout)
+
+    def get_settings(self):
+        """Returns the selected settings from the dialog widgets."""
+        return {
+            "ram_percent": self.ram_spinbox.value() / 100.0,
+            "precision": self.precision_combobox.currentText(),
+            "gpu_acceleration": self.gpu_checkbox.isChecked(),
+        }
 # endregion
 
 # region Run the main GUI
