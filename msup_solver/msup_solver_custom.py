@@ -716,16 +716,6 @@ class MSUPSmartSolverTransient(QObject):
         """
         Calculates the three principal stresses from the six components of stress.
 
-        -- What are Principal Stresses? --
-        At any point within a stressed material, you can imagine a tiny cube. If you rotate
-        this cube, the stresses on its faces will change. Principal stresses are found at the
-        specific orientation where the "scraping" forces (shear stresses) on the faces
-        disappear completely, leaving only "push/pull" forces (normal stresses).
-
-        These three principal stresses, typically named s1, s2, and s3, represent the
-        maximum, middle, and minimum push/pull stress at that point. They are fundamental
-        in engineering for predicting when a material might fail.
-
         -- How This Function Works --
         This function takes 2D arrays of the six standard stress components as input.
         For each point in these arrays, it uses an analytical method (Cardano's formula for
@@ -1192,7 +1182,7 @@ class MSUPSmartSolverTransient(QObject):
 
             return np.arange(s1.shape[1]), s1[0, :]  # time_indices, stress_values
 
-        if calculate_min_principal_stress:
+        elif calculate_min_principal_stress:
             s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
                                                          actual_sxz)
             print(f"Principal Stresses calculated for Node {selected_node_id}\n")
@@ -1622,13 +1612,15 @@ class DisplayTab(QWidget):
 
         # Determine which stress type is selected.
         compute_von = main_tab.von_mises_checkbox.isChecked()
-        compute_principal = main_tab.max_principal_stress_checkbox.isChecked()
+        compute_max_principal = main_tab.max_principal_stress_checkbox.isChecked()
+        compute_min_principal = main_tab.min_principal_stress_checkbox.isChecked()
         compute_velocity   = main_tab.velocity_checkbox.isChecked()
         compute_acceleration = main_tab.acceleration_checkbox.isChecked()
 
         num_outputs_selected = sum([
             compute_von,
-            compute_principal,
+            compute_max_principal,
+            compute_min_principal,
             compute_velocity,
             compute_acceleration,
         ])
@@ -1637,7 +1629,7 @@ class DisplayTab(QWidget):
                                 "Please select only one output type for time point visualization.")
             return
 
-        if not (compute_von or compute_principal or compute_velocity or compute_acceleration):
+        if not (compute_von or compute_max_principal or compute_min_principal or compute_velocity or compute_acceleration):
             QMessageBox.warning(self, "No Selection",
                                 "No valid output is selected. Please select a valid output type to compute the results.")
             return
@@ -1761,12 +1753,19 @@ class DisplayTab(QWidget):
             field_name = "SVM"
             display_name = "SVM (MPa)"
 
-        elif compute_principal:
+        elif compute_max_principal:
             s1, s2, s3 = temp_solver.compute_principal_stresses(actual_sx, actual_sy, actual_sz,
                                                                 actual_sxy, actual_syz, actual_sxz)
             scalar_field = s1  # Choose the maximum principal stress
             field_name = "S1"
             display_name = "S1 (MPa)"
+
+        elif compute_min_principal:
+            s1, s2, s3 = temp_solver.compute_principal_stresses(actual_sx, actual_sy, actual_sz,
+                                                                actual_sxy, actual_syz, actual_sxz)
+            scalar_field = s3  # Choose the minimum principal stress
+            field_name = "S3"
+            display_name = "S3 (MPa)"
 
         elif compute_velocity or compute_acceleration:
             if 'modal_ux' not in globals():
@@ -1962,12 +1961,13 @@ class DisplayTab(QWidget):
         # region 2. Determine Required Outputs
         main_tab = self.window().batch_solver_tab  # Access main tab for settings
         compute_von = main_tab.von_mises_checkbox.isChecked()
-        compute_principal = main_tab.max_principal_stress_checkbox.isChecked()
+        compute_max_principal = main_tab.max_principal_stress_checkbox.isChecked()
+        compute_min_principal = main_tab.min_principal_stress_checkbox.isChecked()
         compute_deformation = main_tab.deformations_checkbox.isChecked()
         compute_velocity = main_tab.velocity_checkbox.isChecked()
         compute_acceleration = main_tab.acceleration_checkbox.isChecked()
 
-        if not (compute_von or compute_principal or compute_velocity or compute_acceleration):
+        if not (compute_von or compute_max_principal or compute_min_principal or compute_velocity or compute_acceleration):
             QMessageBox.warning(self, "No Selection",
                                 "No valid output is selected in the Main Window tab for animation.")
             self.stop_animation()
@@ -2085,12 +2085,19 @@ class DisplayTab(QWidget):
                     actual_sxy_anim, actual_syz_anim, actual_sxz_anim)
                 self.data_column_name = "SVM (MPa)"
 
-            elif compute_principal:
+            elif compute_max_principal:
                 s1_anim, _, _ = temp_solver.compute_principal_stresses(
                     actual_sx_anim, actual_sy_anim, actual_sz_anim,
                     actual_sxy_anim, actual_syz_anim, actual_sxz_anim)
                 self.precomputed_scalars = s1_anim
                 self.data_column_name = "S1 (MPa)"
+
+            elif compute_min_principal:
+                _, _, s3_anim = temp_solver.compute_principal_stresses(
+                    actual_sx_anim, actual_sy_anim, actual_sz_anim,
+                    actual_sxy_anim, actual_syz_anim, actual_sxz_anim)
+                self.precomputed_scalars = s3_anim
+                self.data_column_name = "S3 (MPa)"
 
             elif compute_velocity or compute_acceleration:
                 # Need modal deformations
@@ -2155,7 +2162,8 @@ class DisplayTab(QWidget):
             del temp_solver
             del actual_sx_anim, actual_sy_anim, actual_sz_anim, actual_sxy_anim, actual_syz_anim, actual_sxz_anim
             if compute_von: pass  # Scalars already stored
-            if compute_principal: del s1_anim
+            if compute_max_principal: del s1_anim
+            if compute_min_principal: del s3_anim
             if compute_deformation and deformations_anim is not None:
                 del deformations_anim, ux_anim, uy_anim, uz_anim, displacements_stacked, original_coords_reshaped
             gc.collect()
@@ -2829,9 +2837,9 @@ class DisplayTab(QWidget):
         # 1) Check which output is selected in the main GUI:
         main_tab = self.main_window.batch_solver_tab
         compute_von = main_tab.von_mises_checkbox.isChecked()
-        compute_principal = main_tab.max_principal_stress_checkbox.isChecked()
+        compute_max_principal = main_tab.max_principal_stress_checkbox.isChecked()
         # If neither is selected, return zeros (or you could raise an error).
-        if not (compute_von or compute_principal):
+        if not (compute_von or compute_max_principal):
             return np.zeros(self.current_mesh.n_points, dtype=np.float32)
 
         # 2) Ensure that global data is loaded:
@@ -2885,7 +2893,7 @@ class DisplayTab(QWidget):
             # sigma_vm has shape (n_nodes, 1) => flatten to 1D
             return sigma_vm[:, 0]
 
-        elif compute_principal:
+        elif compute_max_principal:
             s1, s2, s3 = temp_solver.compute_principal_stresses(
                 actual_sx, actual_sy, actual_sz,
                 actual_sxy, actual_syz, actual_sxz
@@ -3550,6 +3558,7 @@ class MSUPSmartSolverGUI(QWidget):
             if self.time_history_checkbox.isChecked():
                 # Enable mutual exclusivity for stress checkboxes in Time History Mode
                 self.max_principal_stress_checkbox.toggled.connect(self.on_principal_stress_toggled)
+                self.min_principal_stress_checkbox.toggled.connect(self.on_min_principal_stress_toggled)
                 self.von_mises_checkbox.toggled.connect(self.on_von_mises_toggled)
 
                 # Show single node group and plot tab
@@ -3559,6 +3568,7 @@ class MSUPSmartSolverGUI(QWidget):
             else:
                 # Remove mutual exclusivity when Time History Mode is off
                 self.max_principal_stress_checkbox.toggled.disconnect(self.on_principal_stress_toggled)
+                self.min_principal_stress_checkbox.toggled.disconnect(self.on_min_principal_stress_toggled)
                 self.von_mises_checkbox.toggled.disconnect(self.on_von_mises_toggled)
 
                 # Hide single node group and plot tab
@@ -3569,14 +3579,27 @@ class MSUPSmartSolverGUI(QWidget):
             print(f"Error in toggling single node group visibility: {e}")
 
     def on_principal_stress_toggled(self):
-        """Disable Von-Mises checkbox if Principal Stress checkbox is activated in Time History Mode."""
+        """Disable other stress checkboxes if Max Principal Stress is selected in Time History Mode."""
+        # This signal is connected to the max_principal_stress_checkbox
         if self.time_history_checkbox.isChecked() and self.max_principal_stress_checkbox.isChecked():
+            # If "Max Principal" is checked, uncheck the others
+            self.min_principal_stress_checkbox.setChecked(False)
+            self.von_mises_checkbox.setChecked(False)
+
+    def on_min_principal_stress_toggled(self):
+        """Disable other stress checkboxes if Min Principal Stress is selected in Time History Mode."""
+        # This signal is connected to the min_principal_stress_checkbox
+        if self.time_history_checkbox.isChecked() and self.min_principal_stress_checkbox.isChecked():
+            # If "Min Principal" is checked, uncheck the others
+            self.max_principal_stress_checkbox.setChecked(False)
             self.von_mises_checkbox.setChecked(False)
 
     def on_von_mises_toggled(self):
-        """Disable Principal Stress checkbox if Von-Mises checkbox is activated in Time History Mode."""
+        """Disable Principal Stress checkboxes if Von-Mises is activated in Time History Mode."""
         if self.time_history_checkbox.isChecked() and self.von_mises_checkbox.isChecked():
+            # If "Von Mises" is checked, uncheck the others
             self.max_principal_stress_checkbox.setChecked(False)
+            self.min_principal_stress_checkbox.setChecked(False)
 
     def update_single_node_plot(self):
         """Updates the placeholder plot inside the MatplotlibWidget."""
@@ -3589,6 +3612,7 @@ class MSUPSmartSolverGUI(QWidget):
         try:
             # Retrieve the checkbox states
             is_max_principal_stress = self.max_principal_stress_checkbox.isChecked()
+            is_min_principal_stress = self.min_principal_stress_checkbox.isChecked()
             is_von_mises = self.von_mises_checkbox.isChecked()
             is_velocity = self.velocity_checkbox.isChecked()
             is_acceleration = self.acceleration_checkbox.isChecked()
@@ -3599,10 +3623,10 @@ class MSUPSmartSolverGUI(QWidget):
 
             # Update the plot with the current checkbox states
             self.plot_single_node_tab.update_plot(x_data, y_data, None,
-                                                  is_max_principal_stress,
-                                                  is_von_mises,
-                                                  is_velocity,
-                                                  is_acceleration)
+                                                  is_max_principal_stress= is_max_principal_stress,
+                                                  is_min_principal_stress= is_min_principal_stress,
+                                                  is_von_mises=is_von_mises, is_velocity=is_velocity,
+                                                  is_acceleration=is_acceleration)
         except Exception as e:
             print(f"Error updating plot based on checkbox states: {e}")
 
@@ -3628,7 +3652,7 @@ class MSUPSmartSolverGUI(QWidget):
                         break
 
             # Read the data starting from the identified start line.
-            df = pd.read_csv(unwrapped_filename, sep='\\s+', skiprows=start_index + 1, header=None)
+            df = pd.read_csv(unwrapped_filename, sep='\s+', skiprows=start_index + 1, header=None)
 
             # Delete the unwrapped file from disk now that its data is loaded.
             os.remove(unwrapped_filename)
@@ -4020,7 +4044,8 @@ class MSUPSmartSolverGUI(QWidget):
                 if time_indices is not None and y_data is not None:
                     # Plot the time history of the selected stress component
                     self.plot_single_node_tab.update_plot(time_values, y_data, selected_node_id,
-                                                          is_principal_stress=calculate_max_principal_stress,
+                                                          is_max_principal_stress=calculate_max_principal_stress,
+                                                          is_min_principal_stress=calculate_min_principal_stress,
                                                           is_von_mises=calculate_von_mises,
                                                           is_velocity=calculate_velocity,
                                                           is_acceleration=calculate_acceleration)
@@ -4158,15 +4183,13 @@ class MSUPSmartSolverGUI(QWidget):
             y_data = [0, 0, 0, 0, 0]
 
             # Check checkbox states
-            is_principal_stress = self.max_principal_stress_checkbox.isChecked()
+            is_max_principal_stress = self.max_principal_stress_checkbox.isChecked()
             is_von_mises = self.von_mises_checkbox.isChecked()
 
             # Update plot widget
-            self.plot_single_node_tab.update_plot(
-                x_data, y_data, node_id,
-                is_principal_stress=is_principal_stress,
-                is_von_mises=is_von_mises
-            )
+            self.plot_single_node_tab.update_plot(x_data, y_data, node_id,
+                                                  is_max_principal_stress=is_max_principal_stress,
+                                                  is_von_mises=is_von_mises)
 
             # (Optional) Trigger solve immediately
             # self.solve()
@@ -4302,7 +4325,8 @@ class MatplotlibWidget(QWidget):
         self.setLayout(layout)
 
     def update_plot(self, x, y, node_id=None,
-                    is_principal_stress=False,
+                    is_max_principal_stress=False,
+                    is_min_principal_stress=False,
                     is_von_mises=False,
                     is_velocity=False,
                     is_acceleration=False):
@@ -4355,10 +4379,14 @@ class MatplotlibWidget(QWidget):
         else:
             # Setup for single-column data (Stress)
             self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
-            if is_principal_stress:
+            if is_max_principal_stress:
                 ax.plot(x, y, label=r'$\sigma_1$', color='red')
-                ax.set_title(f"Principal Stress (Node ID: {node_id})" if node_id else "Principal Stress", fontsize=8)
+                ax.set_title(f"Max Principal Stress (Node ID: {node_id})" if node_id else "Max Principal Stress", fontsize=8)
                 ax.set_ylabel(r'$\sigma_1$ [MPa]', fontsize=8)
+            elif is_min_principal_stress:
+                ax.plot(x, y, label=r'$\sigma_3$', color='green')
+                ax.set_title(f"Min Principal Stress (Node ID: {node_id})" if node_id else "Min Principal Stress", fontsize=8)
+                ax.set_ylabel(r'$\sigma_3$ [MPa]', fontsize=8)
             elif is_von_mises:
                 ax.plot(x, y, label=r'$\sigma_{VM}$', color='blue')
                 ax.set_title(f"Von Mises Stress (Node ID: {node_id})" if node_id else "Von Mises Stress", fontsize=8)
@@ -4644,7 +4672,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.94.5')
+        self.setWindowTitle('MSUP Smart Solver - v0.94.6')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
