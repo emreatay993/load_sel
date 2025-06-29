@@ -302,9 +302,10 @@ class MSUPSmartSolverTransient(QObject):
             self.is_steady_state_included = False
 
         # Memory details
-        self.total_memory = psutil.virtual_memory().total / (1024 ** 3)
-        self.available_memory = psutil.virtual_memory().available / (1024 ** 3)
-        self.allocated_memory = psutil.virtual_memory().available * self.RAM_PERCENT / (1024 ** 3)
+        my_virtual_memory = psutil.virtual_memory()
+        self.total_memory = my_virtual_memory.total / (1024 ** 3)
+        self.available_memory = my_virtual_memory.available / (1024 ** 3)
+        self.allocated_memory = my_virtual_memory.available * self.RAM_PERCENT / (1024 ** 3)
         print(f"Total system RAM: {self.total_memory:.2f} GB")
         print(f"Available system RAM: {self.available_memory:.2f} GB")
         print(f"Allocated system RAM: {self.allocated_memory:.2f} GB")
@@ -1932,9 +1933,10 @@ class DisplayTab(QWidget):
         # region 3. RAM Estimation and Check
         num_nodes = modal_sx.shape[0]
         estimated_gb = self._estimate_animation_ram(num_nodes, num_anim_steps, compute_deformation)
-        available_gb = psutil.virtual_memory().available / (1024 ** 3)
+        my_virtual_memory = psutil.virtual_memory()
+        available_gb = my_virtual_memory.available / (1024 ** 3)
         # Use a safety factor (e.g., allow using up to 80% of available RAM)
-        safe_available_gb = available_gb * 0.8
+        safe_available_gb = available_gb * RAM_PERCENT
 
         print(f"Estimated RAM for precomputation: {estimated_gb:.3f} GB")
         print(f"Available system RAM: {available_gb:.3f} GB (Safe threshold: {safe_available_gb:.3f} GB)")
@@ -4528,7 +4530,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.94.2')
+        self.setWindowTitle('MSUP Smart Solver - v0.94.3')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
