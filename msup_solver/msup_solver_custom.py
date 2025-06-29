@@ -1635,7 +1635,18 @@ class DisplayTab(QWidget):
         selected_time = self.time_point_spinbox.value()
         time_index = np.argmin(np.abs(time_values - selected_time))
 
+        # Get the number of modes to skip from the main tab ---
+        main_tab = self.main_window.batch_solver_tab
+        skip_n = 0
+        if main_tab.skip_modes_combo.isVisible():
+            try:
+                skip_n = int(main_tab.skip_modes_combo.currentText())
+            except (ValueError, TypeError):
+                skip_n = 0
+        mode_slice = slice(skip_n, None)
+
         # Slice the modal coordinate matrix for the chosen time point.
+
         # Assuming modal_coord shape is [num_modes, num_time_points], we extract a column vector.
         if compute_velocity or compute_acceleration:
             WINDOW = 7  # 3 pts either side + centre
@@ -1651,25 +1662,35 @@ class DisplayTab(QWidget):
                     "Pick another time or load more results.")
                 return
 
-            selected_modal_coord = modal_coord[:, idx0:idx1]  # windowed block
+            selected_modal_coord = modal_coord[mode_slice, idx0:idx1]  # windowed block
             dt_window = time_values[idx0:idx1]  # matching time vector
-            centre_offset = time_index - idx0  # column we finally want
+            centre_offset = time_index - idx0  # column we actually want
         else:
-            selected_modal_coord = modal_coord[:, time_index:time_index + 1]
+            selected_modal_coord = modal_coord[mode_slice, time_index:time_index + 1]
 
         # Create a temporary solver instance using the sliced modal coordinate matrix.
         include_steady = self.main_window.batch_solver_tab.steady_state_checkbox.isChecked()
         try:
             if include_steady and "steady_sx" in globals() and steady_sx is not None and "steady_node_ids" in globals():
                 temp_solver = MSUPSmartSolverTransient(
-                    modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                    modal_sx[:, mode_slice],
+                    modal_sy[:, mode_slice],
+                    modal_sz[:, mode_slice],
+                    modal_sxy[:, mode_slice],
+                    modal_syz[:, mode_slice],
+                    modal_sxz[:, mode_slice],
                     selected_modal_coord,
                     steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz,
                     steady_node_ids, modal_node_ids=df_node_ids
                 )
             else:
                 temp_solver = MSUPSmartSolverTransient(
-                    modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                    modal_sx[:, mode_slice],
+                    modal_sy[:, mode_slice],
+                    modal_sz[:, mode_slice],
+                    modal_sxy[:, mode_slice],
+                    modal_syz[:, mode_slice],
+                    modal_sxz[:, mode_slice],
                     selected_modal_coord,
                     modal_node_ids=df_node_ids
                 )
@@ -1816,7 +1837,7 @@ class DisplayTab(QWidget):
                                 "Please load or initialize the mesh before animating (e.g., by updating results for a single time point).")
             return
 
-        # --- Resume Logic ---
+        # region Resume Logic
         if self.animation_paused:
             if self.precomputed_scalars is None:
                 QMessageBox.warning(self, "Resume Error",
@@ -1836,13 +1857,14 @@ class DisplayTab(QWidget):
                 self.anim_timer.timeout.connect(self.animate_frame)
                 self.anim_timer.start(self.anim_interval_spin.value())
             return
-        # --- End Resume Logic ---
+        # endregion
 
-        # --- Start Fresh Logic ---
+        # region Start Fresh Logic
         print("\n ---Starting animation precomputation...---")
         self.stop_animation()  # Ensure clean state (clears previous data, resets index)
+        # endregion
 
-        # --- 1. Get Animation Parameters & Time Steps ---
+        # region 1. Get Animation Parameters & Time Steps ---
         anim_times, anim_indices, error_msg = self._get_animation_time_steps()
         if error_msg:
             QMessageBox.warning(self, "Animation Setup Error", error_msg)
@@ -1855,8 +1877,9 @@ class DisplayTab(QWidget):
 
         num_anim_steps = len(anim_times)
         print(f"Attempting to precompute {num_anim_steps} frames.")
+        # endregion
 
-        # --- 2. Determine Required Outputs ---
+        # region 2. Determine Required Outputs
         main_tab = self.window().batch_solver_tab  # Access main tab for settings
         compute_von = main_tab.von_mises_checkbox.isChecked()
         compute_principal = main_tab.max_principal_stress_checkbox.isChecked()
@@ -1879,8 +1902,9 @@ class DisplayTab(QWidget):
             self.is_deformation_included_in_anim = True
         else:
             self.is_deformation_included_in_anim = False
+        # endregion
 
-        # --- 3. RAM Estimation and Check ---
+        # region 3. RAM Estimation and Check
         num_nodes = modal_sx.shape[0]
         estimated_gb = self._estimate_animation_ram(num_nodes, num_anim_steps, compute_deformation)
         available_gb = psutil.virtual_memory().available / (1024 ** 3)
@@ -1919,12 +1943,23 @@ class DisplayTab(QWidget):
 
             self.stop_animation()
             return
+        # endregion
 
-        # --- 4. Perform Precomputation ---
+        # region 4. Perform Precomputation
         QApplication.setOverrideCursor(Qt.WaitCursor)  # Show busy cursor
         try:
-            # Slice the required modal coordinates
-            selected_modal_coord = modal_coord[:, anim_indices]
+            # Get the number of modes to skip from the main tab ---
+            main_tab = self.window().batch_solver_tab
+            skip_n = 0
+            if main_tab.skip_modes_combo.isVisible():
+                try:
+                    skip_n = int(main_tab.skip_modes_combo.currentText())
+                except (ValueError, TypeError):
+                    skip_n = 0
+            mode_slice = slice(skip_n, None)
+
+            # Slice the required modal coordinates correctly
+            selected_modal_coord = modal_coord[mode_slice, anim_indices]
 
             # Check if steady-state stress is included
             include_steady = self.main_window.batch_solver_tab.steady_state_checkbox.isChecked()
@@ -1936,17 +1971,23 @@ class DisplayTab(QWidget):
                     'steady_node_ids': steady_node_ids
                 }
 
-            # Handle deformations
-            modal_deformations_tuple = None
+            # Handle deformations, ensuring they are also sliced
+            modal_deformations_arg = None
             if compute_deformation:
-                modal_deformations_tuple = (modal_ux, modal_uy, modal_uz)
+                if 'modal_ux' in globals():
+                    modal_deformations_filtered = (
+                        modal_ux[:, mode_slice],
+                        modal_uy[:, mode_slice],
+                        modal_uz[:, mode_slice]
+                    )
 
             # Create a temporary solver instance for the *entire* animation duration
             temp_solver = MSUPSmartSolverTransient(
-                modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
+                modal_sx[:, mode_slice], modal_sy[:, mode_slice], modal_sz[:, mode_slice],
+                modal_sxy[:, mode_slice], modal_syz[:, mode_slice], modal_sxz[:, mode_slice],
                 selected_modal_coord,  # Use the sliced coordinates
                 modal_node_ids=df_node_ids,
-                modal_deformations=modal_deformations_tuple,
+                modal_deformations=modal_deformations_filtered,
                 **steady_kwargs  # Add steady state args if needed
             )
 
@@ -2047,6 +2088,7 @@ class DisplayTab(QWidget):
             return
         finally:
             QApplication.restoreOverrideCursor()  # Restore cursor
+        # endregion
 
         # --- 5. Final Setup & Start Timer ---
         self.current_anim_frame_index = 0
@@ -3156,6 +3198,15 @@ class MSUPSmartSolverGUI(QWidget):
         self.deformations_file_button.setVisible(False)
         self.deformations_file_path.setVisible(False)
 
+        # Create label and combobox for skipping first n modes
+        self.skip_modes_label = QLabel("Skip first n modes:")
+        self.skip_modes_label.setVisible(False)  # hidden until file is loaded
+
+        self.skip_modes_combo = QComboBox()
+        self.skip_modes_combo.setFixedWidth(80)  # compact width
+        self.skip_modes_combo.setVisible(False)
+        self.skip_modes_combo.currentTextChanged.connect(self.on_skip_modes_changed)
+
         # Checkbox for Time History Mode (Single Node)
         self.time_history_checkbox = QCheckBox('Time History Mode (Single Node)')
         self.time_history_checkbox.setStyleSheet("margin: 10px 0;")
@@ -3293,6 +3344,8 @@ class MSUPSmartSolverGUI(QWidget):
         file_layout.addWidget(self.deformations_checkbox, 4, 0, 1, 2)
         file_layout.addWidget(self.deformations_file_button, 5, 0)
         file_layout.addWidget(self.deformations_file_path, 5, 1)
+        file_layout.addWidget(self.skip_modes_label, 5, 2)
+        file_layout.addWidget(self.skip_modes_combo, 5, 3)
 
         file_group.setLayout(file_layout)
 
@@ -3382,9 +3435,13 @@ class MSUPSmartSolverGUI(QWidget):
         if self.deformations_checkbox.isChecked():
             self.deformations_file_button.setVisible(True)
             self.deformations_file_path.setVisible(True)
+            self.skip_modes_label.setVisible(self.deformation_loaded)
+            self.skip_modes_combo.setVisible(self.deformation_loaded)
         else:
             self.deformations_file_button.setVisible(False)
             self.deformations_file_path.setVisible(False)
+            self.skip_modes_label.setVisible(self.deformation_loaded)
+            self.skip_modes_combo.setVisible(self.deformation_loaded)
 
     def toggle_damage_index_checkbox_visibility(self):
         if self.von_mises_checkbox.isChecked():
@@ -3593,10 +3650,25 @@ class MSUPSmartSolverGUI(QWidget):
             modal_uy = df.filter(regex='(?i)^uy_').to_numpy().astype(NP_DTYPE)
             modal_uz = df.filter(regex='(?i)^uz_').to_numpy().astype(NP_DTYPE)
 
+            # Define num_modes from the shape of the loaded data
+            if modal_ux.shape[1] > 0:
+                num_modes = modal_ux.shape[1]
+            else:
+                # Handle case where no mode columns were found
+                self.console_textbox.append(f"Warning: No deformation modes found in {filename}")
+                num_modes = 0
+
             self.modal_deformations = (modal_ux, modal_uy, modal_uz)
             self.console_textbox.append(f"Successfully processed modal deformations file: {filename}")
             self.console_textbox.append(
                 f"Deformations array shapes: UX {modal_ux.shape}, UY {modal_uy.shape}, UZ {modal_uz.shape}")
+
+            # Populate the combobox with 0..num_modes (inclusive)
+            self.skip_modes_combo.clear()
+            self.skip_modes_combo.addItems([str(i) for i in range(num_modes + 1)])
+            # Make the widgets visible
+            self.skip_modes_label.setVisible(True)
+            self.skip_modes_combo.setVisible(True)
 
             self.deformation_loaded = True
 
@@ -3608,6 +3680,24 @@ class MSUPSmartSolverGUI(QWidget):
             self.update_output_checkboxes_state()
             # After processing, update the time point controls in the DisplayTab.
             self.update_time_and_animation_ui()
+
+    def on_skip_modes_changed(self, text):
+        """
+        Notifies the user in the console when the number of skipped modes changes.
+        """
+        try:
+            if not text or not text.isdigit(): return
+            num_skipped = int(text)
+            message = (f"\n[INFO] Skip Modes option is set to {num_skipped}. "
+                       f"The first {num_skipped} modes will be excluded from the next calculation.\n")
+            if 'modal_sx' in globals() and modal_sx is not None:
+                total_modes = modal_sx.shape[1]
+                modes_used = total_modes - num_skipped
+                message += f"       - Modes to be used: {modes_used} (from mode {num_skipped + 1} to {total_modes})\n"
+            self.console_textbox.append(message)
+            self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
+        except (ValueError, TypeError) as e:
+            self.console_textbox.append(f"\n[DEBUG] Could not parse skip modes value: {text}. Error: {e}")
 
     def update_time_and_animation_ui(self):
         """
@@ -3698,6 +3788,35 @@ class MSUPSmartSolverGUI(QWidget):
             else:
                 modal_deformations = None
 
+            # region Apply Mode Skipping
+            # Get the number of modes to be skipped, if defined by user
+            skip_n = 0
+            if hasattr(self, 'skip_modes_combo') and self.skip_modes_combo.isVisible():
+                try:
+                    skip_n = int(self.skip_modes_combo.currentText())
+                except (ValueError, TypeError):
+                    skip_n = 0
+
+            # This slice will be applied to all modal arrays without modifying them globally
+            mode_slice = slice(skip_n, None)
+
+            # Ensure the number of modes to skip is valid
+            if skip_n >= modal_sx.shape[1]:
+                QMessageBox.critical(self, "Calculation Error",
+                                     f"Cannot skip {skip_n} modes as only {modal_sx.shape[1]} are available.")
+                self.progress_bar.setVisible(False)
+                return
+
+            # Slice the deformation tuple separately for clarity
+            modal_deformations_filtered = None
+            if modal_deformations is not None:
+                modal_deformations_filtered = (
+                    modal_deformations[0][:, mode_slice],
+                    modal_deformations[1][:, mode_slice],
+                    modal_deformations[2][:, mode_slice]
+                )
+            # endregion
+
             # Show the progress bar at the start of the solution
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
@@ -3775,8 +3894,13 @@ class MSUPSmartSolverGUI(QWidget):
 
                 # Create an instance of the solver
                 self.solver = MSUPSmartSolverTransient(
-                    modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
-                    modal_coord,
+                    modal_sx[:, mode_slice],
+                    modal_sy[:, mode_slice],
+                    modal_sz[:, mode_slice],
+                    modal_sxy[:, mode_slice],
+                    modal_syz[:, mode_slice],
+                    modal_sxz[:, mode_slice],
+                    modal_coord[:, mode_slice],
                     steady_sx=steady_sx,
                     steady_sy=steady_sy,
                     steady_sz=steady_sz,
@@ -3786,7 +3910,7 @@ class MSUPSmartSolverGUI(QWidget):
                     steady_node_ids=steady_node_ids,
                     modal_node_ids=df_node_ids,
                     output_directory=output_directory,
-                    modal_deformations=modal_deformations
+                    modal_deformations=modal_deformations_filtered
                 )
 
                 # Use the new method for single node processing
@@ -3812,8 +3936,13 @@ class MSUPSmartSolverGUI(QWidget):
 
             # Create an instance of MSUPSmartSolverTransient for batch solver
             self.solver = MSUPSmartSolverTransient(
-                modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
-                modal_coord,
+                modal_sx[:, mode_slice],
+                modal_sy[:, mode_slice],
+                modal_sz[:, mode_slice],
+                modal_sxy[:, mode_slice],
+                modal_syz[:, mode_slice],
+                modal_sxz[:, mode_slice],
+                modal_coord[:, mode_slice],
                 steady_sx=steady_sx,
                 steady_sy=steady_sy,
                 steady_sz=steady_sz,
@@ -3823,7 +3952,7 @@ class MSUPSmartSolverGUI(QWidget):
                 steady_node_ids=steady_node_ids,
                 modal_node_ids=df_node_ids,
                 output_directory=output_directory,
-                modal_deformations = modal_deformations
+                modal_deformations = modal_deformations_filtered
             )
 
             # Connect the solver's progress signal to the progress bar update slot
