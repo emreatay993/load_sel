@@ -3652,7 +3652,7 @@ class MSUPSmartSolverGUI(QWidget):
                         break
 
             # Read the data starting from the identified start line.
-            df = pd.read_csv(unwrapped_filename, sep='\s+', skiprows=start_index + 1, header=None)
+            df = pd.read_csv(unwrapped_filename, sep='\\s+', skiprows=start_index + 1, header=None)
 
             # Delete the unwrapped file from disk now that its data is loaded.
             os.remove(unwrapped_filename)
@@ -4293,14 +4293,14 @@ class MatplotlibWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # --- Matplotlib canvas on the left ---
+        # Matplotlib canvas on the left
         self.figure = plt.Figure()
         self.canvas = FigureCanvas(self.figure)
         # make it expand/shrink with the window
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.canvas.updateGeometry()
 
-        # --- Data table on the right ---
+        # Data table on the right
         self.table = QTableView(self)
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -4313,7 +4313,7 @@ class MatplotlibWidget(QWidget):
         copy_sc = QShortcut(QKeySequence.Copy, self.table)
         copy_sc.activated.connect(self.copy_selection)
 
-        # --- Split view ---
+        # Split view
         splitter = QSplitter(Qt.Horizontal, self)
         splitter.addWidget(self.canvas)
         splitter.addWidget(self.table)
@@ -4335,7 +4335,6 @@ class MatplotlibWidget(QWidget):
         ax = self.figure.add_subplot(1, 1, 1)
 
         # --- Define plot styles ---
-        # Using a dictionary makes it easy to manage styles for different components
         styles = {
             'Magnitude': {'color': 'black', 'linestyle': '-', 'linewidth': 2},
             'X': {'color': 'red', 'linestyle': '--', 'linewidth': 1},
@@ -4343,13 +4342,16 @@ class MatplotlibWidget(QWidget):
             'Z': {'color': 'blue', 'linestyle': '--', 'linewidth': 1},
         }
 
-        # --- Clear and setup the table model ---
+        # Clear and setup the table model
         self.model.removeRows(0, self.model.rowCount())
+
+        # This will hold the text for our annotation box
+        textstr = ""
 
         if is_velocity or is_acceleration:
             # Setup for multi-column data (Velocity or Acceleration)
             prefix = "Velocity" if is_velocity else "Acceleration"
-            units = "(mm/s)" if is_velocity else "(mm/s²)"  # Adjust units if necessary
+            units = "(mm/s)" if is_velocity else "(mm/s²)"
             ax.set_title(f"{prefix} (Node ID: {node_id})", fontsize=8)
             ax.set_ylabel(f"{prefix} {units}", fontsize=8)
 
@@ -4357,9 +4359,9 @@ class MatplotlibWidget(QWidget):
             self.model.setHorizontalHeaderLabels(
                 ["Time [s]", f"Mag {units}", f"X {units}", f"Y {units}", f"Z {units}"])
 
-            # Plot each component and populate table rows
+            # Plot each component
             for component, data in y.items():
-                style = styles.get(component, {})  # Get style for component
+                style = styles.get(component, {})
                 ax.plot(x, data, label=f'{prefix} ({component})', **style)
 
             # Populate table data
@@ -4373,31 +4375,48 @@ class MatplotlibWidget(QWidget):
                 ]
                 self.model.appendRow(items)
 
-            # Find the max value from the magnitude for the text box
+            # --- NEW: Annotation logic for Max Value and Time of Max ---
             max_y_value = np.max(y['Magnitude'])
+            time_of_max = x[np.argmax(y['Magnitude'])]
+            textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
 
         else:
             # Setup for single-column data (Stress)
             self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
-            if is_max_principal_stress:
-                ax.plot(x, y, label=r'$\sigma_1$', color='red')
-                ax.set_title(f"Max Principal Stress (Node ID: {node_id})" if node_id else "Max Principal Stress", fontsize=8)
-                ax.set_ylabel(r'$\sigma_1$ [MPa]', fontsize=8)
-            elif is_min_principal_stress:
-                ax.plot(x, y, label=r'$\sigma_3$', color='green')
-                ax.set_title(f"Min Principal Stress (Node ID: {node_id})" if node_id else "Min Principal Stress", fontsize=8)
-                ax.set_ylabel(r'$\sigma_3$ [MPa]', fontsize=8)
-            elif is_von_mises:
-                ax.plot(x, y, label=r'$\sigma_{VM}$', color='blue')
-                ax.set_title(f"Von Mises Stress (Node ID: {node_id})" if node_id else "Von Mises Stress", fontsize=8)
-                ax.set_ylabel(r'$\sigma_{VM}$ [MPa]', fontsize=8)
 
             # Populate table for single data series
             for xi, yi in zip(x, y):
                 items = [QStandardItem(f"{xi:.5f}"), QStandardItem(f"{yi:.5f}")]
                 self.model.appendRow(items)
 
-            max_y_value = np.max(y)
+            # Logic to handle min vs max annotations
+            if is_min_principal_stress:
+                ax.plot(x, y, label=r'$\sigma_3$', color='green')
+                ax.set_title(f"Min Principal Stress (Node ID: {node_id})" if node_id else "Min Principal Stress",
+                             fontsize=8)
+                ax.set_ylabel(r'$\sigma_3$ [MPa]', fontsize=8)
+
+                # Find min value and its corresponding time
+                min_y_value = np.min(y)
+                time_of_min = x[np.argmin(y)]
+                textstr = f'Min Magnitude: {min_y_value:.4f}\nTime of Min: {time_of_min:.5f} s'
+
+            else:  # This block handles Max Principal and Von-Mises (all "max" cases)
+                if is_max_principal_stress:
+                    ax.plot(x, y, label=r'$\sigma_1$', color='red')
+                    ax.set_title(f"Max Principal Stress (Node ID: {node_id})" if node_id else "Max Principal Stress",
+                                 fontsize=8)
+                    ax.set_ylabel(r'$\sigma_1$ [MPa]', fontsize=8)
+                elif is_von_mises:
+                    ax.plot(x, y, label=r'$\sigma_{VM}$', color='blue')
+                    ax.set_title(f"Von Mises Stress (Node ID: {node_id})" if node_id else "Von Mises Stress",
+                                 fontsize=8)
+                    ax.set_ylabel(r'$\sigma_{VM}$ [MPa]', fontsize=8)
+
+                # Find max value and its corresponding time
+                max_y_value = np.max(y)
+                time_of_max = x[np.argmax(y)]
+                textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
 
         # --- Common plot styling ---
         ax.set_xlabel('Time [seconds]', fontsize=8)
@@ -4405,15 +4424,15 @@ class MatplotlibWidget(QWidget):
         ax.grid(True, which='both', linestyle='-', linewidth=0.5)
         ax.minorticks_on()
         ax.tick_params(axis='both', which='major', labelsize=8)
-        ax.legend(fontsize=7)  # Show legend for all plots
+        ax.legend(fontsize=7)
 
-        # Max-value text box (based on magnitude or single value)
-        textstr = f'Max Magnitude: {max_y_value:.4f}'
-        ax.text(
-            0.05, 0.95, textstr, transform=ax.transAxes,
-            fontsize=8, verticalalignment='top', horizontalalignment='left',
-            bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2')
-        )
+        # Unified code to draw the text box
+        if textstr:  # Only draw the box if text was generated
+            ax.text(
+                0.05, 0.95, textstr, transform=ax.transAxes,
+                fontsize=8, verticalalignment='top', horizontalalignment='left',
+                bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2')
+            )
 
         self.canvas.draw()
 
@@ -4672,7 +4691,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.94.6')
+        self.setWindowTitle('MSUP Smart Solver - v0.94.7')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
