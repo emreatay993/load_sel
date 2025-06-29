@@ -259,9 +259,6 @@ class MSUPSmartSolverTransient(QObject):
 
         self.modal_coord = torch.tensor(modal_coord, dtype=self.TORCH_DTYPE).to(self.device)
 
-        # Load modal deformations object from GUI class
-        modal_deformations = main_window.batch_solver_tab.modal_deformations
-
         if main_window.batch_solver_tab.modal_deformations is not None:
             self.modal_deformations_ux = torch.tensor(modal_deformations[0], dtype=self.TORCH_DTYPE).to(self.device)
             self.modal_deformations_uy = torch.tensor(modal_deformations[1], dtype=self.TORCH_DTYPE).to(self.device)
@@ -1638,14 +1635,19 @@ class DisplayTab(QWidget):
         # Get the number of modes to skip from the main tab ---
         main_tab = self.main_window.batch_solver_tab
         skip_n = 0
-        if main_tab.skip_modes_combo.isVisible():
+        if main_tab.deformations_checkbox.isChecked() and main_tab.deformation_loaded:
             try:
                 skip_n = int(main_tab.skip_modes_combo.currentText())
             except (ValueError, TypeError):
                 skip_n = 0
         mode_slice = slice(skip_n, None)
 
-        # Slice the modal coordinate matrix for the chosen time point.
+        # Handle deformations, ensuring they are also sliced
+        if 'modal_ux' in globals():
+            modal_deformations_filtered = (
+                modal_ux[:, mode_slice],
+                modal_uy[:, mode_slice],
+                modal_uz[:, mode_slice])
 
         # Assuming modal_coord shape is [num_modes, num_time_points], we extract a column vector.
         if compute_velocity or compute_acceleration:
@@ -1662,6 +1664,7 @@ class DisplayTab(QWidget):
                     "Pick another time or load more results.")
                 return
 
+            # Slice the modal coordinate matrix for the chosen time point.
             selected_modal_coord = modal_coord[mode_slice, idx0:idx1]  # windowed block
             dt_window = time_values[idx0:idx1]  # matching time vector
             centre_offset = time_index - idx0  # column we actually want
@@ -1681,7 +1684,8 @@ class DisplayTab(QWidget):
                     modal_sxz[:, mode_slice],
                     selected_modal_coord,
                     steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz,
-                    steady_node_ids, modal_node_ids=df_node_ids
+                    steady_node_ids, modal_node_ids=df_node_ids,
+                    modal_deformations=modal_deformations_filtered
                 )
             else:
                 temp_solver = MSUPSmartSolverTransient(
@@ -1692,7 +1696,8 @@ class DisplayTab(QWidget):
                     modal_syz[:, mode_slice],
                     modal_sxz[:, mode_slice],
                     selected_modal_coord,
-                    modal_node_ids=df_node_ids
+                    modal_node_ids=df_node_ids,
+                    modal_deformations=modal_deformations_filtered
                 )
         except Exception as e:
             QMessageBox.warning(self, "Solver Error", f"Failed to create solver instance: {e}")
@@ -1700,6 +1705,27 @@ class DisplayTab(QWidget):
 
         # Determine the number of nodes (assumed from the shape of the modal stress arrays).
         num_nodes = modal_sx.shape[0]
+
+        # Start with the original coordinates as the default
+        display_coords = node_coords
+
+        # Check if the user wants to display the deformed shape for this time point
+        if main_tab.deformations_checkbox.isChecked() and 'modal_ux' in globals():
+            # Get the displacements. The temp_solver already has the correct sliced data.
+            # The result will be arrays of shape (num_nodes, 1) for this single time point.
+            ux_tp, uy_tp, uz_tp = temp_solver.compute_deformations(0, num_nodes)
+
+            # Get the scale factor from the UI
+            try:
+                scale_factor = float(self.deformation_scale_edit.text())
+            except (ValueError, TypeError):
+                scale_factor = 1.0  # Default to 1 if the input is invalid
+
+            # Create a single displacement vector of shape (num_nodes, 3)
+            displacement_vector = np.hstack((ux_tp, uy_tp, uz_tp))
+
+            # Calculate the new, deformed coordinates by adding the scaled displacement
+            display_coords = node_coords + (displacement_vector * scale_factor)
 
         # Compute normal stresses for all nodes using the temporary solver.
         actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
@@ -1759,7 +1785,7 @@ class DisplayTab(QWidget):
 
         # Update the visualization.
         if "node_coords" in globals() and node_coords is not None:
-            mesh = pv.PolyData(node_coords)
+            mesh = pv.PolyData(display_coords)
 
             # Add NodeID array if available
             if 'df_node_ids' in globals() and df_node_ids is not None:
@@ -1776,7 +1802,6 @@ class DisplayTab(QWidget):
                 self.plotter.remove_actor(self.time_text_actor)
                 self.time_text_actor = None
 
-            self.plotter.reset_camera()
             self.plotter.render()
             self.update_visualization()
 
@@ -1951,7 +1976,7 @@ class DisplayTab(QWidget):
             # Get the number of modes to skip from the main tab ---
             main_tab = self.window().batch_solver_tab
             skip_n = 0
-            if main_tab.skip_modes_combo.isVisible():
+            if main_tab.deformations_checkbox.isChecked() and main_tab.deformation_loaded:
                 try:
                     skip_n = int(main_tab.skip_modes_combo.currentText())
                 except (ValueError, TypeError):
@@ -2965,16 +2990,6 @@ class DisplayTab(QWidget):
             self.camera_widget = self.plotter.add_camera_orientation_widget()
             self.camera_widget.EnabledOn()
 
-        # self.plotter.add_axes(
-        #     line_width=2,  # Reduced complexity
-        #     color='black',  # Simpler color
-        #     xlabel='X',
-        #     ylabel='Y',
-        #     zlabel='Z',
-        #     interactive=False  # Disable dynamic updates
-        # )
-        # self.plotter.reset_camera()
-
     def setup_hover_annotation(self):
         """Set up hover callback to display node ID and value"""
         if not self.current_mesh or 'NodeID' not in self.current_mesh.array_names:
@@ -3900,7 +3915,7 @@ class MSUPSmartSolverGUI(QWidget):
                     modal_sxy[:, mode_slice],
                     modal_syz[:, mode_slice],
                     modal_sxz[:, mode_slice],
-                    modal_coord[:, mode_slice],
+                    modal_coord[mode_slice, :],
                     steady_sx=steady_sx,
                     steady_sy=steady_sy,
                     steady_sz=steady_sz,
@@ -3942,7 +3957,7 @@ class MSUPSmartSolverGUI(QWidget):
                 modal_sxy[:, mode_slice],
                 modal_syz[:, mode_slice],
                 modal_sxz[:, mode_slice],
-                modal_coord[:, mode_slice],
+                modal_coord[mode_slice, :],
                 steady_sx=steady_sx,
                 steady_sy=steady_sy,
                 steady_sz=steady_sz,
@@ -4513,7 +4528,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.94.0')
+        self.setWindowTitle('MSUP Smart Solver - v0.94.2')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
