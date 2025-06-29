@@ -592,7 +592,7 @@ class MSUPSmartSolverTransient(QObject):
         # Compute magnitudes
         vel_mag = np.sqrt(vel_x ** 2 + vel_y ** 2 + vel_z ** 2)
         acc_mag = np.sqrt(acc_x ** 2 + acc_y ** 2 + acc_z ** 2)
-        return vel_mag, acc_mag
+        return vel_mag, acc_mag, vel_x, vel_y, vel_z, acc_x, acc_y, acc_z
 
     @staticmethod
     def compute_signed_von_mises_stress(sigma_vm, actual_sx, actual_sy, actual_sz):
@@ -1002,7 +1002,7 @@ class MSUPSmartSolverTransient(QObject):
 
             if (calculate_velocity or calculate_acceleration) and self.modal_deformations_ux is not None:
                 ux, uy, uz = self.compute_deformations(start_idx, end_idx)
-                vel_mag, acc_mag = self._vel_acc_from_disp(ux, uy, uz, self.time_values)
+                vel_mag, acc_mag, _, _, _, _, _, _ = self._vel_acc_from_disp(ux, uy, uz, self.time_values)
 
                 if calculate_velocity:
                     start_time = time.time()
@@ -1203,11 +1203,24 @@ class MSUPSmartSolverTransient(QObject):
                 print("Deformation data missing – velocity/acceleration calculations are skipped.")
             else:
                 ux, uy, uz = self.compute_deformations(selected_node_idx, selected_node_idx+1)
-                vel_mag, acc_mag = self._vel_acc_from_disp(ux, uy, uz, self.time_values)
+                vel_mag, acc_mag, vel_x, vel_y, vel_z, acc_x, acc_y, acc_z = \
+                    self._vel_acc_from_disp(ux, uy, uz, self.time_values)
                 if calculate_velocity:
-                    return np.arange(vel_mag.shape[1]), vel_mag[0, :]
+                    velocity_data = {
+                        'Magnitude': vel_mag[0, :],
+                        'X': vel_x[0, :],
+                        'Y': vel_y[0, :],
+                        'Z': vel_z[0, :]
+                    }
+                    return np.arange(vel_mag.shape[1]), velocity_data
                 if calculate_acceleration:
-                    return np.arange(acc_mag.shape[1]), acc_mag[0, :]
+                    acceleration_data = {
+                        'Magnitude': acc_mag[0, :],
+                        'X': acc_x[0, :],
+                        'Y': acc_y[0, :],
+                        'Z': acc_z[0, :]
+                    }
+                    return np.arange(acc_mag.shape[1]), acceleration_data
 
         # Return none if no output is requested
         return None, None
@@ -1722,6 +1735,15 @@ class DisplayTab(QWidget):
             except (ValueError, TypeError):
                 scale_factor = 1.0  # Default to 1 if the input is invalid
 
+            # If velocity/acceleration was requested, the displacement arrays (ux_tp, etc.)
+            # will have multiple columns. We must select only the central column of the derivation window,
+            # corresponding to the user's selected time point.
+            if compute_velocity or compute_acceleration:
+                # Use the already calculated centre_offset to pick the correct column
+                ux_tp = ux_tp[:, [centre_offset]]
+                uy_tp = uy_tp[:, [centre_offset]]
+                uz_tp = uz_tp[:, [centre_offset]]
+
             # Create a single displacement vector of shape (num_nodes, 3)
             displacement_vector = np.hstack((ux_tp, uy_tp, uz_tp))
 
@@ -1756,7 +1778,7 @@ class DisplayTab(QWidget):
             ux_blk, uy_blk, uz_blk = temp_solver.compute_deformations(0, num_nodes)
 
             # Run the 6-th-order scheme on that window (use the window for 6th order algorithm, computed above)
-            vel_blk, acc_blk = temp_solver._vel_acc_from_disp(
+            vel_blk, acc_blk, _, _, _, _, _, _ = temp_solver._vel_acc_from_disp(
                 ux_blk, uy_blk, uz_blk, dt_window.astype(temp_solver.NP_DTYPE))
 
             vel_tp = vel_blk[:, centre_offset]  # pick centre column
@@ -1811,24 +1833,56 @@ class DisplayTab(QWidget):
 
     def save_time_point_results(self):
         """
-        When the Save Time Point button is clicked, save the currently displayed results (node coordinates
-        and the computed stress field) into a CSV file so that they can later be reloaded via the Load Visualization File button.
+        Saves the currently displayed results (node coordinates and the computed scalar field)
+        into a CSV file. The saved column name is aware of the currently displayed output type.
         """
+        # 1. Check if there is a mesh with data to save.
         if self.current_mesh is None:
             QMessageBox.warning(self, "No Data", "No visualization data to save.")
             return
 
-        file_name, _ = QFileDialog.getSaveFileName(self, "Save Time Point Results", "", "CSV Files (*.csv)")
-        if file_name:
-            if "Stress" in self.current_mesh.array_names:
-                stress_data = self.current_mesh["Stress"]
-                coords = self.current_mesh.points
-                df_out = pd.DataFrame(coords, columns=["X", "Y", "Z"])
-                df_out["Stress"] = stress_data
-                df_out.to_csv(file_name, index=False)
-                QMessageBox.information(self, "Saved", "Time point results saved successfully.")
-            else:
-                QMessageBox.warning(self, "Missing Data", "The current mesh does not contain a 'Stress' field.")
+        # 2. Get the name of the currently active data array from the mesh object.
+        active_scalar_name = self.current_mesh.active_scalars_name
+        if not active_scalar_name:
+            QMessageBox.warning(self, "No Active Data",
+                                "The current mesh does not have an active scalar field to save.")
+            return
+
+        # 3. Create a smart, descriptive default filename.
+        base_name = active_scalar_name.split(' ')[0]  # Extracts "SVM", "S1", "Velocity", etc.
+        selected_time = self.time_point_spinbox.value()
+        # Format the filename, replacing illegal characters like '.' in the time value
+        default_filename = f"{base_name}_T_{selected_time:.5f}.csv".replace('.', '_')
+
+        # 4. Open the file dialog with the suggested filename.
+        file_name, _ = QFileDialog.getSaveFileName(self, "Save Time Point Results", default_filename,
+                                                   "CSV Files (*.csv)")
+
+        if not file_name:
+            return  # User cancelled the dialog
+
+        try:
+            # 5. Get all necessary data arrays from the mesh.
+            coords = self.current_mesh.points
+            scalar_data = self.current_mesh[active_scalar_name]
+
+            # 6. Create the output DataFrame, starting with NodeID if available.
+            df_out = pd.DataFrame()
+            if 'NodeID' in self.current_mesh.array_names:
+                df_out['NodeID'] = self.current_mesh['NodeID']
+
+            # 7. Add the coordinate and scalar data with their correct headers.
+            df_out['X'] = coords[:, 0]
+            df_out['Y'] = coords[:, 1]
+            df_out['Z'] = coords[:, 2]
+            df_out[active_scalar_name] = scalar_data
+
+            # 8. Save the complete DataFrame to the chosen CSV file.
+            df_out.to_csv(file_name, index=False)
+            QMessageBox.information(self, "Save Successful", f"Time point results saved successfully to:\n{file_name}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"An error occurred while saving the file: {e}")
 
     def update_anim_range_min(self, value):
         # Ensure that the animation end spin box cannot be set to a value less than the start
@@ -2046,7 +2100,7 @@ class DisplayTab(QWidget):
                     self.stop_animation();
                     return
                 ux_anim, uy_anim, uz_anim = temp_solver.compute_deformations(0, num_nodes)
-                vel_mag_anim, acc_mag_anim = temp_solver._vel_acc_from_disp(
+                vel_mag_anim, acc_mag_anim, _, _, _, _, _, _ = temp_solver._vel_acc_from_disp(
                     ux_anim, uy_anim, uz_anim, anim_times.astype(temp_solver.NP_DTYPE))
 
                 if compute_velocity:
@@ -2972,8 +3026,8 @@ class DisplayTab(QWidget):
                 'width': 0.05,  # Width of the scalar bar (5% of window)
                 'height': 0.5,  # Height of the scalar bar (50% of window)
                 'vertical': True,  # Force vertical orientation
-                'title_font_size': 10,
-                'label_font_size': 8,
+                'title_font_size': 14,
+                'label_font_size': 12,
                 'shadow': True,  # Optional: Add shadow for readability
                 'n_labels': 10  # Number of labels to display
             }
@@ -3290,9 +3344,9 @@ class MSUPSmartSolverGUI(QWidget):
         self.node_line_edit.returnPressed.connect(self.on_node_entered)
 
         # Solve Button
-        self.solve_button = QPushButton('Solve')
+        self.solve_button = QPushButton('SOLVE')
         self.solve_button.setStyleSheet(button_style)
-        self.solve_button.setFont(QFont('Arial', 8, QFont.Bold))
+        self.solve_button.setFont(QFont('Arial', 9, QFont.Bold))
         self.solve_button.clicked.connect(self.solve)
 
         # Read-only Output Console
@@ -3303,7 +3357,7 @@ class MSUPSmartSolverGUI(QWidget):
         self.console_textbox.setText('Console Output:\n')
 
         # Set monospaced font for log terminal
-        terminal_font = QFont("Consolas", 7)
+        terminal_font = QFont("Consolas", 8)
         terminal_font.setStyleHint(QFont.Monospace)  # For a more console-like textbox
         self.console_textbox.setFont(terminal_font)
 
@@ -3427,13 +3481,19 @@ class MSUPSmartSolverGUI(QWidget):
     def update_output_checkboxes_state(self):
         """
         Enable:
-          • Velocity & Acceleration     → when the modal deformation file is loaded
-          • All stress-related outputs → when BOTH the coordinate file and the modal
+         • Velocity & Acceleration      → when the modal deformation file is loaded AND the main checkbox is checked.
+         • All stress-related outputs → when BOTH the coordinate file and the modal
                                           stress file are loaded
         """
+        # Determine if deformation-dependent outputs should be enabled
+        deformations_enabled = self.deformations_checkbox.isChecked() and self.deformation_loaded
+
         # Velocity & Acceleration
         for cb in self._deformation_outputs:
-            cb.setEnabled(self.deformation_loaded)
+            cb.setEnabled(deformations_enabled)
+            # If they become disabled, also uncheck them
+            if not deformations_enabled:
+                cb.setChecked(False)
 
         # Von-Mises, principal stresses, damage, time-history …
         for cb in self._coord_stress_outputs:
@@ -3449,16 +3509,32 @@ class MSUPSmartSolverGUI(QWidget):
             self.steady_state_file_path.clear()
 
     def toggle_deformations_inputs(self):
-        if self.deformations_checkbox.isChecked():
-            self.deformations_file_button.setVisible(True)
-            self.deformations_file_path.setVisible(True)
-            self.skip_modes_label.setVisible(self.deformation_loaded)
-            self.skip_modes_combo.setVisible(self.deformation_loaded)
-        else:
-            self.deformations_file_button.setVisible(False)
-            self.deformations_file_path.setVisible(False)
-            self.skip_modes_label.setVisible(self.deformation_loaded)
-            self.skip_modes_combo.setVisible(self.deformation_loaded)
+        is_checked = self.deformations_checkbox.isChecked()
+
+        # Step 1: Control visibility of the file selection widgets.
+        # This only depends on the checkbox state.
+        self.deformations_file_button.setVisible(is_checked)
+        self.deformations_file_path.setVisible(is_checked)
+
+        # Step 2: Define the condition for enabling details.
+        # This requires BOTH the checkbox to be checked AND the file to be loaded.
+        are_details_enabled = is_checked and self.deformation_loaded
+
+        # Step 3: Apply the condition to the dependent widgets.
+        self.skip_modes_label.setVisible(are_details_enabled)
+        self.skip_modes_combo.setVisible(are_details_enabled)
+        self.velocity_checkbox.setEnabled(are_details_enabled)
+        self.acceleration_checkbox.setEnabled(are_details_enabled)
+
+        # Step 4: If the conditions are not met, ensure velocity/acceleration are also unchecked.
+        if not are_details_enabled:
+            self.velocity_checkbox.setChecked(False)
+            self.acceleration_checkbox.setChecked(False)
+
+        # Step 5: If the user unchecks the main box, reset the loaded state.
+        if not is_checked:
+            self.deformations_file_path.clear()
+            self.deformation_loaded = False
 
     def toggle_damage_index_checkbox_visibility(self):
         if self.von_mises_checkbox.isChecked():
@@ -3552,7 +3628,7 @@ class MSUPSmartSolverGUI(QWidget):
                         break
 
             # Read the data starting from the identified start line.
-            df = pd.read_csv(unwrapped_filename, sep='\s+', skiprows=start_index + 1, header=None)
+            df = pd.read_csv(unwrapped_filename, sep='\\s+', skiprows=start_index + 1, header=None)
 
             # Delete the unwrapped file from disk now that its data is loaded.
             os.remove(unwrapped_filename)
@@ -3694,6 +3770,7 @@ class MSUPSmartSolverGUI(QWidget):
             self.deformation_loaded = False
 
         finally:
+            self.toggle_deformations_inputs()
             self.update_output_checkboxes_state()
             # After processing, update the time point controls in the DisplayTab.
             self.update_time_and_animation_ui()
@@ -3931,7 +4008,7 @@ class MSUPSmartSolverGUI(QWidget):
                 )
 
                 # Use the new method for single node processing
-                time_indices, stress_values = self.solver.process_results_for_a_single_node(
+                time_indices, y_data = self.solver.process_results_for_a_single_node(
                     selected_node_idx,
                     calculate_von_mises=calculate_von_mises,
                     calculate_max_principal_stress=calculate_max_principal_stress,
@@ -3940,9 +4017,9 @@ class MSUPSmartSolverGUI(QWidget):
                     calculate_acceleration         = calculate_acceleration
                 )
 
-                if time_indices is not None and stress_values is not None:
+                if time_indices is not None and y_data is not None:
                     # Plot the time history of the selected stress component
-                    self.plot_single_node_tab.update_plot(time_values, stress_values, selected_node_id,
+                    self.plot_single_node_tab.update_plot(time_values, y_data, selected_node_id,
                                                           is_principal_stress=calculate_max_principal_stress,
                                                           is_von_mises=calculate_von_mises,
                                                           is_velocity=calculate_velocity,
@@ -4233,33 +4310,77 @@ class MatplotlibWidget(QWidget):
         self.figure.clear()
         ax = self.figure.add_subplot(1, 1, 1)
 
-        # Plot and styling exactly as before
-        if is_principal_stress:
-            ax.plot(x, y, label=r'$\sigma_1$', color='red')
-            ax.set_title(f"Principal Stress (Node ID: {node_id})" if node_id else "Principal Stress", fontsize=8)
-            ax.set_ylabel(r'$\sigma_1$ [MPa]', fontsize=8)
-        elif is_von_mises:
-            ax.plot(x, y, label=r'$\sigma_{VM}$', color='blue')
-            ax.set_title(f"Von‑Mises Stress (Node ID: {node_id})" if node_id else "Von‑Mises Stress", fontsize=8)
-            ax.set_ylabel(r'$\sigma_{VM}$ [MPa]', fontsize=8)
-        elif is_velocity:
-            ax.plot(x, y, label='Velocity', color='green')
-            ax.set_title(f"Velocity (Node ID: {node_id})" if node_id else "Velocity", fontsize=8)
-            ax.set_ylabel('Velocity [mm/s]', fontsize=8)  # or your displacement units/sec
-        elif is_acceleration:
-            ax.plot(x, y, label='Acceleration', color='purple')
-            ax.set_title(f"Acceleration (Node ID: {node_id})" if node_id else "Acceleration", fontsize=8)
-            ax.set_ylabel('Acceleration [m/s²]', fontsize=8)  # or your units/sec²
+        # --- Define plot styles ---
+        # Using a dictionary makes it easy to manage styles for different components
+        styles = {
+            'Magnitude': {'color': 'black', 'linestyle': '-', 'linewidth': 2},
+            'X': {'color': 'red', 'linestyle': '--', 'linewidth': 1},
+            'Y': {'color': 'green', 'linestyle': '--', 'linewidth': 1},
+            'Z': {'color': 'blue', 'linestyle': '--', 'linewidth': 1},
+        }
 
+        # --- Clear and setup the table model ---
+        self.model.removeRows(0, self.model.rowCount())
+
+        if is_velocity or is_acceleration:
+            # Setup for multi-column data (Velocity or Acceleration)
+            prefix = "Velocity" if is_velocity else "Acceleration"
+            units = "(mm/s)" if is_velocity else "(mm/s²)"  # Adjust units if necessary
+            ax.set_title(f"{prefix} (Node ID: {node_id})", fontsize=8)
+            ax.set_ylabel(f"{prefix} {units}", fontsize=8)
+
+            # Update table headers for 5 columns
+            self.model.setHorizontalHeaderLabels(
+                ["Time [s]", f"Mag {units}", f"X {units}", f"Y {units}", f"Z {units}"])
+
+            # Plot each component and populate table rows
+            for component, data in y.items():
+                style = styles.get(component, {})  # Get style for component
+                ax.plot(x, data, label=f'{prefix} ({component})', **style)
+
+            # Populate table data
+            for i in range(len(x)):
+                items = [
+                    QStandardItem(f"{x[i]:.5f}"),
+                    QStandardItem(f"{y['Magnitude'][i]:.5f}"),
+                    QStandardItem(f"{y['X'][i]:.5f}"),
+                    QStandardItem(f"{y['Y'][i]:.5f}"),
+                    QStandardItem(f"{y['Z'][i]:.5f}")
+                ]
+                self.model.appendRow(items)
+
+            # Find the max value from the magnitude for the text box
+            max_y_value = np.max(y['Magnitude'])
+
+        else:
+            # Setup for single-column data (Stress)
+            self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
+            if is_principal_stress:
+                ax.plot(x, y, label=r'$\sigma_1$', color='red')
+                ax.set_title(f"Principal Stress (Node ID: {node_id})" if node_id else "Principal Stress", fontsize=8)
+                ax.set_ylabel(r'$\sigma_1$ [MPa]', fontsize=8)
+            elif is_von_mises:
+                ax.plot(x, y, label=r'$\sigma_{VM}$', color='blue')
+                ax.set_title(f"Von Mises Stress (Node ID: {node_id})" if node_id else "Von Mises Stress", fontsize=8)
+                ax.set_ylabel(r'$\sigma_{VM}$ [MPa]', fontsize=8)
+
+            # Populate table for single data series
+            for xi, yi in zip(x, y):
+                items = [QStandardItem(f"{xi:.5f}"), QStandardItem(f"{yi:.5f}")]
+                self.model.appendRow(items)
+
+            max_y_value = np.max(y)
+
+        # --- Common plot styling ---
         ax.set_xlabel('Time [seconds]', fontsize=8)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
         ax.grid(True, which='both', linestyle='-', linewidth=0.5)
         ax.minorticks_on()
         ax.tick_params(axis='both', which='major', labelsize=8)
+        ax.legend(fontsize=7)  # Show legend for all plots
 
-        # Max‑value text box
-        max_y_value = np.max(y)
-        textstr = f'Max Value: {max_y_value:.4f}'
+        # Max-value text box (based on magnitude or single value)
+        textstr = f'Max Magnitude: {max_y_value:.4f}'
         ax.text(
             0.05, 0.95, textstr, transform=ax.transAxes,
             fontsize=8, verticalalignment='top', horizontalalignment='left',
@@ -4267,13 +4388,6 @@ class MatplotlibWidget(QWidget):
         )
 
         self.canvas.draw()
-
-        # Populate the table
-        self.model.removeRows(0, self.model.rowCount())
-        for xi, yi in zip(x, y):
-            items = [QStandardItem(f"{xi:.5f}"),
-                     QStandardItem(f"{yi:.5f}")]
-            self.model.appendRow(items)
 
     def copy_selection(self):
         """Copy the selected rectangular block of cells as TSV to the clipboard."""
@@ -4530,7 +4644,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.94.3')
+        self.setWindowTitle('MSUP Smart Solver - v0.94.5')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
@@ -4609,12 +4723,14 @@ class MainWindow(QMainWindow):
             border-top-left-radius: 5px;
             border-top-right-radius: 5px;
             margin: 2px;
+            font-size: 8pt;
+            min-width: 100px;
         }
 
         QTabBar::tab:selected {
             background-color: #e7f0fd;     /* Active tab: your current blue theme */
             color: #000000;                /* Bold text */
-            border: 2px solid #5b9bd5;
+            border: 3px solid #5b9bd5;
         }
 
         QTabBar::tab:hover {
@@ -4922,7 +5038,7 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setStyleSheet("""
         QLabel, QComboBox, QSpinBox, QDoubleSpinBox, QPushButton, QCheckBox, QTextEdit, QLineEdit {
-            font-size: 7pt;
+            font-size: 8pt;
         }
     """)
 
