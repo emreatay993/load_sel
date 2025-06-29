@@ -43,7 +43,7 @@ import plotly.io as pio
 
 # region Define global variables
 RAM_PERCENT = 0.9 # Default RAM allocation percentage based on free RAM
-DEFAULT_PRECISION = 'Single'
+DEFAULT_PRECISION = 'Double'
 
 if DEFAULT_PRECISION == 'Single':
     NP_DTYPE = np.float32
@@ -258,7 +258,11 @@ class MSUPSmartSolverTransient(QObject):
         self.device = torch.device("cuda" if IS_GPU_ACCELERATION_ENABLED and torch.cuda.is_available() else "cpu")
 
         self.modal_coord = torch.tensor(modal_coord, dtype=self.TORCH_DTYPE).to(self.device)
-        if modal_deformations is not None:
+
+        # Load modal deformations object from GUI class
+        modal_deformations = main_window.batch_solver_tab.modal_deformations
+
+        if main_window.batch_solver_tab.modal_deformations is not None:
             self.modal_deformations_ux = torch.tensor(modal_deformations[0], dtype=self.TORCH_DTYPE).to(self.device)
             self.modal_deformations_uy = torch.tensor(modal_deformations[1], dtype=self.TORCH_DTYPE).to(self.device)
             self.modal_deformations_uz = torch.tensor(modal_deformations[2], dtype=self.TORCH_DTYPE).to(self.device)
@@ -308,12 +312,16 @@ class MSUPSmartSolverTransient(QObject):
         print(f"Available system RAM: {self.available_memory:.2f} GB")
         print(f"Allocated system RAM: {self.allocated_memory:.2f} GB")
 
+        # Store time axis once for gradient calcs
+        global time_values
+        self.time_values = time_values.astype(self.NP_DTYPE) if 'time_values' in globals() else None
+
     def estimate_chunk_size(self, num_nodes, num_time_points, calculate_von_mises, calculate_max_principal_stress,
-                            calculate_damage):
+                            calculate_damage, calculate_velocity=False, calculate_acceleration=False):
         """Calculate the optimal chunk size for processing based on available memory."""
         available_memory = psutil.virtual_memory().available * self.RAM_PERCENT
         memory_per_node = self.get_memory_per_node(num_time_points, calculate_von_mises, calculate_max_principal_stress,
-                                                   calculate_damage)
+                                                   calculate_damage, calculate_velocity, calculate_acceleration)
         max_nodes_per_iteration = available_memory // memory_per_node
         return max(1, int(max_nodes_per_iteration))  # Ensure at least one node per chunk
 
@@ -323,12 +331,16 @@ class MSUPSmartSolverTransient(QObject):
         return total_memory / (1024 ** 3)  # Convert bytes to GB
 
     def get_memory_per_node(self, num_time_points, calculate_von_mises, calculate_max_principal_stress,
-                            calculate_damage):
+                            calculate_damage, calculate_velocity=False, calculate_acceleration=False):
         num_arrays = 6  # For actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
         if calculate_von_mises:
             num_arrays += 1  # For sigma_vm
         if calculate_max_principal_stress:
             num_arrays += 3  # For s1, s2, s3
+        if calculate_velocity:
+            num_arrays += 1     # velocity magnitude
+        if calculate_acceleration:
+            num_arrays += 1     # acceleration magnitude
         if calculate_damage:
             num_arrays += 1  # For signed_von_mises
         # Add any additional arrays used during calculations
@@ -389,7 +401,7 @@ class MSUPSmartSolverTransient(QObject):
         Compute actual nodal displacements (deformations) for all nodes in [start_idx, end_idx].
         This method multiplies the modal deformation modes with the modal coordinate matrix.
         """
-        if self.modal_deformations_ux is None:
+        if 'modal_ux' not in globals():
             return None  # No deformations data available
 
         # Compute displacements (you can adjust the math if you have a different formulation)
@@ -407,6 +419,182 @@ class MSUPSmartSolverTransient(QObject):
             3 * (actual_sxy ** 2 + actual_syz ** 2 + actual_sxz ** 2)
         )
         return sigma_vm
+
+    @staticmethod
+    @njit(parallel=True)
+    def _vel_acc_from_disp(ux, uy, uz, dt):
+        """
+        Compute velocity and acceleration using 4th-order central differences
+        on a uniform grid dt. Endpoints use lower-order one-sided formulas.
+        NumPy arrays are created with np.empty_like to avoid dtype issues.
+        """
+        n_nodes, n_times = ux.shape
+
+        # Preallocate arrays without explicit dtype arguments
+        vel_x = np.empty_like(ux)
+        vel_y = np.empty_like(ux)
+        vel_z = np.empty_like(ux)
+        acc_x = np.empty_like(ux)
+        acc_y = np.empty_like(ux)
+        acc_z = np.empty_like(ux)
+
+        # Uniform step size
+        h = dt[1] - dt[0]
+
+        for i in prange(n_nodes):
+            # --- Velocity (first derivative) interior points ---
+            for j in range(2, n_times - 2):
+                # Coefficients as float literals for type inference
+                vel_x[i, j] = (-ux[i, j + 2] + 8.0 * ux[i, j + 1]
+                               - 8.0 * ux[i, j - 1] + ux[i, j - 2]) / (12.0 * h)
+                vel_y[i, j] = (-uy[i, j + 2] + 8.0 * uy[i, j + 1]
+                               - 8.0 * uy[i, j - 1] + uy[i, j - 2]) / (12.0 * h)
+                vel_z[i, j] = (-uz[i, j + 2] + 8.0 * uz[i, j + 1]
+                               - 8.0 * uz[i, j - 1] + uz[i, j - 2]) / (12.0 * h)
+
+            # Fallback (second-order) at boundaries
+            # j = 0, 1
+            for j in (0, 1):
+                vel_x[i, j] = (ux[i, j + 1] - ux[i, j]) / (dt[j + 1] - dt[j])
+                vel_y[i, j] = (uy[i, j + 1] - uy[i, j]) / (dt[j + 1] - dt[j])
+                vel_z[i, j] = (uz[i, j + 1] - uz[i, j]) / (dt[j + 1] - dt[j])
+            # j = n_times-2, n_times-1
+            for j in (n_times - 2, n_times - 1):
+                vel_x[i, j] = (ux[i, j] - ux[i, j - 1]) / (dt[j] - dt[j - 1])
+                vel_y[i, j] = (uy[i, j] - uy[i, j - 1]) / (dt[j] - dt[j - 1])
+                vel_z[i, j] = (uz[i, j] - uz[i, j - 1]) / (dt[j] - dt[j - 1])
+
+            # --- Acceleration (second derivative) interior points ---
+            for j in range(2, n_times - 2):
+                acc_x[i, j] = (-ux[i, j + 2] + 16.0 * ux[i, j + 1]
+                               - 30.0 * ux[i, j] + 16.0 * ux[i, j - 1]
+                               - ux[i, j - 2]) / (12.0 * h * h)
+                acc_y[i, j] = (-uy[i, j + 2] + 16.0 * uy[i, j + 1]
+                               - 30.0 * uy[i, j] + 16.0 * uy[i, j - 1]
+                               - uy[i, j - 2]) / (12.0 * h * h)
+                acc_z[i, j] = (-uz[i, j + 2] + 16.0 * uz[i, j + 1]
+                               - 30.0 * uz[i, j] + 16.0 * uz[i, j - 1]
+                               - uz[i, j - 2]) / (12.0 * h * h)
+
+            # Fallback (second-order) at boundaries
+            for j in (0, 1, n_times - 2, n_times - 1):
+                if 0 < j < n_times - 1:
+                    acc_x[i, j] = (ux[i, j + 1] - 2.0 * ux[i, j] + ux[i, j - 1]) / (h * h)
+                    acc_y[i, j] = (uy[i, j + 1] - 2.0 * uy[i, j] + uy[i, j - 1]) / (h * h)
+                    acc_z[i, j] = (uz[i, j + 1] - 2.0 * uz[i, j] + uz[i, j - 1]) / (h * h)
+                else:
+                    # One-sided second-order
+                    k0 = 0 if j == 0 else n_times - 3
+                    acc_x[i, j] = (ux[i, k0] - 2.0 * ux[i, k0 + 1] + ux[i, k0 + 2]) / (h * h)
+                    acc_y[i, j] = (uy[i, k0] - 2.0 * uy[i, k0 + 1] + uy[i, k0 + 2]) / (h * h)
+                    acc_z[i, j] = (uz[i, k0] - 2.0 * uz[i, k0 + 1] + uz[i, k0 + 2]) / (h * h)
+
+        # Compute magnitudes with supported ufuncs
+        vel_mag = np.sqrt(vel_x ** 2 + vel_y ** 2 + vel_z ** 2)
+        acc_mag = np.sqrt(acc_x ** 2 + acc_y ** 2 + acc_z ** 2)
+        return vel_mag, acc_mag
+
+    @staticmethod
+    @njit(parallel=True)
+    def _vel_acc_from_disp(ux, uy, uz, dt):
+        """
+        Compute velocity and acceleration using 6th-order central differences
+        on a uniform grid dt. Endpoints use lower-order one-sided formulas.
+        """
+        n_nodes, n_times = ux.shape
+        # Preallocate output arrays
+        vel_x = np.empty_like(ux)
+        vel_y = np.empty_like(ux)
+        vel_z = np.empty_like(ux)
+        acc_x = np.empty_like(ux)
+        acc_y = np.empty_like(ux)
+        acc_z = np.empty_like(ux)
+
+        # Uniform step size
+        h = dt[1] - dt[0]
+
+        for i in prange(n_nodes):
+            # --- Velocity (first derivative) interior points (6th-order) ---
+            for j in range(3, n_times - 3):
+                vel_x[i, j] = (-ux[i, j + 3]
+                               + 9.0 * ux[i, j + 2]
+                               - 45.0 * ux[i, j + 1]
+                               + 45.0 * ux[i, j - 1]
+                               - 9.0 * ux[i, j - 2]
+                               + ux[i, j - 3]
+                               ) / (60.0 * h)
+                vel_y[i, j] = (-uy[i, j + 3]
+                               + 9.0 * uy[i, j + 2]
+                               - 45.0 * uy[i, j + 1]
+                               + 45.0 * uy[i, j - 1]
+                               - 9.0 * uy[i, j - 2]
+                               + uy[i, j - 3]
+                               ) / (60.0 * h)
+                vel_z[i, j] = (-uz[i, j + 3]
+                               + 9.0 * uz[i, j + 2]
+                               - 45.0 * uz[i, j + 1]
+                               + 45.0 * uz[i, j - 1]
+                               - 9.0 * uz[i, j - 2]
+                               + uz[i, j - 3]
+                               ) / (60.0 * h)
+
+            # Fallback (lower-order) at boundaries for velocity
+            # j = 0,1,2
+            for j in (0, 1, 2):
+                vel_x[i, j] = (ux[i, j + 1] - ux[i, j]) / (dt[j + 1] - dt[j])
+                vel_y[i, j] = (uy[i, j + 1] - uy[i, j]) / (dt[j + 1] - dt[j])
+                vel_z[i, j] = (uz[i, j + 1] - uz[i, j]) / (dt[j + 1] - dt[j])
+            # j = n_times-3, n_times-2, n_times-1
+            for j in (n_times - 3, n_times - 2, n_times - 1):
+                vel_x[i, j] = (ux[i, j] - ux[i, j - 1]) / (dt[j] - dt[j - 1])
+                vel_y[i, j] = (uy[i, j] - uy[i, j - 1]) / (dt[j] - dt[j - 1])
+                vel_z[i, j] = (uz[i, j] - uz[i, j - 1]) / (dt[j] - dt[j - 1])
+
+            # --- Acceleration (second derivative) interior points (6th-order) ---
+            for j in range(3, n_times - 3):
+                acc_x[i, j] = (2.0 * ux[i, j + 3]
+                               - 27.0 * ux[i, j + 2]
+                               + 270.0 * ux[i, j + 1]
+                               - 490.0 * ux[i, j]
+                               + 270.0 * ux[i, j - 1]
+                               - 27.0 * ux[i, j - 2]
+                               + 2.0 * ux[i, j - 3]
+                               ) / (180.0 * h * h)
+                acc_y[i, j] = (2.0 * uy[i, j + 3]
+                               - 27.0 * uy[i, j + 2]
+                               + 270.0 * uy[i, j + 1]
+                               - 490.0 * uy[i, j]
+                               + 270.0 * uy[i, j - 1]
+                               - 27.0 * uy[i, j - 2]
+                               + 2.0 * uy[i, j - 3]
+                               ) / (180.0 * h * h)
+                acc_z[i, j] = (2.0 * uz[i, j + 3]
+                               - 27.0 * uz[i, j + 2]
+                               + 270.0 * uz[i, j + 1]
+                               - 490.0 * uz[i, j]
+                               + 270.0 * uz[i, j - 1]
+                               - 27.0 * uz[i, j - 2]
+                               + 2.0 * uz[i, j - 3]
+                               ) / (180.0 * h * h)
+
+            # Fallback (lower-order) at boundaries for acceleration
+            for j in (0, 1, 2, n_times - 3, n_times - 2, n_times - 1):
+                if 0 < j < n_times - 1:
+                    # central 2nd-order
+                    acc_x[i, j] = (ux[i, j + 1] - 2.0 * ux[i, j] + ux[i, j - 1]) / (h * h)
+                    acc_y[i, j] = (uy[i, j + 1] - 2.0 * uy[i, j] + uy[i, j - 1]) / (h * h)
+                    acc_z[i, j] = (uz[i, j + 1] - 2.0 * uz[i, j] + uz[i, j - 1]) / (h * h)
+                else:
+                    # one-sided 2nd-order
+                    k0 = 0 if j < 3 else n_times - 3
+                    acc_x[i, j] = (ux[i, k0] - 2.0 * ux[i, k0 + 1] + ux[i, k0 + 2]) / (h * h)
+                    acc_y[i, j] = (uy[i, k0] - 2.0 * uy[i, k0 + 1] + uy[i, k0 + 2]) / (h * h)
+                    acc_z[i, j] = (uz[i, k0] - 2.0 * uz[i, k0 + 1] + uz[i, k0 + 2]) / (h * h)
+
+        # Compute magnitudes
+        vel_mag = np.sqrt(vel_x ** 2 + vel_y ** 2 + vel_z ** 2)
+        acc_mag = np.sqrt(acc_x ** 2 + acc_y ** 2 + acc_z ** 2)
+        return vel_mag, acc_mag
 
     @staticmethod
     def compute_signed_von_mises_stress(sigma_vm, actual_sx, actual_sy, actual_sz):
@@ -666,29 +854,28 @@ class MSUPSmartSolverTransient(QObject):
                         calculate_damage=False,
                         calculate_von_mises=False,
                         calculate_max_principal_stress=False,
-                        calculate_min_principal_stress=False):
+                        calculate_min_principal_stress=False,
+                        calculate_velocity=False,
+                        calculate_acceleration=False):
         """Process stress results in batch to compute user requested outputs and their max/min values over time."""
         # region Initialization
         # Initialize tensor size
         num_nodes, num_modes = self.modal_sx.shape
         num_time_points = self.modal_coord.shape[1]
-
-        # Initialize max over time vectors
-        self.max_over_time_svm = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
-        self.max_over_time_s1 = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
         # endregion
 
         # region Get the chunk size based on selected options
         chunk_size = self.estimate_chunk_size(
             num_nodes, num_time_points,
-            calculate_von_mises, calculate_max_principal_stress, calculate_damage
-        )
+            calculate_von_mises, calculate_max_principal_stress, calculate_damage,
+            calculate_velocity, calculate_acceleration)
 
         num_iterations = (num_nodes + chunk_size - 1) // chunk_size
         print(f"Estimated number of iterations to avoid memory overflow: {num_iterations}")
 
         memory_per_node = self.get_memory_per_node(
-            num_time_points, calculate_von_mises, calculate_max_principal_stress, calculate_damage
+            num_time_points, calculate_von_mises, calculate_max_principal_stress, calculate_damage,
+            calculate_velocity, calculate_acceleration
         )
         memory_required_per_iteration = self.estimate_ram_required_per_iteration(chunk_size, memory_per_node)
         print(f"Estimated RAM required per iteration: {memory_required_per_iteration:.2f} GB\n")
@@ -696,6 +883,9 @@ class MSUPSmartSolverTransient(QObject):
 
         # region Create temporary (memmap) files
         if calculate_max_principal_stress:
+            # Initialize max over time vector
+            self.max_over_time_s1 = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
+
             # Create memmap files for storing the maximum principal stresses per node (s1)
             s1_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_s1_stress.dat'),
                                       dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
@@ -711,12 +901,35 @@ class MSUPSmartSolverTransient(QObject):
                                            dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
 
         if calculate_von_mises:
+            # Initialize max over time vector
+            self.max_over_time_svm = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
+
             # Create memmap files for storing the maximum von Mises stresses per node
             von_mises_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_von_mises_stress.dat'),
                                              dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
             von_mises_max_time_memmap = np.memmap(
                 os.path.join(self.output_directory, 'time_of_max_von_mises_stress.dat'),
                 dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+
+        if calculate_velocity:
+            # Initialize max over time vector
+            self.max_over_time_vel = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
+
+            # Create memmap files for storing the maximum velocity magnitudes per node
+            vel_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_velocity.dat'),
+                                       dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+            vel_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_velocity.dat'),
+                                        dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+
+        if calculate_acceleration:
+            # Initialize max over time vector
+            self.max_over_time_acc = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
+
+            # Create memmap files for storing the maximum velocity magnitudes per node
+            acc_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_acceleration.dat'),
+                                       dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+            acc_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_acceleration.dat'),
+                                        dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
 
         if calculate_damage:
             potential_damage_memmap = np.memmap(os.path.join(self.output_directory, 'potential_damage_results.dat'),
@@ -789,6 +1002,30 @@ class MSUPSmartSolverTransient(QObject):
                 s3_min_memmap[start_idx:end_idx] = min_s3_per_node
                 s3_min_time_memmap[start_idx:end_idx] = time_of_min_s3_per_node
 
+            if (calculate_velocity or calculate_acceleration) and self.modal_deformations_ux is not None:
+                ux, uy, uz = self.compute_deformations(start_idx, end_idx)
+                vel_mag, acc_mag = self._vel_acc_from_disp(ux, uy, uz, self.time_values)
+
+                if calculate_velocity:
+                    start_time = time.time()
+                    chunk_max = np.max(vel_mag, axis=0)
+                    self.max_over_time_vel = np.maximum(self.max_over_time_vel, chunk_max)
+                    max_vel_per_node = np.max(vel_mag, axis=1)
+                    time_indices = np.argmax(vel_mag, axis=1)
+                    vel_max_memmap[start_idx:end_idx]  = max_vel_per_node
+                    vel_time_memmap[start_idx:end_idx] = time_values[time_indices]
+                    print(f"Elapsed time for velocity magnitude and time: {(time.time() - start_time):.3f} seconds")
+
+                if calculate_acceleration:
+                    start_time = time.time()
+                    chunk_max = np.max(acc_mag, axis=0)
+                    self.max_over_time_acc = np.maximum(self.max_over_time_acc, chunk_max)
+                    max_acc_per_node = np.max(acc_mag, axis=1)
+                    time_indices = np.argmax(acc_mag, axis=1)
+                    acc_max_memmap[start_idx:end_idx]  = max_acc_per_node
+                    acc_time_memmap[start_idx:end_idx] = time_values[time_indices]
+                    print(f"Elapsed time for acceleration magnitude and time: {(time.time() - start_time):.3f} seconds")
+
             # Calculate potential damage index for all nodes in the chunk
             if calculate_damage:
                 start_time = time.time()
@@ -811,8 +1048,12 @@ class MSUPSmartSolverTransient(QObject):
 
             if calculate_von_mises:
                 del sigma_vm
-            if calculate_max_principal_stress:
+            if calculate_max_principal_stress or calculate_min_principal_stress:
                 del s1, s2, s3
+            if calculate_velocity:
+                del vel_mag
+            if calculate_acceleration:
+                del acc_mag
 
             gc.collect()
             print(f"Elapsed time for garbage collection: {(time.time() - start_time):.3f} seconds")
@@ -840,6 +1081,12 @@ class MSUPSmartSolverTransient(QObject):
         if calculate_min_principal_stress:
             s3_min_memmap.flush()
             s3_min_time_memmap.flush()
+        if calculate_velocity:
+            vel_max_memmap.flush()
+            vel_time_memmap.flush()
+        if calculate_acceleration:
+            acc_max_memmap.flush()
+            acc_time_memmap.flush()
         if calculate_damage:
             potential_damage_memmap.flush()
         # endregion
@@ -873,6 +1120,26 @@ class MSUPSmartSolverTransient(QObject):
                                     os.path.join(self.output_directory, "time_of_min_s3_stress.dat"),
                                     os.path.join(self.output_directory, "time_of_min_s3_stress.csv"),
                                     "Time_of_S3_Min")
+
+        if calculate_velocity:
+            self.convert_dat_to_csv(df_node_ids, num_nodes,
+                                    os.path.join(self.output_directory, "max_velocity.dat"),
+                                    os.path.join(self.output_directory, "max_velocity.csv"),
+                                    "VEL_Max")
+            self.convert_dat_to_csv(df_node_ids, num_nodes,
+                                    os.path.join(self.output_directory, "time_of_max_velocity.dat"),
+                                    os.path.join(self.output_directory, "time_of_max_velocity.csv"),
+                                    "Time_of_VEL_Max")
+        if calculate_acceleration:
+            self.convert_dat_to_csv(df_node_ids, num_nodes,
+                                    os.path.join(self.output_directory, "max_acceleration.dat"),
+                                    os.path.join(self.output_directory, "max_acceleration.csv"),
+                                    "ACC_Max")
+            self.convert_dat_to_csv(df_node_ids, num_nodes,
+                                    os.path.join(self.output_directory, "time_of_max_acceleration.dat"),
+                                    os.path.join(self.output_directory, "time_of_max_acceleration.csv"),
+                                    "Time_of_ACC_Max")
+
         if calculate_damage:
             self.convert_dat_to_csv(df_node_ids, num_nodes,
                                     os.path.join(self.output_directory, "potential_damage_results.dat"),
@@ -884,7 +1151,9 @@ class MSUPSmartSolverTransient(QObject):
                                           selected_node_idx,
                                           calculate_von_mises=False,
                                           calculate_max_principal_stress=False,
-                                          calculate_min_principal_stress=False):
+                                          calculate_min_principal_stress=False,
+                                          calculate_velocity=False,
+                                          calculate_acceleration=False):
         """
         Process results for a single node and return the stress data for plotting.
 
@@ -926,8 +1195,21 @@ class MSUPSmartSolverTransient(QObject):
             return np.arange(s1.shape[1]), s1[0, :]  # time_indices, stress_values
 
         if calculate_min_principal_stress:
-            s1, s2, s3 = self.compute_principal_stresses(...)
+            s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
+                                                         actual_sxz)
+            print(f"Principal Stresses calculated for Node {selected_node_id}\n")
             return np.arange(s3.shape[1]), s3[0, :]  # S₃ min history
+
+        if calculate_velocity or calculate_acceleration:
+            if self.modal_deformations_ux is None:
+                print("Deformation data missing – velocity/acceleration calculations are skipped.")
+            else:
+                ux, uy, uz = self.compute_deformations(selected_node_idx, selected_node_idx+1)
+                vel_mag, acc_mag = self._vel_acc_from_disp(ux, uy, uz, self.time_values)
+                if calculate_velocity:
+                    return np.arange(vel_mag.shape[1]), vel_mag[0, :]
+                if calculate_acceleration:
+                    return np.arange(acc_mag.shape[1]), acc_mag[0, :]
 
         # Return none if no output is requested
         return None, None
@@ -1330,10 +1612,23 @@ class DisplayTab(QWidget):
         # Determine which stress type is selected.
         compute_von = main_tab.von_mises_checkbox.isChecked()
         compute_principal = main_tab.max_principal_stress_checkbox.isChecked()
+        compute_velocity   = main_tab.velocity_checkbox.isChecked()
+        compute_acceleration = main_tab.acceleration_checkbox.isChecked()
 
-        if not (compute_von or compute_principal):
+        num_outputs_selected = sum([
+            compute_von,
+            compute_principal,
+            compute_velocity,
+            compute_acceleration,
+        ])
+        if num_outputs_selected > 1:
+            QMessageBox.warning(self, "Multiple Outputs Selected",
+                                "Please select only one output type for time point visualization.")
+            return
+
+        if not (compute_von or compute_principal or compute_velocity or compute_acceleration):
             QMessageBox.warning(self, "No Selection",
-                                "No output is selected. Please select a valid output type to compute the results.")
+                                "No valid output is selected. Please select a valid output type to compute the results.")
             return
 
         # Get the selected time value and find the closest index in the global time_values array.
@@ -1342,7 +1637,25 @@ class DisplayTab(QWidget):
 
         # Slice the modal coordinate matrix for the chosen time point.
         # Assuming modal_coord shape is [num_modes, num_time_points], we extract a column vector.
-        selected_modal_coord = modal_coord[:, time_index:time_index + 1]
+        if compute_velocity or compute_acceleration:
+            WINDOW = 7  # 3 pts either side + centre
+            half = WINDOW // 2
+            idx0 = max(0, time_index - half)
+            idx1 = min(modal_coord.shape[1], time_index + half + 1)
+
+            # need ≥2 samples – otherwise the derivative makes no sense
+            if idx1 - idx0 < 2:
+                QMessageBox.warning(
+                    self, "Too few samples",
+                    "Velocity/acceleration need at least two time steps. "
+                    "Pick another time or load more results.")
+                return
+
+            selected_modal_coord = modal_coord[:, idx0:idx1]  # windowed block
+            dt_window = time_values[idx0:idx1]  # matching time vector
+            centre_offset = time_index - idx0  # column we finally want
+        else:
+            selected_modal_coord = modal_coord[:, time_index:time_index + 1]
 
         # Create a temporary solver instance using the sliced modal coordinate matrix.
         include_steady = self.main_window.batch_solver_tab.steady_state_checkbox.isChecked()
@@ -1377,12 +1690,34 @@ class DisplayTab(QWidget):
                                                                 actual_sxy, actual_syz, actual_sxz)
             field_name = "SVM"
             display_name = "SVM (MPa)"
+
         elif compute_principal:
             s1, s2, s3 = temp_solver.compute_principal_stresses(actual_sx, actual_sy, actual_sz,
                                                                 actual_sxy, actual_syz, actual_sxz)
             scalar_field = s1  # Choose the maximum principal stress
             field_name = "S1"
             display_name = "S1 (MPa)"
+
+        elif compute_velocity or compute_acceleration:
+            if 'modal_ux' not in globals():
+                QMessageBox.warning(self, "Missing Data",
+                                    "Modal deformations must be loaded for velocity/acceleration.")
+                return
+
+            # Get displacements for the *windowed* modal slice
+            ux_blk, uy_blk, uz_blk = temp_solver.compute_deformations(0, num_nodes)
+
+            # Run the 6-th-order scheme on that window (use the window for 6th order algorithm, computed above)
+            vel_blk, acc_blk = temp_solver._vel_acc_from_disp(
+                ux_blk, uy_blk, uz_blk, dt_window.astype(temp_solver.NP_DTYPE))
+
+            vel_tp = vel_blk[:, centre_offset]  # pick centre column
+            acc_tp = acc_blk[:, centre_offset]
+
+            # Choose the result asked by user
+            scalar_field = vel_tp if compute_velocity else acc_tp
+            field_name = "Velocity" if compute_velocity else "Acceleration"
+            display_name = "Velocity (mm/s)" if compute_velocity else "Acceleration (mm/s²)"
         else:
             QMessageBox.warning(self, "Selection Error", "No valid stress type selected.")
             return
@@ -1526,10 +1861,12 @@ class DisplayTab(QWidget):
         compute_von = main_tab.von_mises_checkbox.isChecked()
         compute_principal = main_tab.max_principal_stress_checkbox.isChecked()
         compute_deformation = main_tab.deformations_checkbox.isChecked()
+        compute_velocity = main_tab.velocity_checkbox.isChecked()
+        compute_acceleration = main_tab.acceleration_checkbox.isChecked()
 
-        if not (compute_von or compute_principal):
+        if not (compute_von or compute_principal or compute_velocity or compute_acceleration):
             QMessageBox.warning(self, "No Selection",
-                                "No output (Von Mises or Principal Stress) selected in the Main Window tab for animation.")
+                                "No valid output is selected in the Main Window tab for animation.")
             self.stop_animation()
             return
 
@@ -1625,12 +1962,31 @@ class DisplayTab(QWidget):
                     actual_sx_anim, actual_sy_anim, actual_sz_anim,
                     actual_sxy_anim, actual_syz_anim, actual_sxz_anim)
                 self.data_column_name = "SVM (MPa)"
+
             elif compute_principal:
                 s1_anim, _, _ = temp_solver.compute_principal_stresses(
                     actual_sx_anim, actual_sy_anim, actual_sz_anim,
                     actual_sxy_anim, actual_syz_anim, actual_sxz_anim)
                 self.precomputed_scalars = s1_anim
                 self.data_column_name = "S1 (MPa)"
+
+            elif compute_velocity or compute_acceleration:
+                # Need modal deformations
+                if 'modal_ux' not in globals():
+                    QMessageBox.warning(self, "Deformation Error",
+                                        "Velocity/Acceleration requested but modal deformations are not loaded.")
+                    self.stop_animation();
+                    return
+                ux_anim, uy_anim, uz_anim = temp_solver.compute_deformations(0, num_nodes)
+                vel_mag_anim, acc_mag_anim = temp_solver._vel_acc_from_disp(
+                    ux_anim, uy_anim, uz_anim, anim_times.astype(temp_solver.NP_DTYPE))
+
+                if compute_velocity:
+                    self.precomputed_scalars = vel_mag_anim
+                    self.data_column_name = "Velocity (mm/s)"
+                else:  # acceleration
+                    self.precomputed_scalars = acc_mag_anim
+                    self.data_column_name = "Acceleration (mm/s²)"
 
             # Compute deformations if needed
             if compute_deformation:
@@ -2682,6 +3038,11 @@ class MSUPSmartSolverGUI(QWidget):
         # Enable drag-and-drop for file selection buttons and text fields
         self.setAcceptDrops(True)
 
+        # Flags to check whether primary inputs are loaded
+        self.coord_loaded = False
+        self.deformation_loaded = False
+        self.stress_loaded      = False
+
     def init_ui(self):
         # Set window background color
         palette = self.palette()
@@ -2813,6 +3174,14 @@ class MSUPSmartSolverGUI(QWidget):
         self.von_mises_checkbox.setStyleSheet("margin: 10px 0;")
         self.von_mises_checkbox.toggled.connect(self.update_single_node_plot_based_on_checkboxes)
 
+        # Checkbox for Calculating Velocity
+        self.velocity_checkbox = QCheckBox('Velocity')
+        self.velocity_checkbox.setStyleSheet("margin: 10px 0;")
+
+        # Checkbox for Calculating Velocity
+        self.acceleration_checkbox = QCheckBox('Acceleration')
+        self.acceleration_checkbox.setStyleSheet("margin: 10px 0;")
+
         # Checkbox for Calculate Damage Index
         self.damage_index_checkbox = QCheckBox('Damage Index / Potential Damage')
         self.damage_index_checkbox.setStyleSheet("margin: 10px 0;")
@@ -2935,8 +3304,25 @@ class MSUPSmartSolverGUI(QWidget):
         output_layout.addWidget(self.max_principal_stress_checkbox)
         output_layout.addWidget(self.min_principal_stress_checkbox)
         output_layout.addWidget(self.von_mises_checkbox)
+        output_layout.addWidget(self.velocity_checkbox)
+        output_layout.addWidget(self.acceleration_checkbox)
         output_layout.addWidget(self.damage_index_checkbox)
         self.output_group.setLayout(output_layout)
+
+        # outputs that require ONLY the deformation file
+        self._deformation_outputs = [self.velocity_checkbox,
+                                     self.acceleration_checkbox]
+
+        # outputs that need both the modal coordinate and the modal stress file
+        self._coord_stress_outputs = [self.time_history_checkbox,
+                                      self.max_principal_stress_checkbox,
+                                      self.min_principal_stress_checkbox,
+                                      self.von_mises_checkbox,
+                                      self.damage_index_checkbox]
+
+        # Keep output checkboxes disabled until relevant input files are loaded
+        for cb in (self._deformation_outputs + self._coord_stress_outputs):
+            cb.setEnabled(False)
 
         # Group box for Single Node Solution (Node ID selection)
         self.single_node_group = QGroupBox("Scoping")
@@ -2967,6 +3353,21 @@ class MSUPSmartSolverGUI(QWidget):
 
         # Initially hide the "Calculate Damage Index" checkbox if "Calculate Von-Mises" is not checked
         self.toggle_damage_index_checkbox_visibility()
+
+    def update_output_checkboxes_state(self):
+        """
+        Enable:
+          • Velocity & Acceleration     → when the modal deformation file is loaded
+          • All stress-related outputs → when BOTH the coordinate file and the modal
+                                          stress file are loaded
+        """
+        # Velocity & Acceleration
+        for cb in self._deformation_outputs:
+            cb.setEnabled(self.deformation_loaded)
+
+        # Von-Mises, principal stresses, damage, time-history …
+        for cb in self._coord_stress_outputs:
+            cb.setEnabled(self.coord_loaded and self.stress_loaded)
 
     def toggle_steady_state_stress_inputs(self):
         is_checked = self.steady_state_checkbox.isChecked()
@@ -3037,15 +3438,21 @@ class MSUPSmartSolverGUI(QWidget):
         """Update the plot based on the state of the 'Principal Stress' and 'Von Mises Stress' checkboxes."""
         try:
             # Retrieve the checkbox states
-            is_principal_stress = self.max_principal_stress_checkbox.isChecked()
+            is_max_principal_stress = self.max_principal_stress_checkbox.isChecked()
             is_von_mises = self.von_mises_checkbox.isChecked()
+            is_velocity = self.velocity_checkbox.isChecked()
+            is_acceleration = self.acceleration_checkbox.isChecked()
 
             # Dummy data for the plot (replace this with actual data when available)
             x_data = [1, 2, 3, 4, 5]  # Time or some other X-axis data
             y_data = [0, 0, 0, 0, 0]  # Dummy Y-axis data
 
             # Update the plot with the current checkbox states
-            self.plot_single_node_tab.update_plot(x_data, y_data, None, is_principal_stress, is_von_mises)
+            self.plot_single_node_tab.update_plot(x_data, y_data, None,
+                                                  is_max_principal_stress,
+                                                  is_von_mises,
+                                                  is_velocity,
+                                                  is_acceleration)
         except Exception as e:
             print(f"Error updating plot based on checkbox states: {e}")
 
@@ -3100,9 +3507,15 @@ class MSUPSmartSolverGUI(QWidget):
             self.plot_modal_coords_tab.update_plot(time_values, modal_coord)
             self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab),
                                                       True)
+
+            self.coord_loaded = True
+
         except Exception as e:
             self.console_textbox.append(f"Error processing modal coordinate file: {e}")
+            self.coord_loaded = False
+
         finally:
+            self.update_output_checkboxes_state()
             # After processing, update the time point controls in the DisplayTab.
             self.update_time_and_animation_ui()
 
@@ -3150,11 +3563,16 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.append(
                 f"SXY shape: {modal_sz.shape}, SYZ shape: {modal_syz.shape}, SXZ shape: {modal_sxz.shape}\n")
             self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
+
+            self.stress_loaded = True
+
         except Exception as e:
             self.console_textbox.append(f"Error processing modal stress file: {e}")
             self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
+
         finally:
             # After processing, update the time point controls in the DisplayTab.
+            self.update_output_checkboxes_state()
             self.update_time_and_animation_ui()
 
     def select_deformations_file(self):
@@ -3174,12 +3592,20 @@ class MSUPSmartSolverGUI(QWidget):
             modal_ux = df.filter(regex='(?i)^ux_').to_numpy().astype(NP_DTYPE)
             modal_uy = df.filter(regex='(?i)^uy_').to_numpy().astype(NP_DTYPE)
             modal_uz = df.filter(regex='(?i)^uz_').to_numpy().astype(NP_DTYPE)
+
+            self.modal_deformations = (modal_ux, modal_uy, modal_uz)
             self.console_textbox.append(f"Successfully processed modal deformations file: {filename}")
             self.console_textbox.append(
                 f"Deformations array shapes: UX {modal_ux.shape}, UY {modal_uy.shape}, UZ {modal_uz.shape}")
+
+            self.deformation_loaded = True
+
         except Exception as e:
             self.console_textbox.append(f"Error processing modal deformations file: {e}")
+            self.deformation_loaded = False
+
         finally:
+            self.update_output_checkboxes_state()
             # After processing, update the time point controls in the DisplayTab.
             self.update_time_and_animation_ui()
 
@@ -3267,6 +3693,11 @@ class MSUPSmartSolverGUI(QWidget):
                 self.console_textbox.append("Please load the modal coordinate and stress files before solving.")
                 return
 
+            if 'modal_ux' in globals() and modal_ux is not None:
+                modal_deformations = (modal_ux, modal_uy, modal_uz)
+            else:
+                modal_deformations = None
+
             # Show the progress bar at the start of the solution
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
@@ -3282,6 +3713,8 @@ class MSUPSmartSolverGUI(QWidget):
             calculate_von_mises = self.von_mises_checkbox.isChecked()
             calculate_max_principal_stress = self.max_principal_stress_checkbox.isChecked()
             calculate_min_principal_stress = self.min_principal_stress_checkbox.isChecked()
+            calculate_velocity      = self.velocity_checkbox.isChecked()
+            calculate_acceleration  = self.acceleration_checkbox.isChecked()
 
             # Check if "Time History Mode" is enabled
             is_time_history_mode = self.time_history_checkbox.isChecked()
@@ -3340,11 +3773,6 @@ class MSUPSmartSolverGUI(QWidget):
 
                 self.console_textbox.append(f"Time History Mode enabled for Node {selected_node_id}\n")
 
-                if 'modal_ux' in globals() and modal_ux is not None:
-                    modal_deformations = (modal_ux, modal_uy, modal_uz)
-                else:
-                    modal_deformations = None
-
                 # Create an instance of the solver
                 self.solver = MSUPSmartSolverTransient(
                     modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz,
@@ -3357,7 +3785,8 @@ class MSUPSmartSolverGUI(QWidget):
                     steady_sxz=steady_sxz,
                     steady_node_ids=steady_node_ids,
                     modal_node_ids=df_node_ids,
-                    output_directory=output_directory
+                    output_directory=output_directory,
+                    modal_deformations=modal_deformations
                 )
 
                 # Use the new method for single node processing
@@ -3366,13 +3795,17 @@ class MSUPSmartSolverGUI(QWidget):
                     calculate_von_mises=calculate_von_mises,
                     calculate_max_principal_stress=calculate_max_principal_stress,
                     calculate_min_principal_stress=calculate_min_principal_stress,
+                    calculate_velocity             = calculate_velocity,
+                    calculate_acceleration         = calculate_acceleration
                 )
 
                 if time_indices is not None and stress_values is not None:
                     # Plot the time history of the selected stress component
                     self.plot_single_node_tab.update_plot(time_values, stress_values, selected_node_id,
                                                           is_principal_stress=calculate_max_principal_stress,
-                                                          is_von_mises=calculate_von_mises)
+                                                          is_von_mises=calculate_von_mises,
+                                                          is_velocity=calculate_velocity,
+                                                          is_acceleration=calculate_acceleration)
 
                 self.progress_bar.setVisible(False)  # Hide progress bar for single-node operation
                 return  # Exit early, no need to write files
@@ -3389,7 +3822,8 @@ class MSUPSmartSolverGUI(QWidget):
                 steady_sxz=steady_sxz,
                 steady_node_ids=steady_node_ids,
                 modal_node_ids=df_node_ids,
-                output_directory=output_directory
+                output_directory=output_directory,
+                modal_deformations = modal_deformations
             )
 
             # Connect the solver's progress signal to the progress bar update slot
@@ -3401,7 +3835,9 @@ class MSUPSmartSolverGUI(QWidget):
                 calculate_damage=calculate_damage,
                 calculate_von_mises=calculate_von_mises,
                 calculate_max_principal_stress=calculate_max_principal_stress,
-                calculate_min_principal_stress=calculate_min_principal_stress
+                calculate_min_principal_stress=calculate_min_principal_stress,
+                calculate_velocity=calculate_velocity,
+                calculate_acceleration=calculate_acceleration
             )
             end_time_main_calc = time.time() - start_time
 
@@ -3411,7 +3847,7 @@ class MSUPSmartSolverGUI(QWidget):
                 f"******************** END SOLVE *********************\nDatetime: {current_time}\n\n")
 
             # Log the completion
-            self.console_textbox.append(f"Main calculation routine completed in: {end_time_main_calc:.2f} seconds")
+            self.console_textbox.append(f"Main calculation routine completed in: {end_time_main_calc:.2f} seconds\n")
             self.console_textbox.moveCursor(QTextCursor.End)  # Move cursor to the end
             self.console_textbox.ensureCursorVisible()  # Ensure the cursor is visible
 
@@ -3642,7 +4078,11 @@ class MatplotlibWidget(QWidget):
         layout.addWidget(splitter)
         self.setLayout(layout)
 
-    def update_plot(self, x, y, node_id=None, is_principal_stress=False, is_von_mises=False):
+    def update_plot(self, x, y, node_id=None,
+                    is_principal_stress=False,
+                    is_von_mises=False,
+                    is_velocity=False,
+                    is_acceleration=False):
         # Clear the figure
         self.figure.clear()
         ax = self.figure.add_subplot(1, 1, 1)
@@ -3656,6 +4096,14 @@ class MatplotlibWidget(QWidget):
             ax.plot(x, y, label=r'$\sigma_{VM}$', color='blue')
             ax.set_title(f"Von‑Mises Stress (Node ID: {node_id})" if node_id else "Von‑Mises Stress", fontsize=8)
             ax.set_ylabel(r'$\sigma_{VM}$ [MPa]', fontsize=8)
+        elif is_velocity:
+            ax.plot(x, y, label='Velocity', color='green')
+            ax.set_title(f"Velocity (Node ID: {node_id})" if node_id else "Velocity", fontsize=8)
+            ax.set_ylabel('Velocity [mm/s]', fontsize=8)  # or your displacement units/sec
+        elif is_acceleration:
+            ax.plot(x, y, label='Acceleration', color='purple')
+            ax.set_title(f"Acceleration (Node ID: {node_id})" if node_id else "Acceleration", fontsize=8)
+            ax.set_ylabel('Acceleration [m/s²]', fontsize=8)  # or your units/sec²
 
         ax.set_xlabel('Time [seconds]', fontsize=8)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
@@ -3936,7 +4384,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.93.2')
+        self.setWindowTitle('MSUP Smart Solver - v0.94.0')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
