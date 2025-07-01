@@ -1905,6 +1905,9 @@ class DisplayTab(QWidget):
             self.plotter.render()
             self.update_visualization()
 
+            # Clear the external file path since we are generating a new view.
+            self.file_path.clear()
+
         else:
             QMessageBox.warning(self, "Missing Data", "Node coordinates are not available.")
 
@@ -2298,6 +2301,9 @@ class DisplayTab(QWidget):
             self.plotter.remove_actor(self.time_text_actor)
             self.time_text_actor = None
 
+        # Clear the external file path since we are generating a new view.
+        self.file_path.clear()
+
     def pause_animation(self):
         """Pause the animation (resumes from the current frame when Play is clicked)."""
         if self.anim_timer is not None and self.anim_timer.isActive():
@@ -2311,7 +2317,12 @@ class DisplayTab(QWidget):
 
     def stop_animation(self):
         """Stop the animation, release precomputed data, and reset state."""
-        print("\nStopping animation and releasing resources...")
+        # MODIFICATION: Check if there is an animation to stop before printing.
+        is_stoppable = self.anim_timer is not None or self.precomputed_scalars is not None
+
+        if is_stoppable:
+            print("\nStopping animation and releasing resources...")
+
         if self.anim_timer is not None:
             self.anim_timer.stop()
             # Optional: disconnect to be sure it doesn't trigger again accidentally
@@ -2376,7 +2387,8 @@ class DisplayTab(QWidget):
             except Exception as e:
                 print(f"Error resetting mesh points: {e}")
 
-        print("\nAnimation stopped.")
+        if is_stoppable:
+            print("\nAnimation stopped.")
 
     def animate_frame(self, update_index=True):
         """Update the display using the next precomputed animation frame."""
@@ -3200,6 +3212,7 @@ class DisplayTab(QWidget):
 
     def clear_visualization(self):
         """Properly clear existing visualization"""
+        self.stop_animation()
         self.clear_hover_elements()
 
         if self.camera_widget:
@@ -3214,6 +3227,8 @@ class DisplayTab(QWidget):
         self.current_actor = None
         self.scalar_min_spin.clear()
         self.scalar_max_spin.clear()
+
+        self.file_path.clear()
 
     def __del__(self):
         """Ensure proper cleanup"""
@@ -3249,6 +3264,8 @@ class MSUPSmartSolverGUI(QWidget):
         self.coord_loaded = False
         self.deformation_loaded = False
         self.stress_loaded      = False
+
+        self._update_solve_button_state()
 
     def init_ui(self):
         # Set window background color
@@ -3376,6 +3393,7 @@ class MSUPSmartSolverGUI(QWidget):
         self.time_history_checkbox = QCheckBox('Time History Mode (Single Node)')
         self.time_history_checkbox.setStyleSheet("margin: 10px 0;")
         self.time_history_checkbox.toggled.connect(self.toggle_single_node_solution_group)
+        self.time_history_checkbox.toggled.connect(self._on_time_history_toggled)
 
         # Checkbox for Calculate Principal Stress
         self.max_principal_stress_checkbox = QCheckBox('Max Principal Stress')
@@ -3590,24 +3608,23 @@ class MSUPSmartSolverGUI(QWidget):
 
     def update_output_checkboxes_state(self):
         """
-        Enable:
-         • Velocity & Acceleration      → when the modal deformation file is loaded AND the main checkbox is checked.
-         • All stress-related outputs → when BOTH the coordinate file and the modal
-                                          stress file are loaded
+        Enables or disables output checkboxes based on which primary data files are loaded.
         """
-        # Determine if deformation-dependent outputs should be enabled
-        deformations_enabled = self.deformations_checkbox.isChecked() and self.deformation_loaded
-
-        # Velocity & Acceleration
-        for cb in self._deformation_outputs:
-            cb.setEnabled(deformations_enabled)
-            # If they become disabled, also uncheck them
-            if not deformations_enabled:
+        # Stress-related outputs require both primary files
+        stress_enabled = self.coord_loaded and self.stress_loaded
+        for cb in self._coord_stress_outputs:
+            cb.setEnabled(stress_enabled)
+            if not stress_enabled:
                 cb.setChecked(False)
 
-        # Von-Mises, principal stresses, damage, time-history …
-        for cb in self._coord_stress_outputs:
-            cb.setEnabled(self.coord_loaded and self.stress_loaded)
+        # Deformation-related outputs require the coordinate file and the optional deformation file
+        deformations_enabled = (self.coord_loaded and
+                                self.deformations_checkbox.isChecked() and
+                                self.deformation_loaded)
+        for cb in self._deformation_outputs:
+            cb.setEnabled(deformations_enabled)
+            if not deformations_enabled:
+                cb.setChecked(False)
 
     def toggle_steady_state_stress_inputs(self):
         is_checked = self.steady_state_checkbox.isChecked()
@@ -3619,31 +3636,20 @@ class MSUPSmartSolverGUI(QWidget):
             self.steady_state_file_path.clear()
 
     def toggle_deformations_inputs(self):
+        """Shows or hides the UI controls for loading a modal deformations file."""
         is_checked = self.deformations_checkbox.isChecked()
 
-        # Step 1: Control visibility of the file selection widgets.
-        # This only depends on the checkbox state.
+        # Control the visibility of the file input widgets and the "skip modes" combo box.
         self.deformations_file_button.setVisible(is_checked)
         self.deformations_file_path.setVisible(is_checked)
 
-        # Step 2: Define the condition for enabling details.
-        # This requires BOTH the checkbox to be checked AND the file to be loaded.
         are_details_enabled = is_checked and self.deformation_loaded
-
-        # Step 3: Apply the condition to the dependent widgets.
         self.skip_modes_label.setVisible(are_details_enabled)
         self.skip_modes_combo.setVisible(are_details_enabled)
-        self.deformation_checkbox.setEnabled(are_details_enabled)
-        self.velocity_checkbox.setEnabled(are_details_enabled)
-        self.acceleration_checkbox.setEnabled(are_details_enabled)
 
-        # Step 4: If the conditions are not met, ensure velocity/acceleration are also unchecked.
-        if not are_details_enabled:
-            self.deformation_checkbox.setChecked(False)
-            self.velocity_checkbox.setChecked(False)
-            self.acceleration_checkbox.setChecked(False)
+        # Call helper method to ensure exclusivity due to availability of input files
+        self.update_output_checkboxes_state()
 
-        # Step 5: If the user unchecks the main box, reset the loaded state.
         if not is_checked:
             self.deformations_file_path.clear()
             self.deformation_loaded = False
@@ -3672,10 +3678,15 @@ class MSUPSmartSolverGUI(QWidget):
                 self.show_output_tab_widget.setTabVisible(
                     self.show_output_tab_widget.indexOf(self.plot_single_node_tab), True)
             else:
-                # Disconnect all handlers from the exclusive checkboxes
-                for cb in self.time_history_exclusive_outputs:
-                    # This is a safe way to disconnect all connected slots
-                    cb.toggled.disconnect()
+                # Disconnect only the specific handler for mutual exclusivity leaving the original connections (like for the damage index) intact.
+                for checkbox in self.time_history_exclusive_outputs:
+                    try:
+                        # This specifically targets the function we added earlier.
+                        checkbox.toggled.disconnect(self.on_exclusive_output_toggled)
+                    except TypeError:
+                        # This error can occur if the slot was already disconnected.
+                        # It's safe to ignore it in this context.
+                        pass
 
                 # Hide single node group and plot tab
                 self.single_node_group.setVisible(False)
@@ -3683,6 +3694,22 @@ class MSUPSmartSolverGUI(QWidget):
                     self.show_output_tab_widget.indexOf(self.plot_single_node_tab), False)
         except Exception as e:
             print(f"Error in toggling single node group visibility: {e}")
+
+    def _on_time_history_toggled(self, is_checked):
+        """When Time History Mode is checked, uncheck all other output options."""
+        if is_checked:
+            # Combine all output checkboxes into one list for easy iteration
+            all_output_checkboxes = self._coord_stress_outputs + self._deformation_outputs
+
+            for checkbox in all_output_checkboxes:
+                # Don't uncheck the Time History checkbox itself
+                if checkbox is self.time_history_checkbox:
+                    continue
+
+                # Temporarily block signals to prevent other logic from firing, then uncheck
+                checkbox.blockSignals(True)
+                checkbox.setChecked(False)
+                checkbox.blockSignals(False)
 
     def on_exclusive_output_toggled(self, is_checked, sender_checkbox):
         """
@@ -3732,171 +3759,171 @@ class MSUPSmartSolverGUI(QWidget):
     def select_coord_file(self):
         file_name, _ = QFileDialog.getOpenFileName(self, 'Open Modal Coordinate File', '', 'Coordinate Files (*.mcf)')
         if file_name:
-            self.coord_file_path.setText(file_name)
             self.process_modal_coordinate_file(file_name)
 
     def process_modal_coordinate_file(self, filename):
+        """Validates the MCF file, and if valid, processes it and updates the GUI."""
         try:
-            # First, create an unwrapped version of the file.
+            # --- 1. Validation Step ---
             base, ext = os.path.splitext(filename)
             unwrapped_filename = base + "_unwrapped" + ext
             unwrap_mcf_file(filename, unwrapped_filename)
-
-            # Now read the unwrapped file.
-            # Find the line that contains 'Time' to know where data starts.
             with open(unwrapped_filename, 'r') as file:
-                for i, line in enumerate(file):
-                    if 'Time' in line:
-                        start_index = i
-                        break
-
-            # Read the data starting from the identified start line.
-            df = pd.read_csv(unwrapped_filename, sep='\\s+', skiprows=start_index + 1, header=None)
-
-            # Delete the unwrapped file from disk now that its data is loaded.
+                start_index = next(i for i, line in enumerate(file) if 'Time' in line)
+            df_val = pd.read_csv(unwrapped_filename, sep='\\s+', skiprows=start_index + 1, header=None)
             os.remove(unwrapped_filename)
 
-            # Create the column names: first column is 'Time', then Mode_1, Mode_2, etc.
-            df.columns = ['Time'] + [f'Mode_{i}' for i in range(1, df.shape[1])]
-
-            # Store the Time column separately.
-            global time_values
-            time_values = df['Time'].to_numpy()
-
-            # Drop the 'Time' column and transpose the DataFrame to get modal coordinates.
-            df_transposed_dropped = df.drop(columns='Time').transpose()
-
-            # Convert the DataFrame to a global NumPy array.
-            global modal_coord
-            modal_coord = df_transposed_dropped.to_numpy()
-
-            del df, df_transposed_dropped
-
-            # Log the success and shape of the resulting array.
-            self.console_textbox.append(f"Successfully processed modal coordinate input: {unwrapped_filename}")
-            self.console_textbox.append(f"Modal coordinates tensor shape (m x n): {modal_coord.shape} \n")
-
-            # Update the Plot (Modal Coordinates) tab
-            self.plot_modal_coords_tab.update_plot(time_values, modal_coord)
-            self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab),
-                                                      True)
-
-            self.coord_loaded = True
+            if df_val.empty or df_val.shape[1] < 2:
+                raise ValueError("File appears to be empty or has no mode columns.")
+            if not all(pd.api.types.is_numeric_dtype(df_val[c]) for c in df_val.columns):
+                raise ValueError("File contains non-numeric data where modal coordinates are expected.")
 
         except Exception as e:
-            self.console_textbox.append(f"Error processing modal coordinate file: {e}")
-            self.coord_loaded = False
+            QMessageBox.warning(self, "Invalid File", f"The selected Modal Coordinate File is not valid.\n\nError: {e}")
+            return
 
-        finally:
-            self.update_output_checkboxes_state()
-            # After processing, update the time point controls in the DisplayTab.
-            self.update_time_and_animation_ui()
+        # --- 2. If Validation Passes, Clear OLD Coordinate/Time Data & Plots ---
+        global modal_coord, time_values
+        modal_coord, time_values = None, None
+        self.plot_modal_coords_tab.clear_plot()
+        self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab), False)
+        if hasattr(self, 'plot_max_over_time_tab'):
+            self.plot_max_over_time_tab.clear_plot()
+            self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_max_over_time_tab), False)
+        if hasattr(self, 'plot_min_over_time_tab'):
+            self.plot_min_over_time_tab.clear_plot()
+            self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_min_over_time_tab), False)
+
+        # --- 3. Load NEW Data and Update UI ---
+        self.coord_file_path.setText(filename)
+        time_values = df_val.iloc[:, 0].to_numpy()
+        modal_coord = df_val.drop(columns=df_val.columns[0]).transpose().to_numpy()
+        del df_val
+
+        self.console_textbox.append(f"Successfully validated and loaded modal coordinate file: {os.path.basename(filename)}\n")
+        self.console_textbox.append(f"Modal coordinates tensor shape (m x n): {modal_coord.shape} \n")
+        self.plot_modal_coords_tab.update_plot(time_values, modal_coord)
+        self.show_output_tab_widget.setTabVisible(self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab), True)
+
+        self.coord_loaded = True
+        self.update_output_checkboxes_state()
+        self.update_time_and_animation_ui()
+        self._update_solve_button_state()
 
     def select_stress_file(self):
         file_name, _ = QFileDialog.getOpenFileName(self, 'Open Modal Stress File', '', 'CSV Files (*.csv)')
         if file_name:
-            self.stress_file_path.setText(file_name)
             self.process_modal_stress_file(file_name)
 
     def process_modal_stress_file(self, filename):
+        """Validates the modal stress CSV file, and if valid, processes it."""
         try:
-            # Read the modal stress CSV file into a DataFrame
-            df = pd.read_csv(filename)
-
-            # Extract 'Node ID' column and save it in another DataFrame
-            global df_node_ids  # Make df_node_ids accessible globally
-            df_node_ids = df[['NodeID']].to_numpy().flatten()  # Convert to a 1D array
-
-            # If the file contains X, Y, and Z columns, store them
-            if {'X', 'Y', 'Z'}.issubset(df.columns):
-                global node_coords
-                node_coords = df[['X', 'Y', 'Z']].to_numpy()
-            else:
-                node_coords = None
-
-            # Drop the 'Node ID' column from the original DataFrame
-            df = df.drop(columns=['NodeID'])
-
-            # Extract columns related to each normal stress component
-            global modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz
-            modal_sx = df.filter(regex='(?i)sx_.*').to_numpy().astype(NP_DTYPE)
-            modal_sy = df.filter(regex='(?i)sy_.*').to_numpy().astype(NP_DTYPE)
-            modal_sz = df.filter(regex='(?i)sz_.*').to_numpy().astype(NP_DTYPE)
-            modal_sxy = df.filter(regex='(?i)sxy_.*').to_numpy().astype(NP_DTYPE)
-            modal_syz = df.filter(regex='(?i)syz_.*').to_numpy().astype(NP_DTYPE)
-            modal_sxz = df.filter(regex='(?i)sxz_.*').to_numpy().astype(NP_DTYPE)
-
-            # Log the success and shape of the DataFrame and arrays
-            self.console_textbox.append(f"Successfully processed modal stress file: {filename}\n")
-            self.console_textbox.append(f"Modal stress tensor shape (m x n): {df.shape}")
-            self.console_textbox.append(f"Node IDs tensor shape: {df_node_ids.shape}\n")
-            self.console_textbox.append(f"Normal stress components extracted: SX, SY, SZ, SXY, SYZ, SXZ")
-            self.console_textbox.append(
-                f"SX shape: {modal_sx.shape}, SY shape: {modal_sy.shape}, SZ shape: {modal_sz.shape}")
-            self.console_textbox.append(
-                f"SXY shape: {modal_sz.shape}, SYZ shape: {modal_syz.shape}, SXZ shape: {modal_sxz.shape}\n")
-            self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
-
-            self.stress_loaded = True
+            # --- 1. Validation Step ---
+            df_val = pd.read_csv(filename)
+            if 'NodeID' not in df_val.columns:
+                raise ValueError("Required 'NodeID' column not found.")
+            stress_components = ['sx_', 'sy_', 'sz_', 'sxy_', 'syz_', 'sxz_']
+            for comp in stress_components:
+                if df_val.filter(regex=f'(?i){comp}').empty:
+                    raise ValueError(f"Required stress component columns matching '{comp}*' not found.")
 
         except Exception as e:
-            self.console_textbox.append(f"Error processing modal stress file: {e}")
-            self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
+            QMessageBox.warning(self, "Invalid File", f"The selected Modal Stress File is not valid.\n\nError: {e}")
+            return
 
-        finally:
-            # After processing, update the time point controls in the DisplayTab.
-            self.update_output_checkboxes_state()
-            self.update_time_and_animation_ui()
+        # --- 2. If Validation Passes, Clear OLD Stress/Node Data & Plots ---
+        global df_node_ids, node_coords, modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz
+        df_node_ids, node_coords = None, None
+        modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz = (None,) * 6
+        self.window().display_tab.clear_visualization()
+        self.plot_single_node_tab.clear_plot()
+
+        # --- 3. Load NEW Data and Update UI ---
+        self.stress_file_path.setText(filename)
+        df_node_ids = df_val['NodeID'].to_numpy().flatten()
+        if {'X', 'Y', 'Z'}.issubset(df_val.columns):
+            node_coords = df_val[['X', 'Y', 'Z']].to_numpy()
+
+        modal_sx = df_val.filter(regex='(?i)sx_.*').to_numpy().astype(NP_DTYPE)
+        modal_sy = df_val.filter(regex='(?i)sy_.*').to_numpy().astype(NP_DTYPE)
+        modal_sz = df_val.filter(regex='(?i)sz_.*').to_numpy().astype(NP_DTYPE)
+        modal_sxy = df_val.filter(regex='(?i)sxy_.*').to_numpy().astype(NP_DTYPE)
+        modal_syz = df_val.filter(regex='(?i)syz_.*').to_numpy().astype(NP_DTYPE)
+        modal_sxz = df_val.filter(regex='(?i)sxz_.*').to_numpy().astype(NP_DTYPE)
+        del df_val
+
+        self.console_textbox.append(f"Successfully validated and loaded modal stress file: {os.path.basename(filename)}\n")
+        self.console_textbox.append(f"Node IDs tensor shape: {df_node_ids.shape}\n")
+        self.console_textbox.append(f"Normal stress components extracted: SX, SY, SZ, SXY, SYZ, SXZ")
+        self.console_textbox.append(
+            f"SX shape: {modal_sx.shape}, SY shape: {modal_sy.shape}, SZ shape: {modal_sz.shape}")
+        self.console_textbox.append(
+            f"SXY shape: {modal_sz.shape}, SYZ shape: {modal_syz.shape}, SXZ shape: {modal_sxz.shape}\n")
+        self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
+
+        self.stress_loaded = True
+        self.update_output_checkboxes_state()
+        self.update_time_and_animation_ui()
+        self._update_solve_button_state()
 
     def select_deformations_file(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, 'Open Modal Deformations File (.csv)', '', 'CSV Files (*.csv)')
+        file_name, _ = QFileDialog.getOpenFileName(self, 'Open Modal Deformations File', '', 'CSV Files (*.csv)')
         if file_name:
-            self.deformations_file_path.setText(file_name)
             self.process_modal_deformations_file(file_name)
 
     def process_modal_deformations_file(self, filename):
+        """Validates the modal deformations CSV file, and if valid, processes it."""
         try:
-            df = pd.read_csv(filename)
-            # Assume the CSV contains a "NodeID" column and deformation columns.
-            # For example, assume columns like "UX_mode1", "UY_mode1", "UZ_mode1", etc.
-            global df_node_ids_deformations, modal_ux, modal_uy, modal_uz
-            df_node_ids_deformations = df[['NodeID']].to_numpy().flatten()
-            # Extract deformation components using a case-insensitive regex (adjust as needed)
-            modal_ux = df.filter(regex='(?i)^ux_').to_numpy().astype(NP_DTYPE)
-            modal_uy = df.filter(regex='(?i)^uy_').to_numpy().astype(NP_DTYPE)
-            modal_uz = df.filter(regex='(?i)^uz_').to_numpy().astype(NP_DTYPE)
+            # --- 1. Validation Step ---
+            df_val = pd.read_csv(filename)
 
-            # Define num_modes from the shape of the loaded data
-            if modal_ux.shape[1] > 0:
-                num_modes = modal_ux.shape[1]
-            else:
-                # Handle case where no mode columns were found
-                self.console_textbox.append(f"Warning: No deformation modes found in {filename}")
-                num_modes = 0
+            if 'NodeID' not in df_val.columns:
+                raise ValueError("Required 'NodeID' column not found.")
 
-            self.modal_deformations = (modal_ux, modal_uy, modal_uz)
-            self.console_textbox.append(f"Successfully processed modal deformations file: {filename}")
-            self.console_textbox.append(
-                f"Deformations array shapes: UX {modal_ux.shape}, UY {modal_uy.shape}, UZ {modal_uz.shape}")
-
-            # Populate the combobox with 0..num_modes (inclusive)
-            self.skip_modes_combo.clear()
-            self.skip_modes_combo.addItems([str(i) for i in range(num_modes + 1)])
-            # Make the widgets visible
-            self.skip_modes_label.setVisible(True)
-            self.skip_modes_combo.setVisible(True)
-
-            self.deformation_loaded = True
+            deform_components = ['ux_', 'uy_', 'uz_']
+            for comp in deform_components:
+                if df_val.filter(regex=f'(?i){comp}').empty:
+                    raise ValueError(f"Required deformation columns matching '{comp}*' not found.")
 
         except Exception as e:
-            self.console_textbox.append(f"Error processing modal deformations file: {e}")
+            # If validation fails, ensure deformation features are turned off
             self.deformation_loaded = False
-
-        finally:
+            self.deformations_file_path.clear()
             self.toggle_deformations_inputs()
-            self.update_output_checkboxes_state()
-            # After processing, update the time point controls in the DisplayTab.
-            self.update_time_and_animation_ui()
+            QMessageBox.warning(self, "Invalid File",
+                                f"The selected Modal Deformations File is not valid.\n\nError: {e}")
+            return
+
+        # --- 2. If Validation Passes, Clear OLD Deformation Data ---
+        global df_node_ids_deformations, modal_ux, modal_uy, modal_uz
+        df_node_ids_deformations, modal_ux, modal_uy, modal_uz = None, None, None, None
+
+        # Also clear UI elements that depend on it
+        self.skip_modes_combo.clear()
+
+        # --- 3. Load NEW Data and Update UI ---
+        self.deformations_file_path.setText(filename)
+
+        df_node_ids_deformations = df_val['NodeID'].to_numpy().flatten()
+        modal_ux = df_val.filter(regex='(?i)^ux_').to_numpy().astype(NP_DTYPE)
+        modal_uy = df_val.filter(regex='(?i)^uy_').to_numpy().astype(NP_DTYPE)
+        modal_uz = df_val.filter(regex='(?i)^uz_').to_numpy().astype(NP_DTYPE)
+        del df_val
+
+        # Repopulate the skip modes combo box with new data
+        num_modes = modal_ux.shape[1]
+        self.skip_modes_combo.addItems([str(i) for i in range(num_modes + 1)])
+
+        self.deformation_loaded = True
+        self.console_textbox.append(f"Successfully validated and loaded modal deformations file: {os.path.basename(filename)}\n")
+        self.console_textbox.append(
+            f"Deformations array shapes: UX {modal_ux.shape}, UY {modal_uy.shape}, UZ {modal_uz.shape}")
+
+        # Refresh the state of all related UI controls
+        self.toggle_deformations_inputs()
+        self.update_output_checkboxes_state()
+        self.update_time_and_animation_ui()
+        sys.stdout.flush()
 
     def on_skip_modes_changed(self, text):
         """
@@ -3928,67 +3955,92 @@ class MSUPSmartSolverGUI(QWidget):
             print("Could not update display time controls:", e)
 
     def select_steady_state_file(self):
-        file_name, _ = QFileDialog.getOpenFileName(self,
-                                                   'Open Steady-State Stress File (Node numbers should be included)',
-                                                   '', 'Stress field exported from ANSYS Mechanical (*.txt)')
+        file_name, _ = QFileDialog.getOpenFileName(self, 'Open Steady-State Stress File', '', 'Text Files (*.txt)')
         if file_name:
-            self.steady_state_file_path.setText(file_name)
             self.process_steady_state_file(file_name)
 
     def process_steady_state_file(self, filename):
+        """Validates the steady-state stress TXT file, and if valid, processes it."""
         try:
-            # Read the steady-state stress file into a DataFrame
-            df = pd.read_csv(filename, delimiter='\t', header=0)
+            # --- 1. Validation Step ---
+            df_val = pd.read_csv(filename, delimiter='\t', header=0)
 
-            # Log the success and shape of the DataFrame
-            self.console_textbox.append(f"Successfully processed steady-state stress file: {filename}\n")
-
-            # Extract columns if they exist
-            global steady_node_ids, steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz
-
-            # Attempt to retrieve node IDs if the column exists
-            if 'Node Number' in df.columns:
-                steady_node_ids = df['Node Number'].to_numpy().reshape(-1, 1)
-                self.console_textbox.append(f"Number of node IDs extracted: {len(steady_node_ids)}")
-            else:
-                self.console_textbox.append("Error: 'Node Number' column not found in the file.\n")
-
-            self.console_textbox.append(f"Steady-state stress data shape (m x n): {df.shape}")
-
-            # Extract stress components by checking for exact column names
-            steady_sx = df['SX (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SX (MPa)' in df.columns else None
-            steady_sy = df['SY (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SY (MPa)' in df.columns else None
-            steady_sz = df['SZ (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE) if 'SZ (MPa)' in df.columns else None
-            steady_sxy = df['SXY (MPa)'].to_numpy().reshape(-1, 1).astype(
-                NP_DTYPE) if 'SXY (MPa)' in df.columns else None
-            steady_syz = df['SYZ (MPa)'].to_numpy().reshape(-1, 1).astype(
-                NP_DTYPE) if 'SYZ (MPa)' in df.columns else None
-            steady_sxz = df['SXZ (MPa)'].to_numpy().reshape(-1, 1).astype(
-                NP_DTYPE) if 'SXZ (MPa)' in df.columns else None
-
-            # Log extracted components and their shapes if they are present
-            stress_components = {
-                "SX": steady_sx, "SY": steady_sy, "SZ": steady_sz,
-                "SXY": steady_sxy, "SYZ": steady_syz, "SXZ": steady_sxz
-            }
-            self.console_textbox.append("Extracted steady-state stress components:")
-            for name, comp in stress_components.items():
-                if comp is not None:
-                    self.console_textbox.append(f"{name} shape: {comp.shape}")
-                else:
-                    self.console_textbox.append(f"{name} component not found in file.")
-
-            # Scroll to the bottom of the console output
-            self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
+            # Define and check for all required columns
+            required_cols = [
+                'Node Number', 'SX (MPa)', 'SY (MPa)', 'SZ (MPa)',
+                'SXY (MPa)', 'SYZ (MPa)', 'SXZ (MPa)'
+            ]
+            for col in required_cols:
+                if col not in df_val.columns:
+                    raise ValueError(f"Required column '{col}' not found.")
 
         except Exception as e:
-            # Log error in console if the file cannot be read or processed
-            self.console_textbox.append(f"Error processing steady-state stress file: {filename}")
-            self.console_textbox.append(f"Error details: {e}")
-            self.console_textbox.verticalScrollBar().setValue(self.console_textbox.verticalScrollBar().maximum())
+            QMessageBox.warning(self, "Invalid File", f"The selected Steady-State Stress File is not valid.\n\nError: {e}")
+            return # Stop if validation fails
+
+        # --- 2. If Validation Passes, Clear OLD Steady-State Data ---
+        global steady_node_ids, steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz
+        steady_node_ids, steady_sx, steady_sy, steady_sz, steady_sxy, steady_syz, steady_sxz = (None,) * 7
+
+        # --- 3. Load NEW Data and Update UI ---
+        self.steady_state_file_path.setText(filename)
+
+        steady_node_ids = df_val['Node Number'].to_numpy().reshape(-1, 1)
+        steady_sx = df_val['SX (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE)
+        steady_sy = df_val['SY (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE)
+        steady_sz = df_val['SZ (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE)
+        steady_sxy = df_val['SXY (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE)
+        steady_syz = df_val['SYZ (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE)
+        steady_sxz = df_val['SXZ (MPa)'].to_numpy().reshape(-1, 1).astype(NP_DTYPE)
+        del df_val
+
+        self.console_textbox.append(f"Successfully validated and loaded steady-state stress file: {os.path.basename(filename)}\n")
+        self.console_textbox.append(f"Steady-state stress data shape (m x n): {df.shape}")
+        sys.stdout.flush()
 
     def solve(self):
         try:
+            # Check if "Time History Mode" is enabled
+            is_time_history_mode = self.time_history_checkbox.isChecked()
+
+            # Check if the checkboxes are checked
+            calculate_damage = self.damage_index_checkbox.isChecked()
+            calculate_von_mises = self.von_mises_checkbox.isChecked()
+            calculate_max_principal_stress = self.max_principal_stress_checkbox.isChecked()
+            calculate_min_principal_stress = self.min_principal_stress_checkbox.isChecked()
+            calculate_deformation = self.deformation_checkbox.isChecked()
+            calculate_velocity      = self.velocity_checkbox.isChecked()
+            calculate_acceleration  = self.acceleration_checkbox.isChecked()
+
+            # Validation for Time History mode
+            if is_time_history_mode:
+                node_id_text = self.node_line_edit.text()
+                if not node_id_text:
+                    QMessageBox.warning(self, "Missing Input", "Please enter a Node ID for Time History mode.")
+                    return
+
+                try:
+                    selected_node_id = int(node_id_text)
+                    # This check requires that the modal stress file has been loaded first
+                    if selected_node_id not in df_node_ids:
+                         QMessageBox.warning(self, "Invalid Node ID", f"Node ID {selected_node_id} was not found in the loaded modal stress file.")
+                         return
+                except ValueError:
+                    QMessageBox.warning(self, "Invalid Input", "The entered Node ID is not a valid integer.")
+                    return
+                except NameError:
+                     QMessageBox.warning(self, "Missing Data", "Cannot validate Node ID because the modal stress file has not been loaded.")
+                     return
+
+                # Validate that at least one output is selected
+                time_history_outputs_selected = [
+                    calculate_von_mises, calculate_max_principal_stress, calculate_min_principal_stress,
+                    calculate_deformation, calculate_velocity, calculate_acceleration
+                ]
+                if not any(time_history_outputs_selected):
+                    QMessageBox.warning(self, "No Output Selected", "Please select an output to plot for the time history analysis.")
+                    return
+
             # Determine the output location
             output_directory = self.project_directory if self.project_directory else os.path.dirname(
                 os.path.abspath(__file__))
@@ -4043,18 +4095,6 @@ class MSUPSmartSolverGUI(QWidget):
 
             self.console_textbox.append(
                 f"\n******************* BEGIN SOLVE ********************\nDatetime: {current_time}\n\n")
-
-            # Check if the checkboxes are checked
-            calculate_damage = self.damage_index_checkbox.isChecked()
-            calculate_von_mises = self.von_mises_checkbox.isChecked()
-            calculate_max_principal_stress = self.max_principal_stress_checkbox.isChecked()
-            calculate_min_principal_stress = self.min_principal_stress_checkbox.isChecked()
-            calculate_deformation = self.deformation_checkbox.isChecked()
-            calculate_velocity      = self.velocity_checkbox.isChecked()
-            calculate_acceleration  = self.acceleration_checkbox.isChecked()
-
-            # Check if "Time History Mode" is enabled
-            is_time_history_mode = self.time_history_checkbox.isChecked()
 
             # Check for steady-state stress inclusion
             is_include_steady_state = self.steady_state_checkbox.isChecked()
@@ -4343,6 +4383,13 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.append(f"Error during solving process: {e}, Datetime: {current_time}")
             self.console_textbox.moveCursor(QTextCursor.End)  # Move cursor to the end
             self.console_textbox.ensureCursorVisible()  # Ensure the cursor is visible
+
+    def _update_solve_button_state(self):
+        """Enables the SOLVE button only if all required primary inputs are loaded."""
+        if self.coord_loaded and self.stress_loaded:
+            self.solve_button.setEnabled(True)
+        else:
+            self.solve_button.setEnabled(False)
 
     @pyqtSlot(int)
     def update_progress_bar(self, value):
@@ -4645,6 +4692,21 @@ class MatplotlibWidget(QWidget):
 
         QApplication.clipboard().setText('\n'.join(lines))
 
+    def clear_plot(self):
+        """Clears the plot and the data table, and draws an empty placeholder plot."""
+        self.figure.clear()
+        ax = self.figure.add_subplot(1, 1, 1)
+        ax.set_title("Time History (No Data)", fontsize=8)
+        ax.set_xlabel('Time [seconds]', fontsize=8)
+        ax.set_ylabel('Value', fontsize=8)
+        ax.grid(True, which='both', linestyle='-', linewidth=0.5)
+        ax.minorticks_on()
+        ax.tick_params(axis='both', which='major', labelsize=8)
+        self.canvas.draw()
+
+        self.model.removeRows(0, self.model.rowCount())
+        self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
+
 
 class PlotlyWidget(QWidget):
     def __init__(self, parent=None):
@@ -4691,6 +4753,12 @@ class PlotlyWidget(QWidget):
         # Generate HTML and display
         main_win = self.window()
         main_win.load_fig_to_webview(resampler_fig, self.web_view)
+
+    def clear_plot(self):
+        """Clears the plot and resets stored data."""
+        self.web_view.setHtml("")  # Clear the web view content
+        self.last_time_values = None
+        self.last_modal_coord = None
 
 
 class ModalCoordCompositeWidget(QWidget):
@@ -4871,6 +4939,13 @@ class PlotlyMaxWidget(QWidget):
             lines.append('\t'.join(row_data))
         QApplication.clipboard().setText('\n'.join(lines))
 
+    def clear_plot(self):
+        """Clears the plot and the data table."""
+        self.web_view.setHtml("")
+        self.model.removeRows(0, self.model.rowCount())
+        # Also reset the headers to a default state
+        self.model.setHorizontalHeaderLabels(["Time [s]", "Data Value"])
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -4878,7 +4953,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.95.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.95.2')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
