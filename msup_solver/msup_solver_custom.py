@@ -1,4 +1,5 @@
 # region Import libraries
+print("Importing libraries...")
 import math
 import threading
 import numpy as np
@@ -38,6 +39,7 @@ from scipy.signal import butter, filtfilt, detrend
 import imageio
 import tempfile
 import plotly.io as pio
+print("Done")
 
 # endregion
 
@@ -259,7 +261,7 @@ class MSUPSmartSolverTransient(QObject):
 
         self.modal_coord = torch.tensor(modal_coord, dtype=self.TORCH_DTYPE).to(self.device)
 
-        if main_window.batch_solver_tab.modal_deformations is not None:
+        if modal_deformations is not None:
             self.modal_deformations_ux = torch.tensor(modal_deformations[0], dtype=self.TORCH_DTYPE).to(self.device)
             self.modal_deformations_uy = torch.tensor(modal_deformations[1], dtype=self.TORCH_DTYPE).to(self.device)
             self.modal_deformations_uz = torch.tensor(modal_deformations[2], dtype=self.TORCH_DTYPE).to(self.device)
@@ -315,11 +317,13 @@ class MSUPSmartSolverTransient(QObject):
         self.time_values = time_values.astype(self.NP_DTYPE) if 'time_values' in globals() else None
 
     def estimate_chunk_size(self, num_nodes, num_time_points, calculate_von_mises, calculate_max_principal_stress,
-                            calculate_damage, calculate_velocity=False, calculate_acceleration=False):
+                            calculate_damage, calculate_deformation=False,
+                            calculate_velocity=False, calculate_acceleration=False):
         """Calculate the optimal chunk size for processing based on available memory."""
         available_memory = psutil.virtual_memory().available * self.RAM_PERCENT
         memory_per_node = self.get_memory_per_node(num_time_points, calculate_von_mises, calculate_max_principal_stress,
-                                                   calculate_damage, calculate_velocity, calculate_acceleration)
+                                                   calculate_damage, calculate_deformation,
+                                                   calculate_velocity, calculate_acceleration)
         max_nodes_per_iteration = available_memory // memory_per_node
         return max(1, int(max_nodes_per_iteration))  # Ensure at least one node per chunk
 
@@ -329,12 +333,15 @@ class MSUPSmartSolverTransient(QObject):
         return total_memory / (1024 ** 3)  # Convert bytes to GB
 
     def get_memory_per_node(self, num_time_points, calculate_von_mises, calculate_max_principal_stress,
-                            calculate_damage, calculate_velocity=False, calculate_acceleration=False):
+                            calculate_damage, calculate_deformation=False,
+                            calculate_velocity=False, calculate_acceleration=False):
         num_arrays = 6  # For actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
         if calculate_von_mises:
             num_arrays += 1  # For sigma_vm
         if calculate_max_principal_stress:
             num_arrays += 3  # For s1, s2, s3
+        if calculate_deformation:
+            num_arrays += 1  # deformation magnitude
         if calculate_velocity:
             num_arrays += 1     # velocity magnitude
         if calculate_acceleration:
@@ -843,6 +850,7 @@ class MSUPSmartSolverTransient(QObject):
                         calculate_von_mises=False,
                         calculate_max_principal_stress=False,
                         calculate_min_principal_stress=False,
+                        calculate_deformation=False,
                         calculate_velocity=False,
                         calculate_acceleration=False):
         """Process stress results in batch to compute user requested outputs and their max/min values over time."""
@@ -856,15 +864,14 @@ class MSUPSmartSolverTransient(QObject):
         chunk_size = self.estimate_chunk_size(
             num_nodes, num_time_points,
             calculate_von_mises, calculate_max_principal_stress, calculate_damage,
-            calculate_velocity, calculate_acceleration)
+            calculate_deformation, calculate_velocity, calculate_acceleration)
 
         num_iterations = (num_nodes + chunk_size - 1) // chunk_size
         print(f"Estimated number of iterations to avoid memory overflow: {num_iterations}")
 
         memory_per_node = self.get_memory_per_node(
             num_time_points, calculate_von_mises, calculate_max_principal_stress, calculate_damage,
-            calculate_velocity, calculate_acceleration
-        )
+            calculate_deformation, calculate_velocity, calculate_acceleration)
         memory_required_per_iteration = self.estimate_ram_required_per_iteration(chunk_size, memory_per_node)
         print(f"Estimated RAM required per iteration: {memory_required_per_iteration:.2f} GB\n")
         # endregion
@@ -898,6 +905,16 @@ class MSUPSmartSolverTransient(QObject):
             von_mises_max_time_memmap = np.memmap(
                 os.path.join(self.output_directory, 'time_of_max_von_mises_stress.dat'),
                 dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+
+        if calculate_deformation:
+            # Initialize max over time vector
+            self.max_over_time_def = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
+
+            # Create memmap files for storing the maximum deformation magnitudes per node
+            def_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_deformation.dat'),
+                                       dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+            def_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_deformation.dat'),
+                                        dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
 
         if calculate_velocity:
             # Initialize max over time vector
@@ -990,9 +1007,22 @@ class MSUPSmartSolverTransient(QObject):
                 s3_min_memmap[start_idx:end_idx] = min_s3_per_node
                 s3_min_time_memmap[start_idx:end_idx] = time_of_min_s3_per_node
 
-            if (calculate_velocity or calculate_acceleration) and self.modal_deformations_ux is not None:
+            if (calculate_velocity or calculate_acceleration or calculate_deformation) and \
+                    self.modal_deformations_ux is not None:
                 ux, uy, uz = self.compute_deformations(start_idx, end_idx)
                 vel_mag, acc_mag, _, _, _, _, _, _ = self._vel_acc_from_disp(ux, uy, uz, self.time_values)
+
+                # --- ADD THIS NEW IF BLOCK ---
+                if calculate_deformation:
+                    start_time = time.time()
+                    def_mag = np.sqrt(ux ** 2 + uy ** 2 + uz ** 2)
+                    chunk_max = np.max(def_mag, axis=0)
+                    self.max_over_time_def = np.maximum(self.max_over_time_def, chunk_max)
+                    max_def_per_node = np.max(def_mag, axis=1)
+                    time_indices = np.argmax(def_mag, axis=1)
+                    def_max_memmap[start_idx:end_idx] = max_def_per_node
+                    def_time_memmap[start_idx:end_idx] = time_values[time_indices]
+                    print(f"Elapsed time for deformation magnitude and time: {(time.time() - start_time):.3f} seconds")
 
                 if calculate_velocity:
                     start_time = time.time()
@@ -1038,6 +1068,8 @@ class MSUPSmartSolverTransient(QObject):
                 del sigma_vm
             if calculate_max_principal_stress or calculate_min_principal_stress:
                 del s1, s2, s3
+            if calculate_deformation:
+                del def_mag
             if calculate_velocity:
                 del vel_mag
             if calculate_acceleration:
@@ -1069,6 +1101,9 @@ class MSUPSmartSolverTransient(QObject):
         if calculate_min_principal_stress:
             s3_min_memmap.flush()
             s3_min_time_memmap.flush()
+        if calculate_deformation:
+            def_max_memmap.flush()
+            def_time_memmap.flush()
         if calculate_velocity:
             vel_max_memmap.flush()
             vel_time_memmap.flush()
@@ -1108,7 +1143,15 @@ class MSUPSmartSolverTransient(QObject):
                                     os.path.join(self.output_directory, "time_of_min_s3_stress.dat"),
                                     os.path.join(self.output_directory, "time_of_min_s3_stress.csv"),
                                     "Time_of_S3_Min")
-
+        if calculate_deformation:
+            self.convert_dat_to_csv(df_node_ids, num_nodes,
+                                    os.path.join(self.output_directory, "max_deformation.dat"),
+                                    os.path.join(self.output_directory, "max_deformation.csv"),
+                                    "DEF_Max")
+            self.convert_dat_to_csv(df_node_ids, num_nodes,
+                                    os.path.join(self.output_directory, "time_of_max_deformation.dat"),
+                                    os.path.join(self.output_directory, "time_of_max_deformation.csv"),
+                                    "Time_of_DEF_Max")
         if calculate_velocity:
             self.convert_dat_to_csv(df_node_ids, num_nodes,
                                     os.path.join(self.output_directory, "max_velocity.dat"),
@@ -1140,6 +1183,7 @@ class MSUPSmartSolverTransient(QObject):
                                           calculate_von_mises=False,
                                           calculate_max_principal_stress=False,
                                           calculate_min_principal_stress=False,
+                                          calculate_deformation=False,
                                           calculate_velocity=False,
                                           calculate_acceleration=False):
         """
@@ -1150,6 +1194,7 @@ class MSUPSmartSolverTransient(QObject):
         - calculate_von_mises: Boolean flag to compute Von Mises stress.
         - calculate_max_principal_stress: Boolean flag to compute Max Principal Stress.
         - calculate_min_principal_stress: Boolean flag to compute Min Principal Stress.
+        - calculate deformation,velocity,acceleration flag are also used for computing the related parameters
 
         Returns:
         - time_points: Array of time points for the selected node.
@@ -1188,29 +1233,41 @@ class MSUPSmartSolverTransient(QObject):
             print(f"Principal Stresses calculated for Node {selected_node_id}\n")
             return np.arange(s3.shape[1]), s3[0, :]  # S₃ min history
 
-        if calculate_velocity or calculate_acceleration:
+        if calculate_deformation or calculate_velocity or calculate_acceleration:
             if self.modal_deformations_ux is None:
-                print("Deformation data missing – velocity/acceleration calculations are skipped.")
+                print("Deformation data missing – velocity/acceleration/deformation calculations are skipped.")
             else:
                 ux, uy, uz = self.compute_deformations(selected_node_idx, selected_node_idx+1)
-                vel_mag, acc_mag, vel_x, vel_y, vel_z, acc_x, acc_y, acc_z = \
-                    self._vel_acc_from_disp(ux, uy, uz, self.time_values)
-                if calculate_velocity:
-                    velocity_data = {
-                        'Magnitude': vel_mag[0, :],
-                        'X': vel_x[0, :],
-                        'Y': vel_y[0, :],
-                        'Z': vel_z[0, :]
+
+                if calculate_deformation:
+                    def_mag = np.sqrt(ux ** 2 + uy ** 2 + uz ** 2)
+                    deformation_data = {
+                        'Magnitude': def_mag[0, :],
+                        'X': ux[0, :],
+                        'Y': uy[0, :],
+                        'Z': uz[0, :]
                     }
-                    return np.arange(vel_mag.shape[1]), velocity_data
-                if calculate_acceleration:
-                    acceleration_data = {
-                        'Magnitude': acc_mag[0, :],
-                        'X': acc_x[0, :],
-                        'Y': acc_y[0, :],
-                        'Z': acc_z[0, :]
-                    }
-                    return np.arange(acc_mag.shape[1]), acceleration_data
+                    return np.arange(def_mag.shape[1]), deformation_data
+
+                if calculate_velocity or calculate_acceleration:
+                    vel_mag, acc_mag, vel_x, vel_y, vel_z, acc_x, acc_y, acc_z = \
+                        self._vel_acc_from_disp(ux, uy, uz, self.time_values)
+                    if calculate_velocity:
+                        velocity_data = {
+                            'Magnitude': vel_mag[0, :],
+                            'X': vel_x[0, :],
+                            'Y': vel_y[0, :],
+                            'Z': vel_z[0, :]
+                        }
+                        return np.arange(vel_mag.shape[1]), velocity_data
+                    if calculate_acceleration:
+                        acceleration_data = {
+                            'Magnitude': acc_mag[0, :],
+                            'X': acc_x[0, :],
+                            'Y': acc_y[0, :],
+                            'Z': acc_z[0, :]
+                        }
+                        return np.arange(acc_mag.shape[1]), acceleration_data
 
         # Return none if no output is requested
         return None, None
@@ -1557,10 +1614,21 @@ class DisplayTab(QWidget):
             self.deformation_scale_label.setVisible(True)
             self.deformation_scale_edit.setVisible(True)
 
-            # Show Remove‑Drift only if modal deformations are loaded
+            # Check whether modal deformations file is loaded
             has_deforms = "modal_ux" in globals()
+
+            # Show Remove‑Drift only if modal deformations are loaded
             self.remove_drift_checkbox.setVisible(has_deforms)
             self.drift_order_spin.setVisible(has_deforms and self.remove_drift_checkbox.isChecked())
+
+            # Enable/disable the scale factor based on whether deformation data is loaded
+            if has_deforms:
+                self.deformation_scale_edit.setEnabled(True)
+                self.deformation_scale_edit.setText(
+                    str(self.last_valid_deformation_scale))  # Restore last valid value (e.g., "1")
+            else:
+                self.deformation_scale_edit.setEnabled(False)
+                self.deformation_scale_edit.setText("0")  # Set to "0" when disabled
 
             # Initialize plotter with points
             if "node_coords" in globals() and node_coords is not None:
@@ -1614,6 +1682,7 @@ class DisplayTab(QWidget):
         compute_von = main_tab.von_mises_checkbox.isChecked()
         compute_max_principal = main_tab.max_principal_stress_checkbox.isChecked()
         compute_min_principal = main_tab.min_principal_stress_checkbox.isChecked()
+        compute_deformation = main_tab.deformation_checkbox.isChecked()
         compute_velocity   = main_tab.velocity_checkbox.isChecked()
         compute_acceleration = main_tab.acceleration_checkbox.isChecked()
 
@@ -1621,6 +1690,7 @@ class DisplayTab(QWidget):
             compute_von,
             compute_max_principal,
             compute_min_principal,
+            compute_deformation,
             compute_velocity,
             compute_acceleration,
         ])
@@ -1629,7 +1699,8 @@ class DisplayTab(QWidget):
                                 "Please select only one output type for time point visualization.")
             return
 
-        if not (compute_von or compute_max_principal or compute_min_principal or compute_velocity or compute_acceleration):
+        if not (compute_von or compute_max_principal or compute_min_principal or compute_deformation or
+                compute_velocity or compute_acceleration):
             QMessageBox.warning(self, "No Selection",
                                 "No valid output is selected. Please select a valid output type to compute the results.")
             return
@@ -1648,7 +1719,8 @@ class DisplayTab(QWidget):
                 skip_n = 0
         mode_slice = slice(skip_n, None)
 
-        # Handle deformations, ensuring they are also sliced
+        # Handle deformations if they are defined, ensuring they are also sliced
+        modal_deformations_filtered = None
         if 'modal_ux' in globals():
             modal_deformations_filtered = (
                 modal_ux[:, mode_slice],
@@ -1767,10 +1839,16 @@ class DisplayTab(QWidget):
             field_name = "S3"
             display_name = "S3 (MPa)"
 
+        elif compute_deformation:
+            # For single time point, ux_tp has shape (num_nodes, 1)
+            scalar_field = np.sqrt(ux_tp ** 2 + uy_tp ** 2 + uz_tp ** 2)
+            field_name = "Deformation"
+            display_name = "Deformation (mm)"
+
         elif compute_velocity or compute_acceleration:
             if 'modal_ux' not in globals():
                 QMessageBox.warning(self, "Missing Data",
-                                    "Modal deformations must be loaded for velocity/acceleration.")
+                                    "Modal deformations must be loaded for requested calculation(s).")
                 return
 
             # Get displacements for the *windowed* modal slice
@@ -1963,22 +2041,24 @@ class DisplayTab(QWidget):
         compute_von = main_tab.von_mises_checkbox.isChecked()
         compute_max_principal = main_tab.max_principal_stress_checkbox.isChecked()
         compute_min_principal = main_tab.min_principal_stress_checkbox.isChecked()
-        compute_deformation = main_tab.deformations_checkbox.isChecked()
+        compute_deformation_anim = main_tab.deformations_checkbox.isChecked()  # This is for MOVING the nodes
+        compute_deformation_contour = main_tab.deformation_checkbox.isChecked()  # This is for COLORING the nodes
         compute_velocity = main_tab.velocity_checkbox.isChecked()
         compute_acceleration = main_tab.acceleration_checkbox.isChecked()
 
-        if not (compute_von or compute_max_principal or compute_min_principal or compute_velocity or compute_acceleration):
+        if not (compute_von or compute_max_principal or compute_min_principal or
+                compute_deformation_contour or compute_velocity or compute_acceleration):
             QMessageBox.warning(self, "No Selection",
                                 "No valid output is selected in the Main Window tab for animation.")
             self.stop_animation()
             return
 
-        if compute_deformation and 'modal_ux' not in globals():
+        if compute_deformation_anim and 'modal_ux' not in globals():
             QMessageBox.warning(self, "Deformation Error",
                                 "Deformation checkbox is checked, but modal deformation data (ux, uy, uz) is not loaded.")
-            compute_deformation = False  # Disable deformation if data missing
+            compute_deformation_anim = False  # Disable deformation if data missing
             self.is_deformation_included_in_anim = False
-        elif compute_deformation:
+        elif compute_deformation_anim:
             self.is_deformation_included_in_anim = True
         else:
             self.is_deformation_included_in_anim = False
@@ -1986,7 +2066,7 @@ class DisplayTab(QWidget):
 
         # region 3. RAM Estimation and Check
         num_nodes = modal_sx.shape[0]
-        estimated_gb = self._estimate_animation_ram(num_nodes, num_anim_steps, compute_deformation)
+        estimated_gb = self._estimate_animation_ram(num_nodes, num_anim_steps, compute_deformation_anim)
         my_virtual_memory = psutil.virtual_memory()
         available_gb = my_virtual_memory.available / (1024 ** 3)
         # Use a safety factor (e.g., allow using up to 80% of available RAM)
@@ -2054,7 +2134,7 @@ class DisplayTab(QWidget):
 
             # Handle deformations, ensuring they are also sliced
             modal_deformations_arg = None
-            if compute_deformation:
+            if compute_deformation_anim:
                 if 'modal_ux' in globals():
                     modal_deformations_filtered = (
                         modal_ux[:, mode_slice],
@@ -2099,26 +2179,32 @@ class DisplayTab(QWidget):
                 self.precomputed_scalars = s3_anim
                 self.data_column_name = "S3 (MPa)"
 
-            elif compute_velocity or compute_acceleration:
+            elif compute_velocity or compute_acceleration or compute_deformation_contour:
                 # Need modal deformations
                 if 'modal_ux' not in globals():
                     QMessageBox.warning(self, "Deformation Error",
-                                        "Velocity/Acceleration requested but modal deformations are not loaded.")
+                                        "Deformation/Velocity/Acceleration requested but modal deformations are not loaded.")
                     self.stop_animation();
                     return
-                ux_anim, uy_anim, uz_anim = temp_solver.compute_deformations(0, num_nodes)
-                vel_mag_anim, acc_mag_anim, _, _, _, _, _, _ = temp_solver._vel_acc_from_disp(
-                    ux_anim, uy_anim, uz_anim, anim_times.astype(temp_solver.NP_DTYPE))
 
-                if compute_velocity:
-                    self.precomputed_scalars = vel_mag_anim
-                    self.data_column_name = "Velocity (mm/s)"
-                else:  # acceleration
-                    self.precomputed_scalars = acc_mag_anim
-                    self.data_column_name = "Acceleration (mm/s²)"
+                ux_anim, uy_anim, uz_anim = temp_solver.compute_deformations(0, num_nodes)
+
+                if compute_deformation_contour:
+                    self.precomputed_scalars = np.sqrt(ux_anim ** 2 + uy_anim ** 2 + uz_anim ** 2)
+                    self.data_column_name = "Deformation (mm)"
+
+                if compute_velocity or compute_acceleration:
+                    vel_mag_anim, acc_mag_anim, _, _, _, _, _, _ = temp_solver._vel_acc_from_disp(
+                        ux_anim, uy_anim, uz_anim, anim_times.astype(temp_solver.NP_DTYPE))
+                    if compute_velocity:
+                        self.precomputed_scalars = vel_mag_anim
+                        self.data_column_name = "Velocity (mm/s)"
+                    else:  # acceleration
+                        self.precomputed_scalars = acc_mag_anim
+                        self.data_column_name = "Acceleration (mm/s²)"
 
             # Compute deformations if needed
-            if compute_deformation:
+            if compute_deformation_anim:
                 print("Computing deformations for animation...")
                 deformations_anim = temp_solver.compute_deformations(0,
                                                                      num_nodes)  # (ux, uy, uz) each (num_nodes, num_anim_steps)
@@ -2164,7 +2250,7 @@ class DisplayTab(QWidget):
             if compute_von: pass  # Scalars already stored
             if compute_max_principal: del s1_anim
             if compute_min_principal: del s3_anim
-            if compute_deformation and deformations_anim is not None:
+            if compute_deformation_anim and deformations_anim is not None:
                 del deformations_anim, ux_anim, uy_anim, uz_anim, displacements_stacked, original_coords_reshaped
             gc.collect()
             print(" ---Precomputation complete.---")
@@ -3241,7 +3327,7 @@ class MSUPSmartSolverGUI(QWidget):
             "background-color: #f0f0f0; color: grey; border: 1px solid #5b9bd5; padding: 5px;")
 
         # Checkbox for "Include Steady-State Stress Field"
-        self.steady_state_checkbox = QCheckBox("Include Steady-State Stress Field")
+        self.steady_state_checkbox = QCheckBox("Include Steady-State Stress Field (Optional)")
         self.steady_state_checkbox.setStyleSheet("margin: 10px 0;")
         self.steady_state_checkbox.toggled.connect(self.toggle_steady_state_stress_inputs)
 
@@ -3259,7 +3345,7 @@ class MSUPSmartSolverGUI(QWidget):
         self.steady_state_file_path.setVisible(False)  # Initially hidden
 
         # Checkbox for including deformations
-        self.deformations_checkbox = QCheckBox("Include Deformations for Animation")
+        self.deformations_checkbox = QCheckBox("Include Deformations for Animation (Optional)")
         self.deformations_checkbox.setStyleSheet("margin: 10px 0;")
         self.deformations_checkbox.toggled.connect(self.toggle_deformations_inputs)
 
@@ -3308,9 +3394,13 @@ class MSUPSmartSolverGUI(QWidget):
         self.velocity_checkbox = QCheckBox('Velocity')
         self.velocity_checkbox.setStyleSheet("margin: 10px 0;")
 
-        # Checkbox for Calculating Velocity
+        # Checkbox for Calculating Acceleration
         self.acceleration_checkbox = QCheckBox('Acceleration')
         self.acceleration_checkbox.setStyleSheet("margin: 10px 0;")
+
+        # Checkbox for Calculating Deformation
+        self.deformation_checkbox = QCheckBox('Deformation')
+        self.deformation_checkbox.setStyleSheet("margin: 10px 0;")
 
         # Checkbox for Calculate Damage Index
         self.damage_index_checkbox = QCheckBox('Damage Index / Potential Damage')
@@ -3436,13 +3526,15 @@ class MSUPSmartSolverGUI(QWidget):
         output_layout.addWidget(self.max_principal_stress_checkbox)
         output_layout.addWidget(self.min_principal_stress_checkbox)
         output_layout.addWidget(self.von_mises_checkbox)
+        output_layout.addWidget(self.deformation_checkbox)
         output_layout.addWidget(self.velocity_checkbox)
         output_layout.addWidget(self.acceleration_checkbox)
         output_layout.addWidget(self.damage_index_checkbox)
         self.output_group.setLayout(output_layout)
 
         # outputs that require ONLY the deformation file
-        self._deformation_outputs = [self.velocity_checkbox,
+        self._deformation_outputs = [self.deformation_checkbox,
+                                     self.velocity_checkbox,
                                      self.acceleration_checkbox]
 
         # outputs that need both the modal coordinate and the modal stress file
@@ -3485,6 +3577,16 @@ class MSUPSmartSolverGUI(QWidget):
 
         # Initially hide the "Calculate Damage Index" checkbox if "Calculate Von-Mises" is not checked
         self.toggle_damage_index_checkbox_visibility()
+
+        # A master list for all outputs that are mutually exclusive in Time History mode
+        self.time_history_exclusive_outputs = [
+            self.max_principal_stress_checkbox,
+            self.min_principal_stress_checkbox,
+            self.von_mises_checkbox,
+            self.deformation_checkbox,
+            self.velocity_checkbox,
+            self.acceleration_checkbox
+        ]
 
     def update_output_checkboxes_state(self):
         """
@@ -3531,11 +3633,13 @@ class MSUPSmartSolverGUI(QWidget):
         # Step 3: Apply the condition to the dependent widgets.
         self.skip_modes_label.setVisible(are_details_enabled)
         self.skip_modes_combo.setVisible(are_details_enabled)
+        self.deformation_checkbox.setEnabled(are_details_enabled)
         self.velocity_checkbox.setEnabled(are_details_enabled)
         self.acceleration_checkbox.setEnabled(are_details_enabled)
 
         # Step 4: If the conditions are not met, ensure velocity/acceleration are also unchecked.
         if not are_details_enabled:
+            self.deformation_checkbox.setChecked(False)
             self.velocity_checkbox.setChecked(False)
             self.acceleration_checkbox.setChecked(False)
 
@@ -3556,20 +3660,22 @@ class MSUPSmartSolverGUI(QWidget):
     def toggle_single_node_solution_group(self):
         try:
             if self.time_history_checkbox.isChecked():
-                # Enable mutual exclusivity for stress checkboxes in Time History Mode
-                self.max_principal_stress_checkbox.toggled.connect(self.on_principal_stress_toggled)
-                self.min_principal_stress_checkbox.toggled.connect(self.on_min_principal_stress_toggled)
-                self.von_mises_checkbox.toggled.connect(self.on_von_mises_toggled)
+                # Connect all exclusive checkboxes to the single, unified handler
+                for cb in self.time_history_exclusive_outputs:
+                    # Use a lambda to pass a reference to the checkbox that was clicked
+                    cb.toggled.connect(
+                        lambda checked, a_checkbox=cb: self.on_exclusive_output_toggled(checked, a_checkbox)
+                    )
 
                 # Show single node group and plot tab
                 self.single_node_group.setVisible(True)
                 self.show_output_tab_widget.setTabVisible(
                     self.show_output_tab_widget.indexOf(self.plot_single_node_tab), True)
             else:
-                # Remove mutual exclusivity when Time History Mode is off
-                self.max_principal_stress_checkbox.toggled.disconnect(self.on_principal_stress_toggled)
-                self.min_principal_stress_checkbox.toggled.disconnect(self.on_min_principal_stress_toggled)
-                self.von_mises_checkbox.toggled.disconnect(self.on_von_mises_toggled)
+                # Disconnect all handlers from the exclusive checkboxes
+                for cb in self.time_history_exclusive_outputs:
+                    # This is a safe way to disconnect all connected slots
+                    cb.toggled.disconnect()
 
                 # Hide single node group and plot tab
                 self.single_node_group.setVisible(False)
@@ -3578,28 +3684,20 @@ class MSUPSmartSolverGUI(QWidget):
         except Exception as e:
             print(f"Error in toggling single node group visibility: {e}")
 
-    def on_principal_stress_toggled(self):
-        """Disable other stress checkboxes if Max Principal Stress is selected in Time History Mode."""
-        # This signal is connected to the max_principal_stress_checkbox
-        if self.time_history_checkbox.isChecked() and self.max_principal_stress_checkbox.isChecked():
-            # If "Max Principal" is checked, uncheck the others
-            self.min_principal_stress_checkbox.setChecked(False)
-            self.von_mises_checkbox.setChecked(False)
-
-    def on_min_principal_stress_toggled(self):
-        """Disable other stress checkboxes if Min Principal Stress is selected in Time History Mode."""
-        # This signal is connected to the min_principal_stress_checkbox
-        if self.time_history_checkbox.isChecked() and self.min_principal_stress_checkbox.isChecked():
-            # If "Min Principal" is checked, uncheck the others
-            self.max_principal_stress_checkbox.setChecked(False)
-            self.von_mises_checkbox.setChecked(False)
-
-    def on_von_mises_toggled(self):
-        """Disable Principal Stress checkboxes if Von-Mises is activated in Time History Mode."""
-        if self.time_history_checkbox.isChecked() and self.von_mises_checkbox.isChecked():
-            # If "Von Mises" is checked, uncheck the others
-            self.max_principal_stress_checkbox.setChecked(False)
-            self.min_principal_stress_checkbox.setChecked(False)
+    def on_exclusive_output_toggled(self, is_checked, sender_checkbox):
+        """
+        Ensures that only one of the exclusive output checkboxes is selected at a time
+        when in Time History Mode.
+        """
+        # We only act if a box was just checked, not unchecked
+        if self.time_history_checkbox.isChecked() and is_checked:
+            for checkbox in self.time_history_exclusive_outputs:
+                # If the checkbox is not the one that triggered the signal...
+                if checkbox is not sender_checkbox:
+                    # Temporarily block its signals to prevent a chain reaction of toggled events
+                    checkbox.blockSignals(True)
+                    checkbox.setChecked(False)
+                    checkbox.blockSignals(False)
 
     def update_single_node_plot(self):
         """Updates the placeholder plot inside the MatplotlibWidget."""
@@ -3614,6 +3712,7 @@ class MSUPSmartSolverGUI(QWidget):
             is_max_principal_stress = self.max_principal_stress_checkbox.isChecked()
             is_min_principal_stress = self.min_principal_stress_checkbox.isChecked()
             is_von_mises = self.von_mises_checkbox.isChecked()
+            is_deformation = self.deformation_checkbox.isChecked()
             is_velocity = self.velocity_checkbox.isChecked()
             is_acceleration = self.acceleration_checkbox.isChecked()
 
@@ -3625,8 +3724,8 @@ class MSUPSmartSolverGUI(QWidget):
             self.plot_single_node_tab.update_plot(x_data, y_data, None,
                                                   is_max_principal_stress= is_max_principal_stress,
                                                   is_min_principal_stress= is_min_principal_stress,
-                                                  is_von_mises=is_von_mises, is_velocity=is_velocity,
-                                                  is_acceleration=is_acceleration)
+                                                  is_von_mises=is_von_mises, is_deformation=is_deformation,
+                                                  is_velocity=is_velocity, is_acceleration=is_acceleration)
         except Exception as e:
             print(f"Error updating plot based on checkbox states: {e}")
 
@@ -3950,6 +4049,7 @@ class MSUPSmartSolverGUI(QWidget):
             calculate_von_mises = self.von_mises_checkbox.isChecked()
             calculate_max_principal_stress = self.max_principal_stress_checkbox.isChecked()
             calculate_min_principal_stress = self.min_principal_stress_checkbox.isChecked()
+            calculate_deformation = self.deformation_checkbox.isChecked()
             calculate_velocity      = self.velocity_checkbox.isChecked()
             calculate_acceleration  = self.acceleration_checkbox.isChecked()
 
@@ -4034,9 +4134,10 @@ class MSUPSmartSolverGUI(QWidget):
                 # Use the new method for single node processing
                 time_indices, y_data = self.solver.process_results_for_a_single_node(
                     selected_node_idx,
-                    calculate_von_mises=calculate_von_mises,
-                    calculate_max_principal_stress=calculate_max_principal_stress,
-                    calculate_min_principal_stress=calculate_min_principal_stress,
+                    calculate_von_mises = calculate_von_mises,
+                    calculate_max_principal_stress = calculate_max_principal_stress,
+                    calculate_min_principal_stress = calculate_min_principal_stress,
+                    calculate_deformation          = calculate_deformation,
                     calculate_velocity             = calculate_velocity,
                     calculate_acceleration         = calculate_acceleration
                 )
@@ -4047,6 +4148,7 @@ class MSUPSmartSolverGUI(QWidget):
                                                           is_max_principal_stress=calculate_max_principal_stress,
                                                           is_min_principal_stress=calculate_min_principal_stress,
                                                           is_von_mises=calculate_von_mises,
+                                                          is_deformation=calculate_deformation,
                                                           is_velocity=calculate_velocity,
                                                           is_acceleration=calculate_acceleration)
 
@@ -4084,6 +4186,7 @@ class MSUPSmartSolverGUI(QWidget):
                 calculate_von_mises=calculate_von_mises,
                 calculate_max_principal_stress=calculate_max_principal_stress,
                 calculate_min_principal_stress=calculate_min_principal_stress,
+                calculate_deformation=calculate_deformation,
                 calculate_velocity=calculate_velocity,
                 calculate_acceleration=calculate_acceleration
             )
@@ -4099,42 +4202,124 @@ class MSUPSmartSolverGUI(QWidget):
             self.console_textbox.moveCursor(QTextCursor.End)  # Move cursor to the end
             self.console_textbox.ensureCursorVisible()  # Ensure the cursor is visible
 
+            def update_plot(self, time_values, traces=None):
+                """
+                Dynamically plots multiple data traces and populates a table.
+                - traces: A list of dictionaries, e.g., [{'name': 'Von Mises (MPa)', 'data': np.array([...])}]
+                """
+                if traces is None:
+                    traces = []
+
+                # 1) Build figure by iterating through the provided traces
+                fig = go.Figure()
+                for trace_info in traces:
+                    fig.add_trace(
+                        go.Scattergl(x=time_values, y=trace_info['data'], mode='lines', name=trace_info['name']))
+
+                fig.update_layout(
+                    xaxis_title="Time [s]",
+                    yaxis_title="Value",  # Generic Y-axis title
+                    template="plotly_white",
+                    font=dict(size=7),
+                    margin=dict(l=40, r=40, t=10, b=0),
+                    legend=dict(font=dict(size=7))
+                )
+
+                # 2) Wrap in resampler
+                resfig = FigureResampler(fig, default_n_shown_samples=50000)
+
+                # Show the plot
+                main_win = self.window()
+                main_win.load_fig_to_webview(resfig, self.web_view)
+
+                # 3) Dynamically populate the table
+                headers = ["Time [s]"] + [trace['name'] for trace in traces]
+                self.model.setHorizontalHeaderLabels(headers)
+                self.model.removeRows(0, self.model.rowCount())
+
+                for i, t in enumerate(time_values):
+                    # Start each row with the time value
+                    row_items = [QStandardItem(f"{t:.5f}")]
+                    # Add the data from each trace for the current time step
+                    for trace in traces:
+                        row_items.append(QStandardItem(f"{trace['data'][i]:.5f}"))
+                    self.model.appendRow(items)
+
             # region Create maximum over time plot if solver is not run in Time History mode
             if not self.time_history_checkbox.isChecked():
-                # Automatically determine which maximum arrays were computed
-                vm_data = self.solver.max_over_time_svm if self.von_mises_checkbox.isChecked() else None
-                principal_data = self.solver.max_over_time_s1 if self.max_principal_stress_checkbox.isChecked() else None
+                # --- Maximum Over Time Plot ---
+                max_traces = []
+                min_traces = []
+                if self.von_mises_checkbox.isChecked():
+                    max_traces.append({'name': 'Von Mises (MPa)', 'data': self.solver.max_over_time_svm})
+                    von_mises_data_max_over_time = self.solver.max_over_time_svm
+                else:
+                    von_mises_data_max_over_time = None
 
-                if not hasattr(self, 'plot_max_over_time_tab'):
-                    self.plot_max_over_time_tab = PlotlyMaxWidget()
-                    modal_tab_index = self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab)
-                    self.show_output_tab_widget.insertTab(modal_tab_index + 1, self.plot_max_over_time_tab,
-                                                          "Maximum Over Time")
+                if self.max_principal_stress_checkbox.isChecked():
+                    max_traces.append({'name': 'S1 (MPa)', 'data': self.solver.max_over_time_s1})
+                    max_principal_data_max_over_time = self.solver.max_over_time_s1
+                else:
+                    max_principal_data_max_over_time = None
 
+                if self.deformation_checkbox.isChecked():
+                    max_traces.append({'name': 'Deformation (mm)', 'data': self.solver.max_over_time_def})
+                    deformation_data_max_over_time = self.solver.max_over_time_def
+                else:
+                    deformation_data_max_over_time = None
+
+                if self.velocity_checkbox.isChecked():
+                    max_traces.append({'name': 'Velocity (mm/s)', 'data': self.solver.max_over_time_vel})
+                    velocity_data_max_over_time = self.solver.max_over_time_vel
+                else:
+                    velocity_data_max_over_time = None
+
+                if self.acceleration_checkbox.isChecked():
+                    max_traces.append({'name': 'Acceleration (mm/s²)', 'data': self.solver.max_over_time_acc})
+                    acceleration_data_max_over_time = self.solver.max_over_time_acc
+                else:
+                    acceleration_data_max_over_time = None
+
+                if max_traces:  # Only create and show the tab if there is data
+                    if not hasattr(self, 'plot_max_over_time_tab'):
+                        self.plot_max_over_time_tab = PlotlyMaxWidget()
+                        modal_tab_index = self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab)
+                        self.show_output_tab_widget.insertTab(modal_tab_index + 1, self.plot_max_over_time_tab,
+                                                              "Maximum Over Time")
+
+                    self.plot_max_over_time_tab.update_plot(time_values, traces=max_traces)
+                    self.show_output_tab_widget.setTabVisible(
+                        self.show_output_tab_widget.indexOf(self.plot_max_over_time_tab), True)
+
+                # --- Minimum Over Time Plot ---
                 if calculate_min_principal_stress:
-                    if not hasattr(self, 'plot_min_over_time_tab'):
-                        self.plot_min_over_time_tab = PlotlyMaxWidget()  # same widget works
-                        idx = self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab)
-                        self.show_output_tab_widget.insertTab(idx + 2,
-                                                              self.plot_min_over_time_tab, "Minimum Over Time")
+                    min_traces = [{'name': 'S3 (MPa)', 'data': self.solver.min_over_time_s3}]
 
-                    self.plot_min_over_time_tab.update_plot(time_values,
-                                                            principal_values=self.solver.min_over_time_s3,
-                                                            principal_label="S3 [MPa]")
+                    if not hasattr(self, 'plot_min_over_time_tab'):
+                        self.plot_min_over_time_tab = PlotlyMaxWidget()
+                        idx = self.show_output_tab_widget.indexOf(self.plot_max_over_time_tab)
+                        self.show_output_tab_widget.insertTab(idx + 1, self.plot_min_over_time_tab, "Minimum Over Time")
+
+                    self.plot_min_over_time_tab.update_plot(time_values, traces=min_traces)
                     self.show_output_tab_widget.setTabVisible(
                         self.show_output_tab_widget.indexOf(self.plot_min_over_time_tab), True)
 
-                self.plot_max_over_time_tab.update_plot(time_values, vm_values=vm_data, principal_values=principal_data)
-                self.show_output_tab_widget.setTabVisible(
-                    self.show_output_tab_widget.indexOf(self.plot_max_over_time_tab), True)
-
                 # region Update the scalar range spinboxes in the Display tab using the calculated min and max values
-                if vm_data is not None:
-                    scalar_min = np.min(vm_data)
-                    scalar_max = np.max(vm_data)
-                elif principal_data is not None:
-                    scalar_min = np.min(principal_data)
-                    scalar_max = np.max(principal_data)
+                if von_mises_data_max_over_time is not None:
+                    scalar_min = np.min(von_mises_data_max_over_time)
+                    scalar_max = np.max(von_mises_data_max_over_time)
+                elif max_principal_data_max_over_time is not None:
+                    scalar_min = np.min(max_principal_data_max_over_time)
+                    scalar_max = np.max(max_principal_data_max_over_time)
+                elif deformation_data_max_over_time is not None:
+                    scalar_min = np.min(deformation_data_max_over_time)
+                    scalar_max = np.max(deformation_data_max_over_time)
+                elif velocity_data_max_over_time is not None:
+                    scalar_min = np.min(velocity_data_max_over_time)
+                    scalar_max = np.max(velocity_data_max_over_time)
+                elif acceleration_data_max_over_time is not None:
+                    scalar_min = np.min(acceleration_data_max_over_time)
+                    scalar_max = np.max(acceleration_data_max_over_time)
                 else:
                     scalar_min = None
                     scalar_max = None
@@ -4328,6 +4513,7 @@ class MatplotlibWidget(QWidget):
                     is_max_principal_stress=False,
                     is_min_principal_stress=False,
                     is_von_mises=False,
+                    is_deformation=False,
                     is_velocity=False,
                     is_acceleration=False):
         # Clear the figure
@@ -4342,29 +4528,30 @@ class MatplotlibWidget(QWidget):
             'Z': {'color': 'blue', 'linestyle': '--', 'linewidth': 1},
         }
 
-        # Clear and setup the table model
         self.model.removeRows(0, self.model.rowCount())
-
-        # This will hold the text for our annotation box
         textstr = ""
 
-        if is_velocity or is_acceleration:
-            # Setup for multi-column data (Velocity or Acceleration)
-            prefix = "Velocity" if is_velocity else "Acceleration"
-            units = "(mm/s)" if is_velocity else "(mm/s²)"
+        # --- NEW LOGIC: Check if y is a dictionary for multi-component data ---
+        if isinstance(y, dict):
+            # This is multi-component data (Deformation, Velocity, etc.)
+            if is_velocity:
+                prefix, units = "Velocity", "(mm/s)"
+            elif is_acceleration:
+                prefix, units = "Acceleration", "(mm/s²)"
+            else:  # is_deformation
+                prefix, units = "Deformation", "(mm)"
+
             ax.set_title(f"{prefix} (Node ID: {node_id})", fontsize=8)
             ax.set_ylabel(f"{prefix} {units}", fontsize=8)
 
-            # Update table headers for 5 columns
             self.model.setHorizontalHeaderLabels(
                 ["Time [s]", f"Mag {units}", f"X {units}", f"Y {units}", f"Z {units}"])
 
-            # Plot each component
+            # This loop is now safe because we've confirmed y is a dictionary
             for component, data in y.items():
                 style = styles.get(component, {})
                 ax.plot(x, data, label=f'{prefix} ({component})', **style)
 
-            # Populate table data
             for i in range(len(x)):
                 items = [
                     QStandardItem(f"{x[i]:.5f}"),
@@ -4375,48 +4562,41 @@ class MatplotlibWidget(QWidget):
                 ]
                 self.model.appendRow(items)
 
-            # --- NEW: Annotation logic for Max Value and Time of Max ---
             max_y_value = np.max(y['Magnitude'])
             time_of_max = x[np.argmax(y['Magnitude'])]
             textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
 
         else:
-            # Setup for single-column data (Stress)
+            # This is single-component data (Stress or a placeholder)
             self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
-
-            # Populate table for single data series
             for xi, yi in zip(x, y):
-                items = [QStandardItem(f"{xi:.5f}"), QStandardItem(f"{yi:.5f}")]
-                self.model.appendRow(items)
+                self.model.appendRow([QStandardItem(f"{xi:.5f}"), QStandardItem(f"{yi:.5f}")])
 
-            # Logic to handle min vs max annotations
             if is_min_principal_stress:
                 ax.plot(x, y, label=r'$\sigma_3$', color='green')
                 ax.set_title(f"Min Principal Stress (Node ID: {node_id})" if node_id else "Min Principal Stress",
                              fontsize=8)
                 ax.set_ylabel(r'$\sigma_3$ [MPa]', fontsize=8)
-
-                # Find min value and its corresponding time
                 min_y_value = np.min(y)
                 time_of_min = x[np.argmin(y)]
                 textstr = f'Min Magnitude: {min_y_value:.4f}\nTime of Min: {time_of_min:.5f} s'
-
-            else:  # This block handles Max Principal and Von-Mises (all "max" cases)
+            else:
+                title = "Stress"
+                label = "Value"
+                color = 'blue'
                 if is_max_principal_stress:
-                    ax.plot(x, y, label=r'$\sigma_1$', color='red')
-                    ax.set_title(f"Max Principal Stress (Node ID: {node_id})" if node_id else "Max Principal Stress",
-                                 fontsize=8)
-                    ax.set_ylabel(r'$\sigma_1$ [MPa]', fontsize=8)
+                    title, label, color = "Max Principal Stress", r'$\sigma_1$', 'red'
                 elif is_von_mises:
-                    ax.plot(x, y, label=r'$\sigma_{VM}$', color='blue')
-                    ax.set_title(f"Von Mises Stress (Node ID: {node_id})" if node_id else "Von Mises Stress",
-                                 fontsize=8)
-                    ax.set_ylabel(r'$\sigma_{VM}$ [MPa]', fontsize=8)
+                    title, label, color = "Von Mises Stress", r'$\sigma_{VM}$', 'blue'
 
-                # Find max value and its corresponding time
-                max_y_value = np.max(y)
-                time_of_max = x[np.argmax(y)]
-                textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
+                ax.plot(x, y, label=label, color=color)
+                ax.set_title(f"{title} (Node ID: {node_id})" if node_id else title, fontsize=8)
+                ax.set_ylabel(f'{label} [MPa]', fontsize=8)
+
+                if len(y) > 0 and np.any(y):  # Check if y is not empty or all zeros
+                    max_y_value = np.max(y)
+                    time_of_max = x[np.argmax(y)]
+                    textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
 
         # --- Common plot styling ---
         ax.set_xlabel('Time [seconds]', fontsize=8)
@@ -4424,15 +4604,15 @@ class MatplotlibWidget(QWidget):
         ax.grid(True, which='both', linestyle='-', linewidth=0.5)
         ax.minorticks_on()
         ax.tick_params(axis='both', which='major', labelsize=8)
-        ax.legend(fontsize=7)
 
-        # Unified code to draw the text box
-        if textstr:  # Only draw the box if text was generated
-            ax.text(
-                0.05, 0.95, textstr, transform=ax.transAxes,
-                fontsize=8, verticalalignment='top', horizontalalignment='left',
-                bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2')
-            )
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, labels, fontsize=7)
+
+        if textstr:
+            ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=8,
+                    verticalalignment='top', horizontalalignment='left',
+                    bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2'))
 
         self.canvas.draw()
 
@@ -4602,7 +4782,7 @@ class PlotlyMaxWidget(QWidget):
 
         # Model with 3 columns
         self.model = QStandardItemModel(self)
-        self.model.setHorizontalHeaderLabels(["Time [s]", "SEQV [MPa]", "S1 or S3"])
+        self.model.setHorizontalHeaderLabels(["Time [s]", "Data Value"])
         self.table.setModel(self.model)
 
         # Ctrl+C shortcut bound to copy_selection()
@@ -4620,17 +4800,22 @@ class PlotlyMaxWidget(QWidget):
         lay.addWidget(splitter)
         self.setLayout(lay)
 
-    def update_plot(self, time_values, vm_values=None, principal_values=None, principal_label: str = "S1 [MPa]"):
-        # 1) Build figure
+    def update_plot(self, time_values, traces=None):
+        """
+        Dynamically plots multiple data traces and populates a table.
+        - traces: A list of dictionaries, e.g., [{'name': 'Von Mises (MPa)', 'data': np.array([...])}]
+        """
+        if traces is None:
+            traces = []
+
+        # 1) Build figure by iterating through the provided traces
         fig = go.Figure()
-        if vm_values is not None:
-            fig.add_trace(go.Scattergl(x=time_values, y=vm_values, mode='lines', name='Von Mises'))
-        if principal_values is not None:
-            fig.add_trace(
-                go.Scattergl(x=time_values, y=principal_values, mode='lines', name=principal_label.split()[0]))
+        for trace_info in traces:
+            fig.add_trace(go.Scattergl(x=time_values, y=trace_info['data'], mode='lines', name=trace_info['name']))
+
         fig.update_layout(
             xaxis_title="Time [s]",
-            yaxis_title="Stress (MPa)",
+            yaxis_title="Value",  # Generic Y-axis title
             template="plotly_white",
             font=dict(size=7),
             margin=dict(l=40, r=40, t=10, b=0),
@@ -4644,16 +4829,18 @@ class PlotlyMaxWidget(QWidget):
         main_win = self.window()
         main_win.load_fig_to_webview(resfig, self.web_view)
 
-        # 3) Populate table
-        self.model.setHorizontalHeaderLabels(["Time [s]", "SEQV [MPa]", principal_label])
+        # 3) Dynamically populate the table
+        headers = ["Time [s]"] + [trace['name'] for trace in traces]
+        self.model.setHorizontalHeaderLabels(headers)
         self.model.removeRows(0, self.model.rowCount())
+
         for i, t in enumerate(time_values):
-            items = [
-                QStandardItem(f"{t:.5f}"),
-                QStandardItem(f"{vm_values[i]:.5f}") if vm_values is not None else QStandardItem(""),
-                QStandardItem(f"{principal_values[i]:.5f}") if principal_values is not None else QStandardItem("")
-            ]
-            self.model.appendRow(items)
+            # Start each row with the time value
+            row_items = [QStandardItem(f"{t:.5f}")]
+            # Add the data from each trace for the current time step
+            for trace in traces:
+                row_items.append(QStandardItem(f"{trace['data'][i]:.6f}"))
+            self.model.appendRow(row_items)
 
     def copy_selection(self):
         """Copy the currently selected block of cells to the clipboard as TSV."""
@@ -4691,7 +4878,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.94.7')
+        self.setWindowTitle('MSUP Smart Solver - v0.95.1')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
