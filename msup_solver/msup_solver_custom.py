@@ -336,19 +336,27 @@ class MSUPSmartSolverTransient(QObject):
                             calculate_damage, calculate_deformation=False,
                             calculate_velocity=False, calculate_acceleration=False):
         num_arrays = 6  # For actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
+
         if calculate_von_mises:
             num_arrays += 1  # For sigma_vm
         if calculate_max_principal_stress:
             num_arrays += 3  # For s1, s2, s3
-        if calculate_deformation:
-            num_arrays += 1  # deformation magnitude
-        if calculate_velocity:
-            num_arrays += 1     # velocity magnitude
-        if calculate_acceleration:
-            num_arrays += 1     # acceleration magnitude
         if calculate_damage:
             num_arrays += 1  # For signed_von_mises
-        # Add any additional arrays used during calculations
+
+        # First, check if the base displacement components (ux, uy, uz) need to be computed at all.
+        if calculate_deformation or calculate_velocity or calculate_acceleration:
+            num_arrays += 3  # For the initial ux, uy, uz arrays
+
+        # Now, add memory for the final deformation magnitude array ONLY if requested.
+        if calculate_deformation:
+            num_arrays += 1  # For def_mag
+
+        # Finally, add memory for ALL velocity/acceleration arrays ONLY if one of them is requested.
+        if calculate_velocity or calculate_acceleration:
+            # This accounts for vel_x/y/z, acc_x/y/z, vel_mag, and acc_mag.
+            num_arrays += 8
+
         memory_per_node = num_arrays * num_time_points * self.ELEMENT_SIZE
         return memory_per_node
 
@@ -1010,7 +1018,6 @@ class MSUPSmartSolverTransient(QObject):
             if (calculate_velocity or calculate_acceleration or calculate_deformation) and \
                     self.modal_deformations_ux is not None:
                 ux, uy, uz = self.compute_deformations(start_idx, end_idx)
-                vel_mag, acc_mag, _, _, _, _, _, _ = self._vel_acc_from_disp(ux, uy, uz, self.time_values)
 
                 # --- ADD THIS NEW IF BLOCK ---
                 if calculate_deformation:
@@ -1024,25 +1031,30 @@ class MSUPSmartSolverTransient(QObject):
                     def_time_memmap[start_idx:end_idx] = time_values[time_indices]
                     print(f"Elapsed time for deformation magnitude and time: {(time.time() - start_time):.3f} seconds")
 
-                if calculate_velocity:
+                if calculate_velocity or calculate_acceleration:
                     start_time = time.time()
-                    chunk_max = np.max(vel_mag, axis=0)
-                    self.max_over_time_vel = np.maximum(self.max_over_time_vel, chunk_max)
-                    max_vel_per_node = np.max(vel_mag, axis=1)
-                    time_indices = np.argmax(vel_mag, axis=1)
-                    vel_max_memmap[start_idx:end_idx]  = max_vel_per_node
-                    vel_time_memmap[start_idx:end_idx] = time_values[time_indices]
-                    print(f"Elapsed time for velocity magnitude and time: {(time.time() - start_time):.3f} seconds")
+                    vel_mag, acc_mag, _, _, _, _, _, _ = self._vel_acc_from_disp(ux, uy, uz, self.time_values)
+                    print(f"Elapsed time for calculation of velocity/acceleration components: {(time.time() - start_time):.3f} seconds")
 
-                if calculate_acceleration:
-                    start_time = time.time()
-                    chunk_max = np.max(acc_mag, axis=0)
-                    self.max_over_time_acc = np.maximum(self.max_over_time_acc, chunk_max)
-                    max_acc_per_node = np.max(acc_mag, axis=1)
-                    time_indices = np.argmax(acc_mag, axis=1)
-                    acc_max_memmap[start_idx:end_idx]  = max_acc_per_node
-                    acc_time_memmap[start_idx:end_idx] = time_values[time_indices]
-                    print(f"Elapsed time for acceleration magnitude and time: {(time.time() - start_time):.3f} seconds")
+                    if calculate_velocity:
+                        start_time = time.time()
+                        chunk_max = np.max(vel_mag, axis=0)
+                        self.max_over_time_vel = np.maximum(self.max_over_time_vel, chunk_max)
+                        max_vel_per_node = np.max(vel_mag, axis=1)
+                        time_indices = np.argmax(vel_mag, axis=1)
+                        vel_max_memmap[start_idx:end_idx]  = max_vel_per_node
+                        vel_time_memmap[start_idx:end_idx] = time_values[time_indices]
+                        print(f"Elapsed time for velocity magnitude and time: {(time.time() - start_time):.3f} seconds")
+
+                    if calculate_acceleration:
+                        start_time = time.time()
+                        chunk_max = np.max(acc_mag, axis=0)
+                        self.max_over_time_acc = np.maximum(self.max_over_time_acc, chunk_max)
+                        max_acc_per_node = np.max(acc_mag, axis=1)
+                        time_indices = np.argmax(acc_mag, axis=1)
+                        acc_max_memmap[start_idx:end_idx]  = max_acc_per_node
+                        acc_time_memmap[start_idx:end_idx] = time_values[time_indices]
+                        print(f"Elapsed time for acceleration magnitude and time: {(time.time() - start_time):.3f} seconds")
 
             # Calculate potential damage index for all nodes in the chunk
             if calculate_damage:
@@ -1205,33 +1217,32 @@ class MSUPSmartSolverTransient(QObject):
         selected_node_id = df_node_ids[selected_node_idx]
         # endregion
 
-        # region Compute normal stresses for the selected node
-        actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
-            self.compute_normal_stresses_for_a_single_node(selected_node_idx)
-        # endregion
+        is_stress_calc_needed = calculate_von_mises or calculate_max_principal_stress or calculate_min_principal_stress
+        if is_stress_calc_needed:
+            # region Compute normal stresses for the selected node
+            actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
+                self.compute_normal_stresses_for_a_single_node(selected_node_idx)
+            # endregion
 
-        # region Calculate the requested outputs
-        if calculate_von_mises:
-            # Compute Von Mises stress for the selected node
-            sigma_vm = self.compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
-                                                     actual_sxz)
-            print(f"Von Mises Stress calculated for Node {selected_node_id}\n")
-
-            return np.arange(sigma_vm.shape[1]), sigma_vm[0, :]  # time_points, stress_values
-
-        if calculate_max_principal_stress:
-            # Compute Principal Stresses for the selected node
-            s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
+            if calculate_von_mises:
+                # Compute Von Mises stress for the selected node
+                sigma_vm = self.compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
                                                          actual_sxz)
-            print(f"Principal Stresses calculated for Node {selected_node_id}\n")
+                print(f"Von Mises Stress calculated for Node {selected_node_id}\n")
 
-            return np.arange(s1.shape[1]), s1[0, :]  # time_indices, stress_values
+                return np.arange(sigma_vm.shape[1]), sigma_vm[0, :]  # time_points, stress_values
 
-        elif calculate_min_principal_stress:
-            s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
-                                                         actual_sxz)
-            print(f"Principal Stresses calculated for Node {selected_node_id}\n")
-            return np.arange(s3.shape[1]), s3[0, :]  # S₃ min history
+            if calculate_max_principal_stress or calculate_min_principal_stress:
+                s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
+                                                             actual_sxz)
+                if calculate_max_principal_stress:
+                    # Compute Principal Stresses for the selected node
+                    print(f"Max Principal Stresses calculated for Node {selected_node_id}\n")
+                    return np.arange(s1.shape[1]), s1[0, :]  # time_indices, stress_values
+
+                if calculate_min_principal_stress:
+                    print(f"Min Principal Stresses calculated for Node {selected_node_id}\n")
+                    return np.arange(s3.shape[1]), s3[0, :]  # S₃ min history
 
         if calculate_deformation or calculate_velocity or calculate_acceleration:
             if self.modal_deformations_ux is None:
@@ -1271,7 +1282,6 @@ class MSUPSmartSolverTransient(QObject):
 
         # Return none if no output is requested
         return None, None
-        # endregion
 
     def convert_dat_to_csv(self, node_ids, num_nodes, dat_filename, csv_filename, header):
         """Converts a .dat file to a .csv file with NodeID and, if available, X,Y,Z coordinates."""
@@ -3362,7 +3372,7 @@ class MSUPSmartSolverGUI(QWidget):
         self.steady_state_file_path.setVisible(False)  # Initially hidden
 
         # Checkbox for including deformations
-        self.deformations_checkbox = QCheckBox("Include Deformations for Animation (Optional)")
+        self.deformations_checkbox = QCheckBox("Include Deformations (Optional)")
         self.deformations_checkbox.setStyleSheet("margin: 10px 0;")
         self.deformations_checkbox.toggled.connect(self.toggle_deformations_inputs)
 
@@ -4953,7 +4963,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.95.2')
+        self.setWindowTitle('MSUP Smart Solver - v0.95.3')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
