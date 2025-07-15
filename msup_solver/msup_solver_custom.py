@@ -2,43 +2,47 @@
 print("Importing libraries...")
 import math
 import threading
+import subprocess
+import time
+import sys
+import os
+import io
+
+from io import StringIO
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import torch
 import psutil
 import gc
-from numba import njit, prange
-import time
-from datetime import datetime
+import vtk
+import plotly.graph_objects as go
+import plotly.offline as pyo
+import imageio
+import tempfile
+import plotly.io as pio
+import pyvista as pv
+from pyvistaqt import QtInteractor
+from plotly_resampler import FigureResampler
+from scipy.signal import butter, filtfilt, detrend
 
+from numba import njit, prange
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
-                             QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView,
+                             QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView, QMenu,
                              QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut, QSplitter,
-                             QAbstractItemView, QTableView, QProgressDialog, QDialog, QDialogButtonBox)
+                             QAbstractItemView, QTableView, QProgressDialog, QDialog, QDialogButtonBox, QInputDialog,
+                             QWidgetAction)
 from PyQt5.QtGui import (QPalette, QColor, QFont, QTextCursor, QKeySequence, QDoubleValidator, QStandardItemModel,
                          QStandardItem, QKeySequence)
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths, QTimer
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-import sys
-from io import StringIO
-import os
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.ticker import MaxNLocator
-import pyvista as pv
-from pyvistaqt import QtInteractor
-import vtk
-import plotly.graph_objects as go
-import plotly.offline as pyo
-from plotly_resampler import FigureResampler
-import io
-from scipy.signal import butter, filtfilt, detrend
-import imageio
-import tempfile
-import plotly.io as pio
 print("Done")
 
 # endregion
@@ -1360,6 +1364,11 @@ class DisplayTab(QWidget):
         self.data_column_name = "Stress"  # Default/placeholder name for scalars
         self.is_deformation_included_in_anim = False  # Track if deformation was computed
 
+        self.highlight_actor = None  # This tracks the highlight sphere
+        self.box_widget = None
+        self.hotspot_dialog = None
+        self.is_point_picking_active = False
+
         self.init_ui()
 
     def init_ui(self):
@@ -1420,6 +1429,10 @@ class DisplayTab(QWidget):
         # Create PyVista widget
         self.plotter = QtInteractor(parent=self)
         self.plotter.set_background('#FFFFFF')
+
+        # Add Custom Context Menu
+        self.plotter.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.plotter.customContextMenuRequested.connect(self.show_context_menu)
 
         # Layout
         layout = QVBoxLayout()
@@ -3214,16 +3227,36 @@ class DisplayTab(QWidget):
             self.hover_observer = None
 
     def update_point_size(self):
-        """Handle dynamic point size updates"""
-        if self.current_mesh:
-            self.clear_hover_elements()  # Clean up before update
-            self.update_visualization()
-            self.setup_hover_annotation()  # Reinitialize hover
+        """
+        Handles dynamic point size updates efficiently by modifying the actor directly
+        while also correctly re-initializing hover annotations. This avoids clearing
+        the entire scene.
+        """
+        # We need a mesh and an actor to be present to do anything
+        if self.current_mesh and self.current_actor:
+            # 1. Clear the old hover annotations and their observers
+            self.clear_hover_elements()
+
+            # 2. Directly modify the properties of the existing actor
+            new_size = self.point_size.value()
+            self.current_actor.prop.point_size = new_size
+            self.current_actor.prop.render_points_as_spheres = True
+
+            # 3. Re-create the hover annotations for the updated plot
+            self.setup_hover_annotation()
+
+            # 4. Render the changes to the screen.
+            self.plotter.render()
 
     def clear_visualization(self):
         """Properly clear existing visualization"""
         self.stop_animation()
         self.clear_hover_elements()
+
+        # Manually disable and remove the box widget if it exists
+        if self.box_widget:
+            self.box_widget.Off()
+            self.box_widget = None
 
         if self.camera_widget:
             self.camera_widget.EnabledOff()
@@ -3239,6 +3272,348 @@ class DisplayTab(QWidget):
         self.scalar_max_spin.clear()
 
         self.file_path.clear()
+
+    def show_context_menu(self, position):
+        """Creates and displays the right-click context menu."""
+        # Do nothing if the scene is empty – prevents right-click menu entirely
+        if self.current_mesh is None:
+            return
+
+        context_menu = QMenu(self)
+
+        context_menu.setStyleSheet("""
+            QMenu {
+                background-color: #e7f0fd;      /* Main background - matches buttons */
+                color: black;                   /* Text color */
+                border: 1px solid #5b9bd5;      /* Border color - matches group boxes */
+                border-radius: 5px;             /* Rounded corners */
+                padding: 5px;                   /* Padding around the whole menu */
+            }
+            QMenu::item {
+                background-color: transparent;  /* Make items transparent by default */
+                padding: 5px 25px 5px 20px;     /* Set padding for each item */
+                margin: 2px;
+                border-radius: 3px;
+            }
+            QMenu::item:selected {
+                background-color: #cce4ff;      /* Highlight color on hover - matches button hover */
+                color: black;
+            }
+            QMenu::item:disabled {
+                color: #808080;                 /* Gray text color for disabled items */
+                background-color: transparent;  /* Ensure it has no background */
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #5b9bd5;      /* Color of the separator line */
+                margin: 5px 0px;                /* Space above and below the line */
+            }
+        """)
+
+        title_style = """
+            font-weight: bold; color: #333; 
+            text-decoration: underline; padding: 4px 0px 6px 7px;
+        """
+
+        # Title for the Selection Tools (such as Box) Group
+        box_title_label = QLabel("Selection Tools")
+        box_title_label.setStyleSheet(title_style)
+        box_title_action = QWidgetAction(context_menu)
+        box_title_action.setDefaultWidget(box_title_label)
+        context_menu.addAction(box_title_action)
+
+        # Add/Remove Box
+        if self.box_widget is None:
+            box_action_text = "Add Selection Box"
+        else:
+            box_action_text = "Remove Selection Box"
+        toggle_box_action = QAction(box_action_text, self)
+        toggle_box_action.triggered.connect(self.toggle_selection_box)
+        context_menu.addAction(toggle_box_action)
+
+        # Pick Center
+        pick_action = QAction("Pick Box Center", self)
+        pick_action.setCheckable(True)
+        pick_action.setChecked(self.is_point_picking_active)
+        pick_action.setEnabled(self.current_mesh is not None)
+        pick_action.triggered.connect(self.toggle_point_picking_mode)
+        context_menu.addAction(pick_action)
+
+        context_menu.addSeparator()
+
+        # Title for Hotspot Analysis
+        hotspot_title_label = QLabel("Hotspot Analysis")
+        hotspot_title_label.setStyleSheet(title_style)
+        hotspot_title_action = QWidgetAction(context_menu)
+        hotspot_title_action.setDefaultWidget(hotspot_title_label)
+        context_menu.addAction(hotspot_title_action)
+
+        # Action for finding hotspots on the whole view
+        hotspot_action = QAction("Find Hotspots (on current view)", self)
+        hotspot_action.setEnabled(self.current_mesh and self.current_mesh.active_scalars is not None)
+        hotspot_action.triggered.connect(self.find_hotspots_on_view)
+        context_menu.addAction(hotspot_action)
+
+        # Find in Box
+        find_in_box_action = QAction("Find Hotspots in Selection", self)
+        find_in_box_action.setEnabled(self.box_widget is not None)
+        find_in_box_action.triggered.connect(self.find_hotspots_in_box)
+        context_menu.addAction(find_in_box_action)
+
+        context_menu.addSeparator()
+
+        # Title for View Control
+        view_title_label = QLabel("View Control")
+        view_title_label.setStyleSheet(title_style)
+        view_title_action = QWidgetAction(context_menu)
+        view_title_action.setDefaultWidget(view_title_label)
+        context_menu.addAction(view_title_action)
+
+        # Reset Camera action
+        reset_camera_action = QAction("Reset Camera", self)
+        reset_camera_action.triggered.connect(self.plotter.reset_camera)
+        context_menu.addAction(reset_camera_action)
+
+        context_menu.exec_(self.plotter.mapToGlobal(position))
+
+    def _find_and_show_hotspots(self, mesh_to_analyze):
+        """A helper function to run hotspot analysis on a given mesh."""
+        if not mesh_to_analyze or mesh_to_analyze.n_points == 0:
+            QMessageBox.information(self, "No Nodes Found", "No nodes were found in the selected area.")
+            return
+
+        # Ask user for Top N
+        num_hotspots, ok = QInputDialog.getInt(self, "Number of Hotspots", "How many top nodes to find?", 10, 1, 1000)
+        if not ok:
+            return
+
+        # Get data from the provided mesh
+        try:
+            node_ids = mesh_to_analyze['NodeID']
+            scalar_values = mesh_to_analyze.active_scalars
+            scalar_name = mesh_to_analyze.active_scalars_name
+            if scalar_name is None:
+                scalar_name = "Result"
+
+            df = pd.DataFrame({'NodeID': node_ids, scalar_name: scalar_values})
+            df_hotspots = df.sort_values(by=scalar_name, ascending=False).head(num_hotspots).copy()
+            df_hotspots.insert(0, 'Rank', range(1, 1 + len(df_hotspots)))
+            df_hotspots.reset_index(drop=True, inplace=True)
+
+            # If a dialog is already open, close it before creating a new one
+            if self.hotspot_dialog is not None:
+                self.hotspot_dialog.close()
+
+            # Create and launch the dialog
+            dialog = HotspotDialog(df_hotspots, self)
+            dialog.node_selected.connect(self.highlight_and_focus_on_node)
+            dialog.finished.connect(self._cleanup_hotspot_analysis)  # Clean up when closed
+
+            if self.box_widget is not None:
+                self.box_widget.Off() # Disable the widget to lock its position and size
+
+            self.hotspot_dialog = dialog
+            self.hotspot_dialog.show()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to find hotspots: {e}")
+
+    def find_hotspots_on_view(self):
+        """Finds hotspots only on the points currently visible to the camera."""
+        if not self.current_mesh:
+            QMessageBox.warning(self, "No Data", "There is no mesh loaded to find hotspots on.")
+            return
+
+        # 1. Create the VTK filter for selecting visible points
+        selector = vtk.vtkSelectVisiblePoints()
+
+        # 2. Configure the selector with the input mesh and the plotter's renderer
+        selector.SetInputData(self.current_mesh)
+        selector.SetRenderer(self.plotter.renderer)
+        selector.Update()  # Execute the filter
+
+        # 3. Get the result and wrap it as a PyVista PolyData object
+        visible_mesh = pv.wrap(selector.GetOutput())
+
+        # Check if any points were actually visible
+        if visible_mesh.n_points == 0:
+            QMessageBox.information(self, "No Visible Points", "No points are visible in the current camera view.")
+            return
+
+        # Pass the new, filtered mesh to your existing analysis function
+        self._find_and_show_hotspots(visible_mesh)
+
+    def highlight_and_focus_on_node(self, node_id):
+        if self.current_mesh is None:
+            QMessageBox.warning(self, "No Mesh", "Cannot highlight node because no mesh is loaded.")
+            return
+
+        # --- THIS IS THE FIX ---
+        # 1. If a highlight actor from a previous selection exists, remove it
+        #    directly from the VTK renderer.
+        if self.highlight_actor:
+            self.plotter.renderer.RemoveActor(self.highlight_actor)
+            self.highlight_actor = None
+        # --- END OF FIX ---
+
+        try:
+            # 1. Find the node's index and coordinates (this part is the same)
+            node_indices = np.where(self.current_mesh['NodeID'] == node_id)[0]
+            if len(node_indices) == 0:
+                print(f"Node ID {node_id} not found in the current mesh.")
+                return
+
+            point_index = node_indices[0]
+            point_coords = self.current_mesh.points[point_index]
+
+            # 2. Create the label text
+            label_text = f"Node {node_id}"
+
+            # 3. Add the point label actor instead of a sphere
+            #    This creates a visible point and text label at the coordinates.
+            self.highlight_actor = self.plotter.add_point_labels(
+                point_coords, [label_text],
+                name="hotspot_label",
+                font_size=16,
+                point_color='red',
+                point_size=15,
+                text_color='red',
+                always_visible=True # Ensures the label is not hidden by the mesh
+            )
+
+            # 4. Move the camera to focus on the point
+            self.plotter.fly_to(point_coords)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Visualization Error", f"Could not highlight node {node_id}: {e}")
+
+    def toggle_selection_box(self):
+        """Adds or removes the box widget from the plotter."""
+        if self.box_widget is None:
+            # Add the widget and store a reference to it
+            self.box_widget = self.plotter.add_box_widget(callback=self._dummy_callback)
+
+            # Set the initial size of the box to be 75% of the dataset's bounds.
+            # A smaller box will have smaller handles.
+            self.box_widget.SetPlaceFactor(0.75)
+
+            # Get the property for the handles and change their color
+            handle_property = self.box_widget.GetHandleProperty()
+            handle_property.SetColor(0.8, 0.4, 0.2) # Set to a less obtrusive orange color
+            handle_property.SetPointSize(1)
+
+            # Get the property for the currently selected handle
+            selected_handle_property = self.box_widget.GetSelectedHandleProperty()
+            selected_handle_property.SetColor(1.0, 0.5, 0.0) # Set to a bright orange when selected
+
+        else:
+            # Use the recommended way to remove all widgets of this type
+            self.plotter.clear_box_widgets()
+            self.box_widget = None
+        # We need to render to see the change
+        self.plotter.render()
+
+    def find_hotspots_in_box(self):
+        """Clips the mesh to the box bounds and runs the hotspot analysis."""
+        if self.box_widget is None:
+            return  # Should not happen if the menu is disabled, but a good safety check
+
+        # Create a vtk.vtkPolyData object to store the box's geometry
+        box_geometry = vtk.vtkPolyData()
+        # Ask the widget to populate our object with its current geometry
+        self.box_widget.GetPolyData(box_geometry)
+        # Now, get the bounds from the geometry object, which has the GetBounds() method
+        bounds = box_geometry.GetBounds()
+
+        # Clip the main mesh using these bounds
+        clipped_mesh = self.current_mesh.clip_box(bounds, invert=False)
+
+        # Call the existing helper function with the clipped mesh
+        self._find_and_show_hotspots(clipped_mesh)
+
+    def _dummy_callback(self, *args):
+        """A do-nothing callback function to satisfy the widget's requirement."""
+        pass
+
+    def toggle_point_picking_mode(self, checked):
+        """Toggles the point picking mode on the plotter."""
+        self.is_point_picking_active = checked
+        if checked:
+            # Disables other interactions and sets up our callback
+            self.plotter.enable_point_picking(
+                callback=self.on_point_picked,
+                show_message=False,  # Don't show the default PyVista message box
+                use_picker=True,  # Ensures we pick a point on the mesh
+                left_clicking = True
+            )
+            self.plotter.setCursor(Qt.CrossCursor)  # Give user visual feedback
+        else:
+            self.plotter.disable_picking()
+            self.plotter.setCursor(Qt.ArrowCursor)
+
+    def on_point_picked(self, *args):
+        """Callback executed when a point is picked on the mesh."""
+        # Use *args to robustly handle different PyVista versions
+        # Check if args is empty or if the coordinate array has a size of 0
+        if not args or args[0].size == 0:
+            return
+
+        center = args[0]
+
+        # If the box widget doesn't exist yet, create it now
+        if self.box_widget is None:
+            self.box_widget = self.plotter.add_box_widget(callback=self._dummy_callback)
+            # Apply our custom properties
+            self.box_widget.GetHandleProperty().SetColor(0.8, 0.4, 0.2)
+            self.box_widget.GetSelectedHandleProperty().SetColor(1.0, 0.5, 0.0)
+            self.box_widget.GetHandleProperty().SetPointSize(10)
+            self.box_widget.GetSelectedHandleProperty().SetPointSize(15)
+
+            # Define a default size for the new box
+            size = self.current_mesh.length * 0.1
+            bounds = [
+                center[0] - size / 2.0, center[0] + size / 2.0,
+                center[1] - size / 2.0, center[1] + size / 2.0,
+                center[2] - size / 2.0, center[2] + size / 2.0,
+            ]
+        else:
+            # If the box already exists, get its current size
+            box_geometry = vtk.vtkPolyData()
+            self.box_widget.GetPolyData(box_geometry)
+            current_bounds = box_geometry.GetBounds()
+
+            x_size = current_bounds[1] - current_bounds[0]
+            y_size = current_bounds[3] - current_bounds[2]
+            z_size = current_bounds[5] - current_bounds[4]
+            # Calculate new bounds centered on the picked point
+            bounds = [
+                center[0] - x_size / 2.0, center[0] + x_size / 2.0,
+                center[1] - y_size / 2.0, center[1] + y_size / 2.0,
+                center[2] - z_size / 2.0, center[2] + z_size / 2.0,
+            ]
+
+        # Move the box widget to the new bounds directly
+        self.box_widget.PlaceWidget(bounds)
+        self.plotter.render()
+
+        # Turn off picking mode after one use
+        self.toggle_point_picking_mode(False)
+
+    def _cleanup_hotspot_analysis(self):
+        """Removes all highlight labels and re-enables the box widget."""
+        # Remove the text label actor
+        if hasattr(self, 'highlight_actor') and self.highlight_actor:
+            self.plotter.remove_actor("hotspot_label", reset_camera=False)
+            self.highlight_actor = None
+
+        # Re-enable the box widget if it still exists
+        if self.box_widget:
+            self.box_widget.On()
+
+        # Clear the reference to the now-closed dialog
+        self.hotspot_dialog = None
+
+        self.plotter.render()
 
     def __del__(self):
         """Ensure proper cleanup"""
@@ -4531,6 +4906,64 @@ class MSUPSmartSolverGUI(QWidget):
     # endregion
 
 
+class HotspotDialog(QDialog):
+    # Signal to be emitted when a node is selected from the table
+    # It will carry the integer Node ID.
+    node_selected = pyqtSignal(int)
+
+    def __init__(self, hotspot_df, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Hotspot Analysis Results")
+        self.setMinimumSize(300, 300)
+
+        self.table_view = QTableView()
+        self.model = QStandardItemModel(self)
+        self.table_view.setModel(self.model)
+
+        # Make the table non-editable and select whole rows at a time
+        self.table_view.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_view.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table_view.setSelectionMode(QAbstractItemView.SingleSelection)
+
+        # Populate the table with the data
+        self.populate_table(hotspot_df)
+
+        # When a row is clicked, trigger our handler
+        self.table_view.clicked.connect(self.on_row_clicked)
+
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Click a row to navigate to the node in the Display tab."))
+        layout.addWidget(self.table_view)
+        self.setLayout(layout)
+
+    def populate_table(self, df):
+        """Populates the table, formatting floats to 4 decimal places."""
+        self.model.setHorizontalHeaderLabels(df.columns)
+
+        for index, row in df.iterrows():
+            items = []
+            for col_name, val in row.items():
+                # Keep Rank and NodeID as integers
+                if col_name in ['Rank', 'NodeID']:
+                    items.append(QStandardItem(str(int(float(val)))))
+                # Format all other columns as floats with 4 decimal places
+                else:
+                    items.append(QStandardItem(f"{val:.4f}"))
+            self.model.appendRow(items)
+
+        self.table_view.resizeColumnsToContents()
+
+    def on_row_clicked(self, index):
+        # Get the row of the clicked cell
+        row = index.row()
+        # Assume 'NodeID' is the second column (index 1)
+        node_id_item = self.model.item(row, 1)
+        if node_id_item:
+            node_id = int(float(node_id_item.text()))
+            # Emit the signal with the node ID
+            self.node_selected.emit(node_id)
+
+
 class MatplotlibWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -4963,7 +5396,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.95.3')
+        self.setWindowTitle('MSUP Smart Solver - v0.96.0')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
@@ -5095,6 +5528,7 @@ class MainWindow(QMainWindow):
         self.tree_view = QTreeView()
         self.tree_view.setModel(self.file_model)
         # self.tree_view.setRootIndex(self.file_model.index(desktop_path))  # Start at Desktop
+        self.tree_view.doubleClicked.connect(self.open_navigator_file)
         self.tree_view.setHeaderHidden(False)  # Show headers for resizing
         self.tree_view.setMinimumWidth(240)  # Set a reasonable width
         self.tree_view.setSortingEnabled(True)  # Allow sorting of files/folders
@@ -5186,6 +5620,22 @@ class MainWindow(QMainWindow):
             # Update the navigator with the selected directory
             self.file_model.setRootPath(self.project_directory)
             self.tree_view.setRootIndex(self.file_model.index(self.project_directory))
+
+    def open_navigator_file(self, index):
+        """
+        Opens the double-clicked file from the navigator in the default system
+        application, attempting to maximize it on Windows.
+        """
+        if self.file_model.isDir(index):
+            return  # Do nothing for directories
+
+        file_path = self.file_model.filePath(index)
+
+        try:
+            subprocess.run(['cmd', '/c', 'start', '/max', '', file_path], shell=True)
+
+        except Exception as e:
+            print(f"Error opening file '{file_path}': {e}")
 
     def load_fig_to_webview(self, fig, web_view):
         """Generates full HTML with embedded JS, saves to temp file, and loads."""
@@ -5302,7 +5752,7 @@ class AdvancedSettingsDialog(QDialog):
         self.precision_combobox.setToolTip(
             "Single precision is faster and uses less memory.\nDouble precision is more accurate but slower.")
 
-        self.gpu_checkbox = QCheckBox("Enable GPU Acceleration (if available)")
+        self.gpu_checkbox = QCheckBox("Enable GPU Acceleration (Only works if NVIDIA CUDA is installed in PC)")
         self.gpu_checkbox.setChecked(IS_GPU_ACCELERATION_ENABLED)
         self.gpu_checkbox.setToolTip("Uses the GPU for matrix multiplication if a compatible NVIDIA GPU is found and CUDA is installed in the system.")
 
