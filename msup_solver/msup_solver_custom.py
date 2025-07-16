@@ -31,7 +31,7 @@ from numba import njit, prange
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
                              QMainWindow, QCheckBox, QProgressBar, QFileDialog, QGroupBox, QGridLayout, QSizePolicy,
                              QTextEdit, QTabWidget, QComboBox, QMenuBar, QAction, QDockWidget, QTreeView, QMenu,
-                             QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut, QSplitter,
+                             QFileSystemModel, QMessageBox, QSpinBox, QDoubleSpinBox, QShortcut, QSplitter, QHeaderView,
                              QAbstractItemView, QTableView, QProgressDialog, QDialog, QDialogButtonBox, QInputDialog,
                              QWidgetAction)
 from PyQt5.QtGui import (QPalette, QColor, QFont, QTextCursor, QKeySequence, QDoubleValidator, QStandardItemModel,
@@ -39,6 +39,7 @@ from PyQt5.QtGui import (QPalette, QColor, QFont, QTextCursor, QKeySequence, QDo
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl, QDir, QStandardPaths, QTimer
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
@@ -3044,66 +3045,80 @@ class DisplayTab(QWidget):
             QMessageBox.critical(self, "Loading Error", f"Failed to load file: {str(e)}")
 
     def visualize_data(self, filename):
-        """Handle data visualization with validation"""
+        """Handle data visualization with robust data cleaning, surface reconstruction, and interpolation."""
         try:
-            # Load and validate data
+            # 1. Load the data and clean it as before
             df = pd.read_csv(filename)
-
-            # Recommendation 1: Data validation
             if df.empty:
-                raise ValueError("Selected file is empty")
+                raise ValueError("The selected CSV file is empty.")
 
-            if len(df) > 1e6:
-                QMessageBox.warning(
-                    self,
-                    "Performance Warning",
-                    "Large dataset (>{:,} points) may affect performance".format(len(df))
-                )
+            df.columns = [col.strip() for col in df.columns]
+            x_col = next((c for c in df.columns if c.upper() == 'X'), None)
+            y_col = next((c for c in df.columns if c.upper() == 'Y'), None)
+            z_col = next((c for c in df.columns if c.upper() == 'Z'), None)
+            nodeid_col = next((c for c in df.columns if c.upper() == 'NODEID'), None)
 
-            # Validate coordinates
-            required_cols = {'X', 'Y', 'Z'}
-            if not required_cols.issubset(df.columns.str.strip()):
-                raise ValueError("CSV file must contain x, y, z columns (case insensitive)")
+            if not all([x_col, y_col, z_col]):
+                raise ValueError("CSV file must contain X, Y, and Z columns.")
 
-            # Get coordinates and values
-            coords = df[['X', 'Y', 'Z']].values
-            self.data_column = df.columns[1]
+            df_clean = df.dropna(subset=[x_col, y_col, z_col])
+            coords = df_clean[[x_col, y_col, z_col]].values
 
-            # Create and store mesh
-            self.current_mesh = pv.PolyData(coords)
-            if self.data_column:
-                self.current_mesh[self.data_column] = df[self.data_column].values
-                # After creating mesh:
-                self.current_mesh.set_active_scalars(self.data_column)
+            potential_data_cols = [c for c in df_clean.columns if c.upper() not in ['NODEID', 'X', 'Y', 'Z']]
+            if not potential_data_cols:
+                raise ValueError("No data column found in the CSV file.")
+            self.data_column = potential_data_cols[0]
 
-                # Initialize scalar range spin boxes
-                data_min = np.min(self.current_mesh[self.data_column])
-                data_max = np.max(self.current_mesh[self.data_column])
-                self.scalar_min_spin.blockSignals(True)
-                self.scalar_max_spin.blockSignals(True)
-                self.scalar_min_spin.setRange(data_min, data_max)
-                self.scalar_min_spin.setValue(data_min)
-                self.scalar_max_spin.setRange(data_min, 1e30)
-                self.scalar_max_spin.setValue(data_max)
-                self.scalar_min_spin.blockSignals(False)
-                self.scalar_max_spin.blockSignals(False)
+            scalar_values = df_clean[self.data_column].fillna(0).values
 
-            # Store NodeID if available
-            if 'NodeID' in df.columns:
-                self.current_mesh['NodeID'] = df['NodeID'].values
+            # 2. Create the ORIGINAL point cloud
+            point_cloud = pv.PolyData(coords)
 
-            # Initial visualization
+            # 3. Add the scalar data to the ORIGINAL point cloud FIRST
+            point_cloud[self.data_column] = scalar_values
+
+            # 4. Reconstruct the surface (this will create the new points)
+            print("Reconstructing surface... This may create new points.")
+            reconstructed_mesh = point_cloud.reconstruct_surface()
+            print(f"Original points: {point_cloud.n_points}, New surface points: {reconstructed_mesh.n_points}")
+
+            # 5. CRITICAL FIX: Interpolate the data from the original cloud onto the new surface
+            # This intelligently assigns values to the new points based on their neighbors.
+            print("Interpolating data onto new surface...")
+            # A radius of 1.0 is a generic starting point; you might need to adjust this
+            # if your model is very large or very small.
+            final_mesh = reconstructed_mesh.interpolate(point_cloud, radius=1.0)
+
+            # 6. Assign the interpolated mesh as the current mesh
+            self.current_mesh = final_mesh
+            self.current_mesh.set_active_scalars(self.data_column)
+
+            # We don't add NodeID here, as the new points don't have original IDs.
+            # The hover-over will show the interpolated data value.
+
+            # 7. Update UI controls
+            data_min, data_max = self.current_mesh.get_data_range(self.data_column)
+            self.scalar_min_spin.blockSignals(True)
+            self.scalar_max_spin.blockSignals(True)
+            self.scalar_min_spin.setRange(data_min, data_max)
+            self.scalar_min_spin.setValue(data_min)
+            self.scalar_max_spin.setRange(data_min, 1e30)
+            self.scalar_max_spin.setValue(data_max)
+            self.scalar_min_spin.blockSignals(False)
+            self.scalar_max_spin.blockSignals(False)
+
+            # 8. Finalize visualization
             if not self.camera_widget:
                 self.camera_widget = self.plotter.add_camera_orientation_widget()
                 self.camera_widget.EnabledOn()
-            # self.plotter.enable_point_picking(point_size=self.point_size.value())
+
             self.update_visualization()
             self.plotter.reset_camera()
             self.plotter.camera.zoom(1)
 
         except Exception as e:
             self.clear_visualization()
-            QMessageBox.critical(self, "Visualization Error", f"Error visualizing data: {str(e)}")
+            QMessageBox.critical(self, "Visualization Error", f"Failed to visualize data:\n\n{str(e)}")
 
     def update_scalar_range(self):
         """Update the scalar range of the current visualization based on spin box values."""
@@ -4968,12 +4983,20 @@ class MatplotlibWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        # Attributes for interactivity
+        self.ax = None
+        self.annot = None
+        self.plotted_lines = []
+
         # Matplotlib canvas on the left
-        self.figure = plt.Figure()
+        self.figure = plt.Figure(tight_layout=True) #tight layout for better spacing
         self.canvas = FigureCanvas(self.figure)
         # make it expand/shrink with the window
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.canvas.updateGeometry()
+
+        # Add the Navigation Toolbar
+        self.toolbar = NavigationToolbar(self.canvas, self)
 
         # Data table on the right
         self.table = QTableView(self)
@@ -4989,15 +5012,107 @@ class MatplotlibWidget(QWidget):
         copy_sc.activated.connect(self.copy_selection)
 
         # Split view
-        splitter = QSplitter(Qt.Horizontal, self)
-        splitter.addWidget(self.canvas)
-        splitter.addWidget(self.table)
-        splitter.setStretchFactor(0, 2)  # plot ~67%
-        splitter.setStretchFactor(1, 1)  # table ~33%
+        self.splitter = QSplitter(Qt.Horizontal, self)
+
+        # Create a container for plot and toolbar
+        plot_container = QWidget()
+        plot_layout = QVBoxLayout(plot_container)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(self.toolbar)
+        plot_layout.addWidget(self.canvas)
+
+        self.splitter.addWidget(plot_container)
+        self.splitter.addWidget(self.table)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(splitter)
+        layout.addWidget(self.splitter)
         self.setLayout(layout)
+
+        # Connect a hover event
+        self.canvas.mpl_connect("motion_notify_event", self.hover)
+
+    def showEvent(self, event):
+        """
+        This event is called when the widget is shown.
+        """
+        # First, run the default event processing
+        super().showEvent(event)
+
+        # Schedule the splitter adjustment to run after this event is processed.
+        # This ensures the widget has its final geometry.
+        QTimer.singleShot(50, self.adjust_splitter_size)
+
+    def adjust_splitter_size(self):
+        """
+        Calculates the ideal width for the table, including the vertical scrollbar,
+        and resizes the splitter.
+        """
+        header = self.table.horizontalHeader()
+
+        # Temporarily set the resize mode to calculate the ideal content width
+        # Note: For PyQt6/PySide6, use QHeaderView.ResizeMode.ResizeToContents
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+
+        #
+        # --- THE KEY FIX IS HERE ---
+        #
+        # 1. Check if a vertical scrollbar is visible and get its width.
+        v_scrollbar = self.table.verticalScrollBar()
+        scrollbar_width = v_scrollbar.width() if v_scrollbar.isVisible() else 0
+
+        # 2. Calculate the required width, now including the scrollbar.
+        required_width = (header.length() +
+                          self.table.verticalHeader().width() +
+                          self.table.frameWidth() * 2 +
+                          scrollbar_width)
+
+        # Restore interactive resizing so the user can adjust columns manually
+        # Note: For PyQt6/PySide6, use QHeaderView.ResizeMode.Interactive
+        header.setSectionResizeMode(QHeaderView.Interactive)
+
+        # Now, adjust the splitter with the corrected width
+        total_width = self.splitter.width()
+        plot_width = total_width - required_width
+
+        # Enforce a minimum width for the plot for usability
+        if plot_width < 450:
+            plot_width = 450
+
+        # Recalculate table width in case the plot width was clipped
+        new_table_width = total_width - plot_width
+
+        self.splitter.setSizes([int(plot_width), int(new_table_width)])
+
+    def hover(self, event):
+        """Show an annotation when hovering over a data point."""
+        # Check if the event is valid and within the axes
+        if not event.inaxes or self.ax is None or self.annot is None:
+            return
+
+        visible = self.annot.get_visible()
+
+        # Check all plotted lines
+        for line in self.plotted_lines:
+            cont, ind = line.contains(event)
+            if cont:
+                # Get the data coordinates of the hovered point
+                pos = line.get_xydata()[ind["ind"][0]]
+                x_coord, y_coord = pos[0], pos[1]
+
+                # Update annotation text and position
+                self.annot.xy = (x_coord, y_coord)
+                self.annot.set_text(f"Time: {x_coord:.4f}\nValue: {y_coord:.4f}")
+
+                # Set annotation visibility and draw
+                if not visible:
+                    self.annot.set_visible(True)
+                    self.canvas.draw_idle()
+                return  # Stop after finding the first point
+
+        # If the mouse is not over any point, hide the annotation
+        if visible:
+            self.annot.set_visible(False)
+            self.canvas.draw_idle()
 
     def update_plot(self, x, y, node_id=None,
                     is_max_principal_stress=False,
@@ -5018,10 +5133,10 @@ class MatplotlibWidget(QWidget):
             'Z': {'color': 'blue', 'linestyle': '--', 'linewidth': 1},
         }
 
-        self.model.removeRows(0, self.model.rowCount())
+        self.model.clear()
         textstr = ""
 
-        # --- NEW LOGIC: Check if y is a dictionary for multi-component data ---
+        # Check if y is a dictionary for multi-component data
         if isinstance(y, dict):
             # This is multi-component data (Deformation, Velocity, etc.)
             if is_velocity:
@@ -5088,7 +5203,7 @@ class MatplotlibWidget(QWidget):
                     time_of_max = x[np.argmax(y)]
                     textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
 
-        # --- Common plot styling ---
+        # Common plot styling
         ax.set_xlabel('Time [seconds]', fontsize=8)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
         ax.grid(True, which='both', linestyle='-', linewidth=0.5)
@@ -5104,7 +5219,11 @@ class MatplotlibWidget(QWidget):
                     verticalalignment='top', horizontalalignment='left',
                     bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2'))
 
+        # Resize table columns to fit the new content
+        self.table.resizeColumnsToContents()
         self.canvas.draw()
+
+        QTimer.singleShot(0, self.adjust_splitter_size)
 
     def copy_selection(self):
         """Copy the selected rectangular block of cells as TSV to the clipboard."""
@@ -5150,6 +5269,8 @@ class MatplotlibWidget(QWidget):
         self.model.removeRows(0, self.model.rowCount())
         self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
 
+        self.table.resizeColumnsToContents()
+        QTimer.singleShot(0, self.adjust_splitter_size)
 
 class PlotlyWidget(QWidget):
     def __init__(self, parent=None):
@@ -5396,7 +5517,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.96.0')
+        self.setWindowTitle('MSUP Smart Solver - v0.96.1')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
