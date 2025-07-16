@@ -225,23 +225,6 @@ def unwrap_mcf_file(input_file, output_file):
             f.write(line + "\n")
 
     return final_lines
-
-
-def poly_detrend_2d(data: np.ndarray, times: np.ndarray, order: int) -> np.ndarray:
-    """
-    Remove an nth-order polynomial trend from each row of `data`.
-    - data:   shape (n_series, n_samples)
-    - times:  1D array length n_samples
-    - order:  polynomial degree to remove
-    """
-    detrended = np.empty_like(data)
-    for i in range(data.shape[0]):
-        p = np.polyfit(times, data[i], order)
-        trend = np.polyval(p, times)
-        detrended[i] = data[i] - trend
-    return detrended
-
-
 # endregion
 
 # region Define global classes
@@ -1555,23 +1538,6 @@ class DisplayTab(QWidget):
         self.graphics_control_layout.addWidget(self.deformation_scale_label)
         self.graphics_control_layout.addWidget(self.deformation_scale_edit)
 
-        # Remove-Drift checkbox
-        self.remove_drift_checkbox = QCheckBox("Remove Drift")
-        self.remove_drift_checkbox.setVisible(False)
-        self.graphics_control_layout.addWidget(self.remove_drift_checkbox)
-
-        # Polynomial-order spinbox (0–9)
-        self.drift_order_spin = QSpinBox()
-        self.drift_order_spin.setRange(0, 9)
-        self.drift_order_spin.setPrefix("Polynomial Fit Function Order: ")
-        self.drift_order_spin.setVisible(False)
-        self.graphics_control_layout.addWidget(self.drift_order_spin)
-
-        # toggle visibility when checkbox is clicked
-        self.remove_drift_checkbox.toggled.connect(
-            lambda checked: self.drift_order_spin.setVisible(checked)
-        )
-
         # Add Save Animation Button ---
         self.save_anim_button = QPushButton("Save as Video/GIF")
         self.save_anim_button.setStyleSheet(button_style)  # Apply the style
@@ -1641,10 +1607,6 @@ class DisplayTab(QWidget):
             # Check whether modal deformations file is loaded
             has_deforms = "modal_ux" in globals()
 
-            # Show Remove‑Drift only if modal deformations are loaded
-            self.remove_drift_checkbox.setVisible(has_deforms)
-            self.drift_order_spin.setVisible(has_deforms and self.remove_drift_checkbox.isChecked())
-
             # Enable/disable the scale factor based on whether deformation data is loaded
             if has_deforms:
                 self.deformation_scale_edit.setEnabled(True)
@@ -1671,8 +1633,6 @@ class DisplayTab(QWidget):
             self.time_point_group.setVisible(False)
             self.deformation_scale_label.setVisible(False)
             self.deformation_scale_edit.setVisible(False)
-            self.remove_drift_checkbox.setVisible(False)
-            self.drift_order_spin.setVisible(False)
 
     def update_time_point_results(self):
         """
@@ -2246,19 +2206,6 @@ class DisplayTab(QWidget):
                     ux_anim = ux_anim - ux_anim[:, [0]]
                     uy_anim = uy_anim - uy_anim[:, [0]]
                     uz_anim = uz_anim - uz_anim[:, [0]]
-
-                    # Apply chosen detrend
-                    if self.remove_drift_checkbox.isChecked():
-                        order = self.drift_order_spin.value()
-                        if order in (0, 1):
-                            detrend_type = "constant" if order == 0 else "linear"
-                            ux_anim = detrend(ux_anim, axis=1, type=detrend_type)
-                            uy_anim = detrend(uy_anim, axis=1, type=detrend_type)
-                            uz_anim = detrend(uz_anim, axis=1, type=detrend_type)
-                        else:
-                            ux_anim = poly_detrend_2d(ux_anim, anim_times, order)
-                            uy_anim = poly_detrend_2d(uy_anim, anim_times, order)
-                            uz_anim = poly_detrend_2d(uz_anim, anim_times, order)
 
                     # Stack displacements: (num_nodes, 3, num_anim_steps)
                     displacements_stacked = np.stack([ux_anim, uy_anim, uz_anim], axis=1)
@@ -3635,6 +3582,523 @@ class DisplayTab(QWidget):
         self.clear_visualization()
 
 
+class HotspotDialog(QDialog):
+    # Signal to be emitted when a node is selected from the table
+    # It will carry the integer Node ID.
+    node_selected = pyqtSignal(int)
+
+    def __init__(self, hotspot_df, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Hotspot Analysis Results")
+        self.setMinimumSize(300, 300)
+
+        self.table_view = QTableView()
+        self.model = QStandardItemModel(self)
+        self.table_view.setModel(self.model)
+
+        # Make the table non-editable and select whole rows at a time
+        self.table_view.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_view.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table_view.setSelectionMode(QAbstractItemView.SingleSelection)
+
+        # Populate the table with the data
+        self.populate_table(hotspot_df)
+
+        # When a row is clicked, trigger our handler
+        self.table_view.clicked.connect(self.on_row_clicked)
+
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Click a row to navigate to the node in the Display tab."))
+        layout.addWidget(self.table_view)
+        self.setLayout(layout)
+
+    def populate_table(self, df):
+        """Populates the table, formatting floats to 4 decimal places."""
+        self.model.setHorizontalHeaderLabels(df.columns)
+
+        for index, row in df.iterrows():
+            items = []
+            for col_name, val in row.items():
+                # Keep Rank and NodeID as integers
+                if col_name in ['Rank', 'NodeID']:
+                    items.append(QStandardItem(str(int(float(val)))))
+                # Format all other columns as floats with 4 decimal places
+                else:
+                    items.append(QStandardItem(f"{val:.4f}"))
+            self.model.appendRow(items)
+
+        self.table_view.resizeColumnsToContents()
+
+    def on_row_clicked(self, index):
+        # Get the row of the clicked cell
+        row = index.row()
+        # Assume 'NodeID' is the second column (index 1)
+        node_id_item = self.model.item(row, 1)
+        if node_id_item:
+            node_id = int(float(node_id_item.text()))
+            # Emit the signal with the node ID
+            self.node_selected.emit(node_id)
+
+
+class MatplotlibWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        # Attributes for interactivity
+        self.ax = None
+        self.annot = None
+        self.plotted_lines = []
+
+        # Matplotlib canvas on the left
+        self.figure = plt.Figure(tight_layout=True) #tight layout for better spacing
+        self.canvas = FigureCanvas(self.figure)
+        # make it expand/shrink with the window
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.canvas.updateGeometry()
+
+        # Add the Navigation Toolbar
+        self.toolbar = NavigationToolbar(self.canvas, self)
+
+        # Data table on the right
+        self.table = QTableView(self)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+        self.model = QStandardItemModel(self)
+        self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
+        self.table.setModel(self.model)
+
+        # Ctrl+C to copy the selected block
+        copy_sc = QShortcut(QKeySequence.Copy, self.table)
+        copy_sc.activated.connect(self.copy_selection)
+
+        # Split view
+        self.splitter = QSplitter(Qt.Horizontal, self)
+
+        # Create a container for plot and toolbar
+        plot_container = QWidget()
+        plot_layout = QVBoxLayout(plot_container)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(self.toolbar)
+        plot_layout.addWidget(self.canvas)
+
+        self.splitter.addWidget(plot_container)
+        self.splitter.addWidget(self.table)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.splitter)
+        self.setLayout(layout)
+
+        # Connect a hover event
+        self.canvas.mpl_connect("motion_notify_event", self.hover)
+
+    def showEvent(self, event):
+        """
+        This event is called when the widget is shown.
+        """
+        # First, run the default event processing
+        super().showEvent(event)
+
+        # Schedule the splitter adjustment to run after this event is processed.
+        # This ensures the widget has its final geometry.
+        QTimer.singleShot(50, self.adjust_splitter_size)
+
+    def adjust_splitter_size(self):
+        """
+        Calculates the ideal width for the table, including the vertical scrollbar,
+        and resizes the splitter.
+        """
+        header = self.table.horizontalHeader()
+
+        # Temporarily set the resize mode to calculate the ideal content width
+        # Note: For PyQt6/PySide6, use QHeaderView.ResizeMode.ResizeToContents
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+
+        #
+        # --- THE KEY FIX IS HERE ---
+        #
+        # 1. Check if a vertical scrollbar is visible and get its width.
+        v_scrollbar = self.table.verticalScrollBar()
+        scrollbar_width = v_scrollbar.width() if v_scrollbar.isVisible() else 0
+
+        # 2. Calculate the required width, now including the scrollbar.
+        required_width = (header.length() +
+                          self.table.verticalHeader().width() +
+                          self.table.frameWidth() * 2 +
+                          scrollbar_width)
+
+        # Restore interactive resizing so the user can adjust columns manually
+        # Note: For PyQt6/PySide6, use QHeaderView.ResizeMode.Interactive
+        header.setSectionResizeMode(QHeaderView.Interactive)
+
+        # Now, adjust the splitter with the corrected width
+        total_width = self.splitter.width()
+        plot_width = total_width - required_width
+
+        # Enforce a minimum width for the plot for usability
+        if plot_width < 450:
+            plot_width = 450
+
+        # Recalculate table width in case the plot width was clipped
+        new_table_width = total_width - plot_width
+
+        self.splitter.setSizes([int(plot_width), int(new_table_width)])
+
+    def hover(self, event):
+        """Show an annotation when hovering over a data point."""
+        # Check if the event is valid and within the axes
+        if not event.inaxes or self.ax is None or self.annot is None:
+            return
+
+        visible = self.annot.get_visible()
+
+        # Check all plotted lines
+        for line in self.plotted_lines:
+            cont, ind = line.contains(event)
+            if cont:
+                # Get the data coordinates of the hovered point
+                pos = line.get_xydata()[ind["ind"][0]]
+                x_coord, y_coord = pos[0], pos[1]
+
+                # Update annotation text and position
+                self.annot.xy = (x_coord, y_coord)
+                self.annot.set_text(f"Time: {x_coord:.4f}\nValue: {y_coord:.4f}")
+
+                # Set annotation visibility and draw
+                if not visible:
+                    self.annot.set_visible(True)
+                    self.canvas.draw_idle()
+                return  # Stop after finding the first point
+
+        # If the mouse is not over any point, hide the annotation
+        if visible:
+            self.annot.set_visible(False)
+            self.canvas.draw_idle()
+
+    def update_plot(self, x, y, node_id=None,
+                    is_max_principal_stress=False,
+                    is_min_principal_stress=False,
+                    is_von_mises=False,
+                    is_deformation=False,
+                    is_velocity=False,
+                    is_acceleration=False):
+        # Clear the figure
+        self.figure.clear()
+        ax = self.figure.add_subplot(1, 1, 1)
+
+        # --- Define plot styles ---
+        styles = {
+            'Magnitude': {'color': 'black', 'linestyle': '-', 'linewidth': 2},
+            'X': {'color': 'red', 'linestyle': '--', 'linewidth': 1},
+            'Y': {'color': 'green', 'linestyle': '--', 'linewidth': 1},
+            'Z': {'color': 'blue', 'linestyle': '--', 'linewidth': 1},
+        }
+
+        self.model.clear()
+        textstr = ""
+
+        # Check if y is a dictionary for multi-component data
+        if isinstance(y, dict):
+            # This is multi-component data (Deformation, Velocity, etc.)
+            if is_velocity:
+                prefix, units = "Velocity", "(mm/s)"
+            elif is_acceleration:
+                prefix, units = "Acceleration", "(mm/s²)"
+            else:  # is_deformation
+                prefix, units = "Deformation", "(mm)"
+
+            ax.set_title(f"{prefix} (Node ID: {node_id})", fontsize=8)
+            ax.set_ylabel(f"{prefix} {units}", fontsize=8)
+
+            self.model.setHorizontalHeaderLabels(
+                ["Time [s]", f"Mag {units}", f"X {units}", f"Y {units}", f"Z {units}"])
+
+            # This loop is now safe because we've confirmed y is a dictionary
+            for component, data in y.items():
+                style = styles.get(component, {})
+                ax.plot(x, data, label=f'{prefix} ({component})', **style)
+
+            for i in range(len(x)):
+                items = [
+                    QStandardItem(f"{x[i]:.5f}"),
+                    QStandardItem(f"{y['Magnitude'][i]:.5f}"),
+                    QStandardItem(f"{y['X'][i]:.5f}"),
+                    QStandardItem(f"{y['Y'][i]:.5f}"),
+                    QStandardItem(f"{y['Z'][i]:.5f}")
+                ]
+                self.model.appendRow(items)
+
+            max_y_value = np.max(y['Magnitude'])
+            time_of_max = x[np.argmax(y['Magnitude'])]
+            textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
+
+        else:
+            # This is single-component data (Stress or a placeholder)
+            self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
+            for xi, yi in zip(x, y):
+                self.model.appendRow([QStandardItem(f"{xi:.5f}"), QStandardItem(f"{yi:.5f}")])
+
+            if is_min_principal_stress:
+                ax.plot(x, y, label=r'$\sigma_3$', color='green')
+                ax.set_title(f"Min Principal Stress (Node ID: {node_id})" if node_id else "Min Principal Stress",
+                             fontsize=8)
+                ax.set_ylabel(r'$\sigma_3$ [MPa]', fontsize=8)
+                min_y_value = np.min(y)
+                time_of_min = x[np.argmin(y)]
+                textstr = f'Min Magnitude: {min_y_value:.4f}\nTime of Min: {time_of_min:.5f} s'
+            else:
+                title = "Stress"
+                label = "Value"
+                color = 'blue'
+                if is_max_principal_stress:
+                    title, label, color = "Max Principal Stress", r'$\sigma_1$', 'red'
+                elif is_von_mises:
+                    title, label, color = "Von Mises Stress", r'$\sigma_{VM}$', 'blue'
+
+                ax.plot(x, y, label=label, color=color)
+                ax.set_title(f"{title} (Node ID: {node_id})" if node_id else title, fontsize=8)
+                ax.set_ylabel(f'{label} [MPa]', fontsize=8)
+
+                if len(y) > 0 and np.any(y):  # Check if y is not empty or all zeros
+                    max_y_value = np.max(y)
+                    time_of_max = x[np.argmax(y)]
+                    textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
+
+        # Common plot styling
+        ax.set_xlabel('Time [seconds]', fontsize=8)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+        ax.grid(True, which='both', linestyle='-', linewidth=0.5)
+        ax.minorticks_on()
+        ax.tick_params(axis='both', which='major', labelsize=8)
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, labels, fontsize=7)
+
+        if textstr:
+            ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=8,
+                    verticalalignment='top', horizontalalignment='left',
+                    bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2'))
+
+        # Resize table columns to fit the new content
+        self.table.resizeColumnsToContents()
+        self.canvas.draw()
+
+        QTimer.singleShot(0, self.adjust_splitter_size)
+
+    def copy_selection(self):
+        """Copy the selected rectangular block of cells as TSV to the clipboard."""
+        sel = self.table.selectedIndexes()
+        if not sel:
+            return
+
+        rows = sorted(idx.row() for idx in sel)
+        cols = sorted(idx.column() for idx in sel)
+        r0, r1 = rows[0], rows[-1]
+        c0, c1 = cols[0], cols[-1]
+
+        lines = []
+
+        # 1) Header labels
+        headers = [
+            self.model.headerData(c, Qt.Horizontal)
+            for c in range(c0, c1 + 1)
+        ]
+        lines = ['\t'.join(headers)]
+
+        for r in range(r0, r1 + 1):
+            row_data = []
+            for c in range(c0, c1 + 1):
+                text = self.model.index(r, c).data() or ""
+                row_data.append(text)
+            lines.append('\t'.join(row_data))
+
+        QApplication.clipboard().setText('\n'.join(lines))
+
+    def clear_plot(self):
+        """Clears the plot and the data table, and draws an empty placeholder plot."""
+        self.figure.clear()
+        ax = self.figure.add_subplot(1, 1, 1)
+        ax.set_title("Time History (No Data)", fontsize=8)
+        ax.set_xlabel('Time [seconds]', fontsize=8)
+        ax.set_ylabel('Value', fontsize=8)
+        ax.grid(True, which='both', linestyle='-', linewidth=0.5)
+        ax.minorticks_on()
+        ax.tick_params(axis='both', which='major', labelsize=8)
+        self.canvas.draw()
+
+        self.model.removeRows(0, self.model.rowCount())
+        self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
+
+        self.table.resizeColumnsToContents()
+        QTimer.singleShot(0, self.adjust_splitter_size)
+
+
+class PlotlyWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.web_view = QWebEngineView(self)
+        layout = QVBoxLayout()
+        layout.addWidget(self.web_view)
+        self.setLayout(layout)
+        # Store last used data for refresh
+        self.last_time_values = None
+        self.last_modal_coord = None
+
+    def update_plot(self, time_values, modal_coord):
+        self.last_time_values = time_values
+        self.last_modal_coord = modal_coord
+
+        fig = go.Figure()
+        num_modes = modal_coord.shape[0]
+        for i in range(num_modes):
+            fig.add_trace(go.Scattergl(
+                x=time_values,
+                y=modal_coord[i, :],
+                mode='lines',  # 'markers' or 'lines+markers'
+                name=f'Mode {i + 1}',
+                opacity=0.7
+            ))
+
+        # Adjust layout here
+        fig.update_layout(
+            xaxis_title="Time [s]",
+            yaxis_title="Modal Coordinate Value",
+            template="plotly_white",
+            font=dict(size=7),  # global font size for labels, etc.
+            margin=dict(l=40, r=40, t=10, b=0),  # figure margins
+            legend=dict(
+                font=dict(size=7)
+            )
+        )
+
+        # Wrap the figure in a FigureResampler.
+        # This enables dynamic resampling on zoom events.
+        resampler_fig = FigureResampler(fig, default_n_shown_samples=1000)
+
+        # Generate HTML and display
+        main_win = self.window()
+        main_win.load_fig_to_webview(resampler_fig, self.web_view)
+
+    def clear_plot(self):
+        """Clears the plot and resets stored data."""
+        self.web_view.setHtml("")  # Clear the web view content
+        self.last_time_values = None
+        self.last_modal_coord = None
+
+
+class PlotlyMaxWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        # --- left: Plotly web view ---
+        self.web_view = QWebEngineView(self)
+
+        # --- right: Data table ---
+        self.table = QTableView(self)
+        # Allow rectangular selection, multi‑select with Shift/Ctrl
+        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+        # Model with 3 columns
+        self.model = QStandardItemModel(self)
+        self.model.setHorizontalHeaderLabels(["Time [s]", "Data Value"])
+        self.table.setModel(self.model)
+
+        # Ctrl+C shortcut bound to copy_selection()
+        copy_sc = QShortcut(QKeySequence.Copy, self.table)
+        copy_sc.activated.connect(self.copy_selection)
+
+        # Splitter to hold plot + table
+        splitter = QSplitter(Qt.Horizontal, self)
+        splitter.addWidget(self.web_view)
+        splitter.addWidget(self.table)
+        splitter.setStretchFactor(0, 90)  # plot ~90%
+        splitter.setStretchFactor(1, 10)  # table ~10%
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(splitter)
+        self.setLayout(lay)
+
+    def update_plot(self, time_values, traces=None):
+        """
+        Dynamically plots multiple data traces and populates a table.
+        - traces: A list of dictionaries, e.g., [{'name': 'Von Mises (MPa)', 'data': np.array([...])}]
+        """
+        if traces is None:
+            traces = []
+
+        # 1) Build figure by iterating through the provided traces
+        fig = go.Figure()
+        for trace_info in traces:
+            fig.add_trace(go.Scattergl(x=time_values, y=trace_info['data'], mode='lines', name=trace_info['name']))
+
+        fig.update_layout(
+            xaxis_title="Time [s]",
+            yaxis_title="Value",  # Generic Y-axis title
+            template="plotly_white",
+            font=dict(size=7),
+            margin=dict(l=40, r=40, t=10, b=0),
+            legend=dict(font=dict(size=7))
+        )
+
+        # 2) Wrap in resampler
+        resfig = FigureResampler(fig, default_n_shown_samples=50000)
+
+        # Show the plot
+        main_win = self.window()
+        main_win.load_fig_to_webview(resfig, self.web_view)
+
+        # 3) Dynamically populate the table
+        headers = ["Time [s]"] + [trace['name'] for trace in traces]
+        self.model.setHorizontalHeaderLabels(headers)
+        self.model.removeRows(0, self.model.rowCount())
+
+        for i, t in enumerate(time_values):
+            # Start each row with the time value
+            row_items = [QStandardItem(f"{t:.5f}")]
+            # Add the data from each trace for the current time step
+            for trace in traces:
+                row_items.append(QStandardItem(f"{trace['data'][i]:.6f}"))
+            self.model.appendRow(row_items)
+
+    def copy_selection(self):
+        """Copy the currently selected block of cells to the clipboard as TSV."""
+        sel = self.table.selectedIndexes()
+        if not sel:
+            return
+        # determine the extents of the selection
+        rows = sorted(idx.row() for idx in sel)
+        cols = sorted(idx.column() for idx in sel)
+        r0, r1 = rows[0], rows[-1]
+        c0, c1 = cols[0], cols[-1]
+
+        lines = []
+
+        # 1) Header labels
+        headers = [
+            self.model.headerData(c, Qt.Horizontal)
+            for c in range(c0, c1 + 1)
+        ]
+        lines = ['\t'.join(headers)]
+
+        for r in range(r0, r1 + 1):
+            row_data = []
+            for c in range(c0, c1 + 1):
+                idx = self.model.index(r, c)
+                text = idx.data() or ""
+                row_data.append(text)
+            lines.append('\t'.join(row_data))
+        QApplication.clipboard().setText('\n'.join(lines))
+
+    def clear_plot(self):
+        """Clears the plot and the data table."""
+        self.web_view.setHtml("")
+        self.model.removeRows(0, self.model.rowCount())
+        # Also reset the headers to a default state
+        self.model.setHorizontalHeaderLabels(["Time [s]", "Data Value"])
+
+
 class MSUPSmartSolverGUI(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3648,10 +4112,6 @@ class MSUPSmartSolverGUI(QWidget):
 
         # Track whether the Plot(Modal Coordinates) tab is currently maximized
         self.modal_plot_window = None
-
-        # Create a keyboard shortcut for "M"
-        self.shortcut_m = QShortcut(QKeySequence("M"), self)
-        self.shortcut_m.activated.connect(self.toggle_modal_coord_fullscreen_plot)
 
         # Set up a single logger instance
         self.logger = Logger(self.console_textbox)
@@ -4898,617 +5358,8 @@ class MSUPSmartSolverGUI(QWidget):
     # endregion
 
     # region Handle keyboard-based UI functionality
-    def toggle_modal_coord_fullscreen_plot(self):
-        # Only act if the current output tab is the Plot (Modal Coordinates) tab.
-        if self.show_output_tab_widget.currentWidget() != self.plot_modal_coords_tab:
-            return
-
-        if self.modal_plot_window is None:
-            # Create a new composite widget.
-            composite_widget = ModalCoordCompositeWidget()
-            # Use stored data from the original Plotly widget to update both plots.
-            if (self.plot_modal_coords_tab.last_time_values is not None and
-                    self.plot_modal_coords_tab.last_modal_coord is not None):
-                composite_widget.update_time_plot(self.plot_modal_coords_tab.last_time_values,
-                                                  self.plot_modal_coords_tab.last_modal_coord)
-                composite_widget.update_bar_plot(self.plot_modal_coords_tab.last_modal_coord)
-            # Create and show the modal window with the composite widget.
-            self.modal_plot_window = ModalCoordPlotWindow(composite_widget, parent=self.window())
-            self.modal_plot_window.show()
-        else:
-            self.modal_plot_window.close()
-            self.modal_plot_window = None
+    # Nothing here yet
     # endregion
-
-
-class HotspotDialog(QDialog):
-    # Signal to be emitted when a node is selected from the table
-    # It will carry the integer Node ID.
-    node_selected = pyqtSignal(int)
-
-    def __init__(self, hotspot_df, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Hotspot Analysis Results")
-        self.setMinimumSize(300, 300)
-
-        self.table_view = QTableView()
-        self.model = QStandardItemModel(self)
-        self.table_view.setModel(self.model)
-
-        # Make the table non-editable and select whole rows at a time
-        self.table_view.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table_view.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table_view.setSelectionMode(QAbstractItemView.SingleSelection)
-
-        # Populate the table with the data
-        self.populate_table(hotspot_df)
-
-        # When a row is clicked, trigger our handler
-        self.table_view.clicked.connect(self.on_row_clicked)
-
-        layout = QVBoxLayout()
-        layout.addWidget(QLabel("Click a row to navigate to the node in the Display tab."))
-        layout.addWidget(self.table_view)
-        self.setLayout(layout)
-
-    def populate_table(self, df):
-        """Populates the table, formatting floats to 4 decimal places."""
-        self.model.setHorizontalHeaderLabels(df.columns)
-
-        for index, row in df.iterrows():
-            items = []
-            for col_name, val in row.items():
-                # Keep Rank and NodeID as integers
-                if col_name in ['Rank', 'NodeID']:
-                    items.append(QStandardItem(str(int(float(val)))))
-                # Format all other columns as floats with 4 decimal places
-                else:
-                    items.append(QStandardItem(f"{val:.4f}"))
-            self.model.appendRow(items)
-
-        self.table_view.resizeColumnsToContents()
-
-    def on_row_clicked(self, index):
-        # Get the row of the clicked cell
-        row = index.row()
-        # Assume 'NodeID' is the second column (index 1)
-        node_id_item = self.model.item(row, 1)
-        if node_id_item:
-            node_id = int(float(node_id_item.text()))
-            # Emit the signal with the node ID
-            self.node_selected.emit(node_id)
-
-
-class MatplotlibWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        # Attributes for interactivity
-        self.ax = None
-        self.annot = None
-        self.plotted_lines = []
-
-        # Matplotlib canvas on the left
-        self.figure = plt.Figure(tight_layout=True) #tight layout for better spacing
-        self.canvas = FigureCanvas(self.figure)
-        # make it expand/shrink with the window
-        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.canvas.updateGeometry()
-
-        # Add the Navigation Toolbar
-        self.toolbar = NavigationToolbar(self.canvas, self)
-
-        # Data table on the right
-        self.table = QTableView(self)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
-        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-
-        self.model = QStandardItemModel(self)
-        self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
-        self.table.setModel(self.model)
-
-        # Ctrl+C to copy the selected block
-        copy_sc = QShortcut(QKeySequence.Copy, self.table)
-        copy_sc.activated.connect(self.copy_selection)
-
-        # Split view
-        self.splitter = QSplitter(Qt.Horizontal, self)
-
-        # Create a container for plot and toolbar
-        plot_container = QWidget()
-        plot_layout = QVBoxLayout(plot_container)
-        plot_layout.setContentsMargins(0, 0, 0, 0)
-        plot_layout.addWidget(self.toolbar)
-        plot_layout.addWidget(self.canvas)
-
-        self.splitter.addWidget(plot_container)
-        self.splitter.addWidget(self.table)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.splitter)
-        self.setLayout(layout)
-
-        # Connect a hover event
-        self.canvas.mpl_connect("motion_notify_event", self.hover)
-
-    def showEvent(self, event):
-        """
-        This event is called when the widget is shown.
-        """
-        # First, run the default event processing
-        super().showEvent(event)
-
-        # Schedule the splitter adjustment to run after this event is processed.
-        # This ensures the widget has its final geometry.
-        QTimer.singleShot(50, self.adjust_splitter_size)
-
-    def adjust_splitter_size(self):
-        """
-        Calculates the ideal width for the table, including the vertical scrollbar,
-        and resizes the splitter.
-        """
-        header = self.table.horizontalHeader()
-
-        # Temporarily set the resize mode to calculate the ideal content width
-        # Note: For PyQt6/PySide6, use QHeaderView.ResizeMode.ResizeToContents
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)
-
-        #
-        # --- THE KEY FIX IS HERE ---
-        #
-        # 1. Check if a vertical scrollbar is visible and get its width.
-        v_scrollbar = self.table.verticalScrollBar()
-        scrollbar_width = v_scrollbar.width() if v_scrollbar.isVisible() else 0
-
-        # 2. Calculate the required width, now including the scrollbar.
-        required_width = (header.length() +
-                          self.table.verticalHeader().width() +
-                          self.table.frameWidth() * 2 +
-                          scrollbar_width)
-
-        # Restore interactive resizing so the user can adjust columns manually
-        # Note: For PyQt6/PySide6, use QHeaderView.ResizeMode.Interactive
-        header.setSectionResizeMode(QHeaderView.Interactive)
-
-        # Now, adjust the splitter with the corrected width
-        total_width = self.splitter.width()
-        plot_width = total_width - required_width
-
-        # Enforce a minimum width for the plot for usability
-        if plot_width < 450:
-            plot_width = 450
-
-        # Recalculate table width in case the plot width was clipped
-        new_table_width = total_width - plot_width
-
-        self.splitter.setSizes([int(plot_width), int(new_table_width)])
-
-    def hover(self, event):
-        """Show an annotation when hovering over a data point."""
-        # Check if the event is valid and within the axes
-        if not event.inaxes or self.ax is None or self.annot is None:
-            return
-
-        visible = self.annot.get_visible()
-
-        # Check all plotted lines
-        for line in self.plotted_lines:
-            cont, ind = line.contains(event)
-            if cont:
-                # Get the data coordinates of the hovered point
-                pos = line.get_xydata()[ind["ind"][0]]
-                x_coord, y_coord = pos[0], pos[1]
-
-                # Update annotation text and position
-                self.annot.xy = (x_coord, y_coord)
-                self.annot.set_text(f"Time: {x_coord:.4f}\nValue: {y_coord:.4f}")
-
-                # Set annotation visibility and draw
-                if not visible:
-                    self.annot.set_visible(True)
-                    self.canvas.draw_idle()
-                return  # Stop after finding the first point
-
-        # If the mouse is not over any point, hide the annotation
-        if visible:
-            self.annot.set_visible(False)
-            self.canvas.draw_idle()
-
-    def update_plot(self, x, y, node_id=None,
-                    is_max_principal_stress=False,
-                    is_min_principal_stress=False,
-                    is_von_mises=False,
-                    is_deformation=False,
-                    is_velocity=False,
-                    is_acceleration=False):
-        # Clear the figure
-        self.figure.clear()
-        ax = self.figure.add_subplot(1, 1, 1)
-
-        # --- Define plot styles ---
-        styles = {
-            'Magnitude': {'color': 'black', 'linestyle': '-', 'linewidth': 2},
-            'X': {'color': 'red', 'linestyle': '--', 'linewidth': 1},
-            'Y': {'color': 'green', 'linestyle': '--', 'linewidth': 1},
-            'Z': {'color': 'blue', 'linestyle': '--', 'linewidth': 1},
-        }
-
-        self.model.clear()
-        textstr = ""
-
-        # Check if y is a dictionary for multi-component data
-        if isinstance(y, dict):
-            # This is multi-component data (Deformation, Velocity, etc.)
-            if is_velocity:
-                prefix, units = "Velocity", "(mm/s)"
-            elif is_acceleration:
-                prefix, units = "Acceleration", "(mm/s²)"
-            else:  # is_deformation
-                prefix, units = "Deformation", "(mm)"
-
-            ax.set_title(f"{prefix} (Node ID: {node_id})", fontsize=8)
-            ax.set_ylabel(f"{prefix} {units}", fontsize=8)
-
-            self.model.setHorizontalHeaderLabels(
-                ["Time [s]", f"Mag {units}", f"X {units}", f"Y {units}", f"Z {units}"])
-
-            # This loop is now safe because we've confirmed y is a dictionary
-            for component, data in y.items():
-                style = styles.get(component, {})
-                ax.plot(x, data, label=f'{prefix} ({component})', **style)
-
-            for i in range(len(x)):
-                items = [
-                    QStandardItem(f"{x[i]:.5f}"),
-                    QStandardItem(f"{y['Magnitude'][i]:.5f}"),
-                    QStandardItem(f"{y['X'][i]:.5f}"),
-                    QStandardItem(f"{y['Y'][i]:.5f}"),
-                    QStandardItem(f"{y['Z'][i]:.5f}")
-                ]
-                self.model.appendRow(items)
-
-            max_y_value = np.max(y['Magnitude'])
-            time_of_max = x[np.argmax(y['Magnitude'])]
-            textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
-
-        else:
-            # This is single-component data (Stress or a placeholder)
-            self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
-            for xi, yi in zip(x, y):
-                self.model.appendRow([QStandardItem(f"{xi:.5f}"), QStandardItem(f"{yi:.5f}")])
-
-            if is_min_principal_stress:
-                ax.plot(x, y, label=r'$\sigma_3$', color='green')
-                ax.set_title(f"Min Principal Stress (Node ID: {node_id})" if node_id else "Min Principal Stress",
-                             fontsize=8)
-                ax.set_ylabel(r'$\sigma_3$ [MPa]', fontsize=8)
-                min_y_value = np.min(y)
-                time_of_min = x[np.argmin(y)]
-                textstr = f'Min Magnitude: {min_y_value:.4f}\nTime of Min: {time_of_min:.5f} s'
-            else:
-                title = "Stress"
-                label = "Value"
-                color = 'blue'
-                if is_max_principal_stress:
-                    title, label, color = "Max Principal Stress", r'$\sigma_1$', 'red'
-                elif is_von_mises:
-                    title, label, color = "Von Mises Stress", r'$\sigma_{VM}$', 'blue'
-
-                ax.plot(x, y, label=label, color=color)
-                ax.set_title(f"{title} (Node ID: {node_id})" if node_id else title, fontsize=8)
-                ax.set_ylabel(f'{label} [MPa]', fontsize=8)
-
-                if len(y) > 0 and np.any(y):  # Check if y is not empty or all zeros
-                    max_y_value = np.max(y)
-                    time_of_max = x[np.argmax(y)]
-                    textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
-
-        # Common plot styling
-        ax.set_xlabel('Time [seconds]', fontsize=8)
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
-        ax.grid(True, which='both', linestyle='-', linewidth=0.5)
-        ax.minorticks_on()
-        ax.tick_params(axis='both', which='major', labelsize=8)
-
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            ax.legend(handles, labels, fontsize=7)
-
-        if textstr:
-            ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=8,
-                    verticalalignment='top', horizontalalignment='left',
-                    bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2'))
-
-        # Resize table columns to fit the new content
-        self.table.resizeColumnsToContents()
-        self.canvas.draw()
-
-        QTimer.singleShot(0, self.adjust_splitter_size)
-
-    def copy_selection(self):
-        """Copy the selected rectangular block of cells as TSV to the clipboard."""
-        sel = self.table.selectedIndexes()
-        if not sel:
-            return
-
-        rows = sorted(idx.row() for idx in sel)
-        cols = sorted(idx.column() for idx in sel)
-        r0, r1 = rows[0], rows[-1]
-        c0, c1 = cols[0], cols[-1]
-
-        lines = []
-
-        # 1) Header labels
-        headers = [
-            self.model.headerData(c, Qt.Horizontal)
-            for c in range(c0, c1 + 1)
-        ]
-        lines = ['\t'.join(headers)]
-
-        for r in range(r0, r1 + 1):
-            row_data = []
-            for c in range(c0, c1 + 1):
-                text = self.model.index(r, c).data() or ""
-                row_data.append(text)
-            lines.append('\t'.join(row_data))
-
-        QApplication.clipboard().setText('\n'.join(lines))
-
-    def clear_plot(self):
-        """Clears the plot and the data table, and draws an empty placeholder plot."""
-        self.figure.clear()
-        ax = self.figure.add_subplot(1, 1, 1)
-        ax.set_title("Time History (No Data)", fontsize=8)
-        ax.set_xlabel('Time [seconds]', fontsize=8)
-        ax.set_ylabel('Value', fontsize=8)
-        ax.grid(True, which='both', linestyle='-', linewidth=0.5)
-        ax.minorticks_on()
-        ax.tick_params(axis='both', which='major', labelsize=8)
-        self.canvas.draw()
-
-        self.model.removeRows(0, self.model.rowCount())
-        self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
-
-        self.table.resizeColumnsToContents()
-        QTimer.singleShot(0, self.adjust_splitter_size)
-
-class PlotlyWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.web_view = QWebEngineView(self)
-        layout = QVBoxLayout()
-        layout.addWidget(self.web_view)
-        self.setLayout(layout)
-        # Store last used data for refresh
-        self.last_time_values = None
-        self.last_modal_coord = None
-
-    def update_plot(self, time_values, modal_coord):
-        self.last_time_values = time_values
-        self.last_modal_coord = modal_coord
-
-        fig = go.Figure()
-        num_modes = modal_coord.shape[0]
-        for i in range(num_modes):
-            fig.add_trace(go.Scattergl(
-                x=time_values,
-                y=modal_coord[i, :],
-                mode='lines',  # 'markers' or 'lines+markers'
-                name=f'Mode {i + 1}',
-                opacity=0.7
-            ))
-
-        # Adjust layout here
-        fig.update_layout(
-            xaxis_title="Time [s]",
-            yaxis_title="Modal Coordinate Value",
-            template="plotly_white",
-            font=dict(size=7),  # global font size for labels, etc.
-            margin=dict(l=40, r=40, t=10, b=0),  # figure margins
-            legend=dict(
-                font=dict(size=7)
-            )
-        )
-
-        # Wrap the figure in a FigureResampler.
-        # This enables dynamic resampling on zoom events.
-        resampler_fig = FigureResampler(fig, default_n_shown_samples=1000)
-
-        # Generate HTML and display
-        main_win = self.window()
-        main_win.load_fig_to_webview(resampler_fig, self.web_view)
-
-    def clear_plot(self):
-        """Clears the plot and resets stored data."""
-        self.web_view.setHtml("")  # Clear the web view content
-        self.last_time_values = None
-        self.last_modal_coord = None
-
-
-class ModalCoordCompositeWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        # Use a vertical splitter so the user can adjust height between plots.
-        self.splitter = QSplitter(Qt.Vertical)
-
-        # Create two PlotlyWidget instances: one for the time plot and one for the bar plot.
-        self.time_plot_widget = PlotlyWidget()
-        self.bar_plot_widget = PlotlyWidget()
-
-        self.splitter.addWidget(self.time_plot_widget)
-        self.splitter.addWidget(self.bar_plot_widget)
-        # Set initial stretch factors (adjust as needed)
-        self.splitter.setStretchFactor(0, 3)  # Top widget gets more space
-        self.splitter.setStretchFactor(1, 1)  # Bottom widget gets less
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.splitter)
-        self.setLayout(layout)
-
-    def update_time_plot(self, time_values, modal_coord):
-        self.time_plot_widget.update_plot(time_values, modal_coord)
-
-    def update_bar_plot(self, modal_coord):
-        """
-        Computes the RMS of each mode (row of modal_coord) and creates a bar plot.
-        Each bar is its own trace so that a legend entry appears.
-        """
-        # Compute RMS values along the time axis (axis=1)
-        rms = np.sqrt(np.mean(modal_coord ** 2, axis=1))
-        num_modes = rms.shape[0]
-        # Create mode labels
-        x_labels = [f"Mode {i + 1}" for i in range(num_modes)]
-
-        # Create a new bar plot figure.
-        fig = go.Figure()
-        for i in range(num_modes):
-            # Each mode is a separate trace.
-            fig.add_trace(go.Bar(
-                x=[x_labels[i]],
-                y=[rms[i]],
-                name=f"Mode {i + 1}",
-                opacity=0.7
-            ))
-        # Update layout without fixed width/height.
-        fig.update_layout(
-            xaxis_title="Mode",
-            yaxis_title="RMS Value",
-            template="plotly_white",
-            font=dict(size=7),
-            margin=dict(l=40, r=40, t=10, b=40),
-            showlegend=True
-        )
-        main_win = self.window()
-        main_win.load_fig_to_webview(fig, self.bar_plot_widget.web_view)
-
-
-class ModalCoordPlotWindow(QMainWindow):
-    def __init__(self, composite_widget, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Modal Coordinates Plot")
-        self.setContentsMargins(0, 0, 0, 0)
-        self.setCentralWidget(composite_widget)
-        self.showMaximized()
-        # Shortcut "M" inside the modal window to close it.
-        self.shortcut_m = QShortcut(QKeySequence("M"), self)
-        self.shortcut_m.activated.connect(self.close)
-
-    def closeEvent(self, event):
-        # When closed, simply accept the event.
-        event.accept()
-
-
-class PlotlyMaxWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        # --- left: Plotly web view ---
-        self.web_view = QWebEngineView(self)
-
-        # --- right: Data table ---
-        self.table = QTableView(self)
-        # Allow rectangular selection, multi‑select with Shift/Ctrl
-        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
-        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-
-        # Model with 3 columns
-        self.model = QStandardItemModel(self)
-        self.model.setHorizontalHeaderLabels(["Time [s]", "Data Value"])
-        self.table.setModel(self.model)
-
-        # Ctrl+C shortcut bound to copy_selection()
-        copy_sc = QShortcut(QKeySequence.Copy, self.table)
-        copy_sc.activated.connect(self.copy_selection)
-
-        # Splitter to hold plot + table
-        splitter = QSplitter(Qt.Horizontal, self)
-        splitter.addWidget(self.web_view)
-        splitter.addWidget(self.table)
-        splitter.setStretchFactor(0, 90)  # plot ~90%
-        splitter.setStretchFactor(1, 10)  # table ~10%
-
-        lay = QVBoxLayout(self)
-        lay.addWidget(splitter)
-        self.setLayout(lay)
-
-    def update_plot(self, time_values, traces=None):
-        """
-        Dynamically plots multiple data traces and populates a table.
-        - traces: A list of dictionaries, e.g., [{'name': 'Von Mises (MPa)', 'data': np.array([...])}]
-        """
-        if traces is None:
-            traces = []
-
-        # 1) Build figure by iterating through the provided traces
-        fig = go.Figure()
-        for trace_info in traces:
-            fig.add_trace(go.Scattergl(x=time_values, y=trace_info['data'], mode='lines', name=trace_info['name']))
-
-        fig.update_layout(
-            xaxis_title="Time [s]",
-            yaxis_title="Value",  # Generic Y-axis title
-            template="plotly_white",
-            font=dict(size=7),
-            margin=dict(l=40, r=40, t=10, b=0),
-            legend=dict(font=dict(size=7))
-        )
-
-        # 2) Wrap in resampler
-        resfig = FigureResampler(fig, default_n_shown_samples=50000)
-
-        # Show the plot
-        main_win = self.window()
-        main_win.load_fig_to_webview(resfig, self.web_view)
-
-        # 3) Dynamically populate the table
-        headers = ["Time [s]"] + [trace['name'] for trace in traces]
-        self.model.setHorizontalHeaderLabels(headers)
-        self.model.removeRows(0, self.model.rowCount())
-
-        for i, t in enumerate(time_values):
-            # Start each row with the time value
-            row_items = [QStandardItem(f"{t:.5f}")]
-            # Add the data from each trace for the current time step
-            for trace in traces:
-                row_items.append(QStandardItem(f"{trace['data'][i]:.6f}"))
-            self.model.appendRow(row_items)
-
-    def copy_selection(self):
-        """Copy the currently selected block of cells to the clipboard as TSV."""
-        sel = self.table.selectedIndexes()
-        if not sel:
-            return
-        # determine the extents of the selection
-        rows = sorted(idx.row() for idx in sel)
-        cols = sorted(idx.column() for idx in sel)
-        r0, r1 = rows[0], rows[-1]
-        c0, c1 = cols[0], cols[-1]
-
-        lines = []
-
-        # 1) Header labels
-        headers = [
-            self.model.headerData(c, Qt.Horizontal)
-            for c in range(c0, c1 + 1)
-        ]
-        lines = ['\t'.join(headers)]
-
-        for r in range(r0, r1 + 1):
-            row_data = []
-            for c in range(c0, c1 + 1):
-                idx = self.model.index(r, c)
-                text = idx.data() or ""
-                row_data.append(text)
-            lines.append('\t'.join(row_data))
-        QApplication.clipboard().setText('\n'.join(lines))
-
-    def clear_plot(self):
-        """Clears the plot and the data table."""
-        self.web_view.setHtml("")
-        self.model.removeRows(0, self.model.rowCount())
-        # Also reset the headers to a default state
-        self.model.setHorizontalHeaderLabels(["Time [s]", "Data Value"])
 
 
 class MainWindow(QMainWindow):
@@ -5517,7 +5368,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.96.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.96.2')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
@@ -5921,6 +5772,23 @@ class AdvancedSettingsDialog(QDialog):
         }
 # endregion
 
+# region Run the main GUI
+if __name__ == '__main__':
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)  # Enable high DPI scaling
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)  # Use high DPI icons and images
+    app = QApplication(sys.argv)
+    app.setStyleSheet("""
+        QLabel, QComboBox, QSpinBox, QDoubleSpinBox, QPushButton, QCheckBox, QTextEdit, QLineEdit {
+            font-size: 8pt;
+        }
+    """)
+
+    # Create the main window and show it
+    main_window = MainWindow()
+    main_window.showMaximized()
+
+    sys.exit(app.exec_())
+# endregion
 # region Run the main GUI
 if __name__ == '__main__':
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)  # Enable high DPI scaling
