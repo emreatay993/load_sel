@@ -244,7 +244,7 @@ class MSUPSmartSolverTransient(QObject):
         if self.modal_deformations_ux is None:
             return None  # No deformations data available
 
-        # Compute displacements (you can adjust the math if you have a different formulation)
+        # Compute displacements
         actual_ux = torch.matmul(self.modal_deformations_ux[start_idx:end_idx, :], self.modal_coord)
         actual_uy = torch.matmul(self.modal_deformations_uy[start_idx:end_idx, :], self.modal_coord)
         actual_uz = torch.matmul(self.modal_deformations_uz[start_idx:end_idx, :], self.modal_coord)
@@ -578,17 +578,17 @@ class MSUPSmartSolverTransient(QObject):
         # After the loops have finished, return the three complete 2D arrays of results.
         return s1_out, s2_out, s3_out
 
-    def process_results(self,
-                        time_values,
-                        df_node_ids,
-                        node_coords,
-                        calculate_damage=False,
-                        calculate_von_mises=False,
-                        calculate_max_principal_stress=False,
-                        calculate_min_principal_stress=False,
-                        calculate_deformation=False,
-                        calculate_velocity=False,
-                        calculate_acceleration=False):
+    def process_results_in_batch(self,
+                                 time_values,
+                                 df_node_ids,
+                                 node_coords,
+                                 calculate_damage=False,
+                                 calculate_von_mises=False,
+                                 calculate_max_principal_stress=False,
+                                 calculate_min_principal_stress=False,
+                                 calculate_deformation=False,
+                                 calculate_velocity=False,
+                                 calculate_acceleration=False):
         """Process stress results in batch to compute user requested outputs and their max/min values over time."""
         # region Memory Details
         my_virtual_memory = psutil.virtual_memory()

@@ -1790,7 +1790,7 @@ class MSUPSmartSolverGUI(QWidget):
 
             # Run the process_results method
             start_time = time.time()
-            self.solver.process_results(
+            self.solver.process_results_in_batch(
                 time_values,
                 df_node_ids,
                 node_coords,
@@ -2188,6 +2188,10 @@ class MSUPSmartSolverGUI(QWidget):
             actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = temp_solver.compute_normal_stresses(0,
                                                                                                                       num_nodes)
 
+            mesh = pv.PolyData(display_coords)
+            if df_node_ids is not None:
+                mesh["NodeID"] = df_node_ids.astype(int)
+
             scalar_field, display_name = None, "Result"
             if options['compute_von_mises']:
                 scalar_field = temp_solver.compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy,
@@ -2216,30 +2220,32 @@ class MSUPSmartSolverGUI(QWidget):
                     QMessageBox.warning(self, "Missing Data", "Modal deformations must be loaded for this calculation.")
                     return
                 ux_blk, uy_blk, uz_blk = temp_solver.compute_deformations(0, num_nodes)
-                vel_blk, acc_blk, _, _, _, _, _, _ = temp_solver._vel_acc_from_disp(ux_blk, uy_blk, uz_blk,
+                vel_mag, acc_mag, vel_x, vel_y, vel_z, acc_x, acc_y, acc_z = temp_solver._vel_acc_from_disp(ux_blk, uy_blk, uz_blk,
                                                                                     dt_window.astype(
                                                                                         temp_solver.NP_DTYPE))
 
                 if options['compute_velocity']:
-                    scalar_field = vel_blk[:, [centre_offset]]
+                    scalar_field = vel_mag[:, [centre_offset]]
                     display_name = "Velocity (mm/s)"
+
+                    # Add individual velocity components to the mesh for later extraction.
+                    mesh["vel_x"] = vel_x[:, [centre_offset]]
+                    mesh["vel_y"] = vel_y[:, [centre_offset]]
+                    mesh["vel_z"] = vel_z[:, [centre_offset]]
+
                 else:  # Acceleration
-                    scalar_field = acc_blk[:, [centre_offset]]
+                    scalar_field = acc_mag[:, [centre_offset]]
                     display_name = "Acceleration (mm/s²)"
 
             if scalar_field is None:
                 print("No valid output was calculated.")
                 return
 
-            # --- Finalize and Emit ---
-            mesh = pv.PolyData(display_coords)
-            if df_node_ids is not None:
-                mesh["NodeID"] = df_node_ids.astype(int)
+            # Finalize and Emit
             mesh[display_name] = scalar_field
             mesh.set_active_scalars(display_name)
 
             data_min, data_max = np.min(scalar_field), np.max(scalar_field)
-
             self.time_point_result_ready.emit(mesh, display_name, data_min, data_max)
 
         except Exception as e:
@@ -2470,7 +2476,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.97.0')
+        self.setWindowTitle('MSUP Smart Solver - v0.97.1')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar

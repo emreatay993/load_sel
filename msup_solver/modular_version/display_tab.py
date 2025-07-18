@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QComboBox, QDialog,
 
 # ---- Local Imports ----
 from solver_engine import MSUPSmartSolverTransient, NP_DTYPE
-
+from fea_utilities import generate_apdl_ic
 
 # region Module Classes
 class DisplayTab(QWidget):
@@ -164,12 +164,18 @@ class DisplayTab(QWidget):
         self.save_time_button = QPushButton("Save Time Point as CSV")
         self.save_time_button.clicked.connect(self.save_time_point_results)
 
+        self.extract_ic_button = QPushButton("Export Velocity as Initial Condition in APDL")
+        self.extract_ic_button.setStyleSheet(button_style)
+        self.extract_ic_button.clicked.connect(self.extract_initial_conditions)
+        self.extract_ic_button.setVisible(False)  # Hidden by default
+
         # Put the new widgets in a horizontal layout
         self.time_point_layout = QHBoxLayout()
         self.time_point_layout.addWidget(self.selected_time_label)
         self.time_point_layout.addWidget(self.time_point_spinbox)
         self.time_point_layout.addWidget(self.update_time_button)
         self.time_point_layout.addWidget(self.save_time_button)
+        self.time_point_layout.addWidget(self.extract_ic_button)
         self.time_point_layout.addStretch()
 
         self.time_point_group = QGroupBox("Initialization && Time Point Controls")
@@ -504,6 +510,47 @@ class DisplayTab(QWidget):
         # 4. Emit the signal with the request
         print(f"DisplayTab: Requesting update for time {selected_time} with options: {options}")
         self.time_point_update_requested.emit(selected_time, options)
+
+    def extract_initial_conditions(self):
+        """
+        Extracts velocity data from the current mesh, generates an APDL
+        script for initial conditions, and prompts the user to save it.
+        """
+        if self.current_mesh is None:
+            QMessageBox.warning(self, "No Data", "No visualization data available to extract.")
+            return
+
+        required_arrays = ['NodeID', 'vel_x', 'vel_y', 'vel_z']
+        if not all(arr in self.current_mesh.array_names for arr in required_arrays):
+            QMessageBox.warning(self, "Incomplete Data",
+                                "The current visualization does not contain the required velocity components (vel_x, vel_y, vel_z). "
+                                "Please re-run the time point update for Velocity to generate this data.")
+            return
+
+        try:
+            node_ids = self.current_mesh['NodeID']
+            vel_x = self.current_mesh['vel_x']
+            vel_y = self.current_mesh['vel_y']
+            vel_z = self.current_mesh['vel_z']
+        except Exception as e:
+            QMessageBox.critical(self, "Data Extraction Error", f"Failed to get velocity data from the mesh: {e}")
+            return
+
+        apdl_script_content = generate_apdl_ic(node_ids, vel_x, vel_y, vel_z)
+
+        default_filename = "initial_conditions.inp"
+        file_name, _ = QFileDialog.getSaveFileName(self, "Save APDL Initial Conditions", default_filename,
+                                                   "APDL Input Files (*.inp);;All Files (*)")
+
+        if not file_name:
+            return
+
+        try:
+            with open(file_name, 'w') as f:
+                f.write(apdl_script_content)
+            QMessageBox.information(self, "Save Successful", f"APDL initial conditions saved successfully to:\n{file_name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"An error occurred while saving the file: {e}")
 
     def start_animation(self):
         """Gathers animation parameters and requests a precomputation via a signal."""
@@ -1939,112 +1986,16 @@ class DisplayTab(QWidget):
             # The user clicked on empty space or the pick was otherwise invalid.
             print("Picking cancelled or missed the mesh.")
 
-    @pyqtSlot(float, dict)
-    def perform_time_point_calculation(self, selected_time, options):
-        """Receives a request, performs a single time-point calc, and emits the result."""
-        print("Control Panel: Received request to perform calculation.")
-
-        # --- This is the calculation logic moved from DisplayTab ---
-        if not (self.coord_loaded and self.stress_loaded):
-            return  # Should not happen if UI is correct, but safe check
-
-        num_outputs_selected = sum([
-            options['compute_von_mises'], options['compute_max_principal'],
-            options['compute_min_principal'], options['compute_deformation_contour'],
-            options['compute_velocity'], options['compute_acceleration']
-        ])
-        if num_outputs_selected > 1:
-            QMessageBox.warning(self, "Multiple Outputs Selected",
-                                "Please select only one output type for time point visualization.")
-            return
-        if num_outputs_selected == 0:
-            QMessageBox.warning(self, "No Selection", "No valid output is selected. Please select a valid output type.")
-            return
-
-        time_index = np.argmin(np.abs(time_values - selected_time))
-        mode_slice = slice(options['skip_n_modes'], None)
-
-        modal_deformations_filtered = None
-        if options['display_deformed_shape'] and self.deformation_loaded:
-            modal_deformations_filtered = (modal_ux[:, mode_slice], modal_uy[:, mode_slice], modal_uz[:, mode_slice])
-
-        is_vel_or_accel = options['compute_velocity'] or options['compute_acceleration']
-        if is_vel_or_accel:
-            WINDOW, half = 7, 3
-            idx0, idx1 = max(0, time_index - half), min(modal_coord.shape[1], time_index + half + 1)
-            if idx1 - idx0 < 2:
-                QMessageBox.warning(self, "Too few samples", "Velocity/acceleration need at least two time steps.")
-                return
-            selected_modal_coord = modal_coord[mode_slice, idx0:idx1]
-            dt_window = time_values[idx0:idx1]
-            centre_offset = time_index - idx0
-        else:
-            selected_modal_coord = modal_coord[mode_slice, time_index:time_index + 1]
-            dt_window = time_values[time_index:time_index + 1]
-
-        steady_kwargs = {}
-        if options['include_steady'] and steady_sx is not None:
-            steady_kwargs = {'steady_sx': steady_sx, 'steady_sy': steady_sy, 'steady_sz': steady_sz,
-                             'steady_sxy': steady_sxy, 'steady_syz': steady_syz, 'steady_sxz': steady_sxz,
-                             'steady_node_ids': steady_node_ids}
-
-        temp_solver = MSUPSmartSolverTransient(
-            modal_sx[:, mode_slice], modal_sy[:, mode_slice], modal_sz[:, mode_slice],
-            modal_sxy[:, mode_slice], modal_syz[:, mode_slice], modal_sxz[:, mode_slice],
-            selected_modal_coord, dt_window, modal_node_ids=df_node_ids,
-            modal_deformations=modal_deformations_filtered, **steady_kwargs
-        )
-
-        num_nodes = modal_sx.shape[0]
-        display_coords = node_coords
-
-        if options['display_deformed_shape'] and self.deformation_loaded:
-            ux_tp, uy_tp, uz_tp = temp_solver.compute_deformations(0, num_nodes)
-            if is_vel_or_accel:
-                ux_tp, uy_tp, uz_tp = ux_tp[:, [centre_offset]], uy_tp[:, [centre_offset]], uz_tp[:, [centre_offset]]
-            displacement_vector = np.hstack((ux_tp, uy_tp, uz_tp))
-            display_coords = node_coords + (displacement_vector * options['scale_factor'])
-
-        actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = temp_solver.compute_normal_stresses(0,
-                                                                                                                  num_nodes)
-
-        # Determine scalar field and name based on options
-        field_name, display_name = "", ""
-        if options['compute_von_mises']:
-            scalar_field = temp_solver.compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
-                                                                actual_sxz)
-            field_name, display_name = "SVM", "SVM (MPa)"
-        elif options['compute_max_principal']:
-            s1, _, _ = temp_solver.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
-                                                              actual_sxz)
-            scalar_field = s1
-            field_name, display_name = "S1", "S1 (MPa)"
-        # ... (Add similar elif blocks for min_principal, deformation, velocity, acceleration, copying the logic from your old method)
-        # For brevity, I'll show just one more:
-        elif options['compute_velocity']:
-            if not self.deformation_loaded:
-                QMessageBox.warning(self, "Missing Data", "Modal deformations must be loaded for this calculation.")
-                return
-            ux_blk, uy_blk, uz_blk = temp_solver.compute_deformations(0, num_nodes)
-            vel_blk, _, _, _, _, _, _, _ = temp_solver._vel_acc_from_disp(ux_blk, uy_blk, uz_blk,
-                                                                          dt_window.astype(temp_solver.NP_DTYPE))
-            scalar_field = vel_blk[:, [centre_offset]]
-            field_name, display_name = "Velocity", "Velocity (mm/s)"
-
-        # --- Finalize and Emit ---
-        mesh = pv.PolyData(display_coords)
-        mesh["NodeID"] = df_node_ids.astype(int)
-        mesh[display_name] = scalar_field
-        mesh.set_active_scalars(display_name)
-
-        data_min, data_max = np.min(scalar_field), np.max(scalar_field)
-
-        self.time_point_result_ready.emit(mesh, display_name, data_min, data_max)
-
     @pyqtSlot(object, str, float, float)
     def update_view_with_results(self, mesh, scalar_bar_title, data_min, data_max):
         """Receives a calculated mesh and updates the PyVista view."""
         print("DisplayTab: Received calculated results. Updating view.")
+
+        # Show or hide the APDL export button based on the result type
+        if "Velocity" in scalar_bar_title:
+            self.extract_ic_button.setVisible(True)
+        else:
+            self.extract_ic_button.setVisible(False)
 
         # 1. Update the scalar range spin boxes
         self.scalar_min_spin.blockSignals(True)
