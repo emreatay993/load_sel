@@ -326,6 +326,16 @@ class MatplotlibWidget(QWidget):
         # This ensures the widget has its final geometry.
         QTimer.singleShot(50, self.adjust_splitter_size)
 
+    def resizeEvent(self, event):
+        """
+        Overrides the default resize event to dynamically adjust the splitter position
+        whenever the window containing this widget is resized.
+        """
+        # First, call the parent class's implementation to handle the actual resize.
+        super().resizeEvent(event)
+        # Now, call our custom function to readjust the splitter sizes.
+        self.adjust_splitter_size()
+
     def adjust_splitter_size(self):
         """
         Calculates the ideal width for the table, including the vertical scrollbar,
@@ -400,26 +410,37 @@ class MatplotlibWidget(QWidget):
 
     def on_legend_pick(self, event):
         """
-        Handles clicks on legend items to toggle plot line visibility.
+        Handles clicks on legend items to toggle plot line visibility and
+        dynamically rescale the Y-axis to fit the visible data.
         """
-        # The artist that was picked (e.g., a legend line or text)
         artist = event.artist
-
-        # Check if the picked artist is part of our interactive legend
         if artist in self.legend_map:
-            # Find the original plot line this legend item corresponds to
             original_line = self.legend_map[artist]
-
-            # Toggle the visibility of the plot line
             is_visible = not original_line.get_visible()
             original_line.set_visible(is_visible)
 
-            # Visually update all parts of the corresponding legend entry (line and text)
             for leg_artist, line in self.legend_map.items():
                 if line == original_line:
-                    leg_artist.set_alpha(1.0 if is_visible else 0.2)  # Dim if not visible
+                    leg_artist.set_alpha(1.0 if is_visible else 0.2)
 
-            # Redraw the canvas to apply the changes
+            min_y, max_y = np.inf, -np.inf
+            any_line_visible = False
+            for line in self.plotted_lines:
+                if line.get_visible():
+                    any_line_visible = True
+                    y_data = line.get_ydata()
+                    if len(y_data) > 0:
+                        min_y = min(min_y, np.min(y_data))
+                        max_y = max(max_y, np.max(y_data))
+
+            if any_line_visible and self.ax:
+                if np.isclose(min_y, max_y):
+                    margin = 1.0
+                    self.ax.set_ylim(min_y - margin, max_y + margin)
+                else:
+                    margin = (max_y - min_y) * 0.05
+                    self.ax.set_ylim(min_y - margin, max_y + margin)
+
             self.canvas.draw()
 
     def update_plot(self, x, y, node_id=None,
@@ -429,14 +450,22 @@ class MatplotlibWidget(QWidget):
                     is_deformation=False,
                     is_velocity=False,
                     is_acceleration=False):
-        # Clear the figure
+        """
+        This method is the central plotting function. It clears and redraws the
+        entire plot and table based on the provided data and flags.
+        """
+        # 1. Reset the state: Clear the figure, lists of plotted lines,
+        # and the legend mapping to ensure a clean slate for the new plot.
         self.figure.clear()
         self.plotted_lines.clear()
         self.legend_map.clear()
 
-        ax = self.figure.add_subplot(1, 1, 1)
+        # 2. Get a new axes object for the plot. Storing it in `self.ax` is crucial
+        # so other methods (like on_legend_pick) can access and modify it later.
+        self.ax = self.figure.add_subplot(1, 1, 1)
 
-        # --- Define plot styles ---
+        # 3. Define plotting styles for multi-component data to ensure
+        # consistent colors and line types (e.g., Magnitude is solid, components are dashed).
         styles = {
             'Magnitude': {'color': 'black', 'linestyle': '-', 'linewidth': 2},
             'X': {'color': 'red', 'linestyle': '--', 'linewidth': 1},
@@ -444,12 +473,14 @@ class MatplotlibWidget(QWidget):
             'Z': {'color': 'blue', 'linestyle': '--', 'linewidth': 1},
         }
 
+        # 4. Clear the data model for the table on the right.
         self.model.clear()
-        textstr = ""
+        textstr = ""  # This will hold the text for the max/min value annotation.
 
-        # Check if y is a dictionary for multi-component data
+        # 5. Handle different data structures. If `y` is a dictionary,
+        # it's multi-component data (like Deformation, Velocity, etc.).
         if isinstance(y, dict):
-            # This is multi-component data (Deformation, Velocity, etc.)
+            # Determine plot labels based on the data type.
             if is_velocity:
                 prefix, units = "Velocity", "(mm/s)"
             elif is_acceleration:
@@ -457,17 +488,17 @@ class MatplotlibWidget(QWidget):
             else:  # is_deformation
                 prefix, units = "Deformation", "(mm)"
 
-            ax.set_title(f"{prefix} (Node ID: {node_id})", fontsize=8)
-            ax.set_ylabel(f"{prefix} {units}", fontsize=8)
-
+            # Set plot titles and table headers.
+            self.ax.set_title(f"{prefix} (Node ID: {node_id})", fontsize=8)
+            self.ax.set_ylabel(f"{prefix} {units}", fontsize=8)
             self.model.setHorizontalHeaderLabels(
                 ["Time [s]", f"Mag {units}", f"X {units}", f"Y {units}", f"Z {units}"])
 
-            # This loop is now safe because we've confirmed y is a dictionary
+            # Plot each component (Magnitude, X, Y, Z) and populate the table.
             for component, data in y.items():
                 style = styles.get(component, {})
-                line, = ax.plot(x, data, label=f'{prefix} ({component})', **style)
-                self.plotted_lines.append(line)
+                line, = self.ax.plot(x, data, label=f'{prefix} ({component})', **style)
+                self.plotted_lines.append(line)  # Add line to list for legend interaction.
 
             for i in range(len(x)):
                 items = [
@@ -479,21 +510,22 @@ class MatplotlibWidget(QWidget):
                 ]
                 self.model.appendRow(items)
 
+            # Prepare the annotation text for the maximum magnitude.
             max_y_value = np.max(y['Magnitude'])
             time_of_max = x[np.argmax(y['Magnitude'])]
             textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
 
+        # 6. If `y` is not a dictionary, it's single-component data (like Stress).
         else:
-            # This is single-component data (Stress or a placeholder)
             self.model.setHorizontalHeaderLabels(["Time [s]", "Value"])
             for xi, yi in zip(x, y):
                 self.model.appendRow([QStandardItem(f"{xi:.5f}"), QStandardItem(f"{yi:.5f}")])
 
+            # Handle specific stress types with unique labels and colors.
             if is_min_principal_stress:
-                ax.plot(x, y, label=r'$\sigma_3$', color='green')
-                ax.set_title(f"Min Principal Stress (Node ID: {node_id})" if node_id else "Min Principal Stress",
-                             fontsize=8)
-                ax.set_ylabel(r'$\sigma_3$ [MPa]', fontsize=8)
+                self.ax.plot(x, y, label=r'$\sigma_3$', color='green')
+                self.ax.set_title(f"Min Principal Stress (Node ID: {node_id})" if node_id else "Min Principal Stress", fontsize=8)
+                self.ax.set_ylabel(r'$\sigma_3$ [MPa]', fontsize=8)
                 min_y_value = np.min(y)
                 time_of_min = x[np.argmin(y)]
                 textstr = f'Min Magnitude: {min_y_value:.4f}\nTime of Min: {time_of_min:.5f} s'
@@ -506,46 +538,44 @@ class MatplotlibWidget(QWidget):
                 elif is_von_mises:
                     title, label, color = "Von Mises Stress", r'$\sigma_{VM}$', 'blue'
 
-                ax.plot(x, y, label=label, color=color)
-                ax.set_title(f"{title} (Node ID: {node_id})" if node_id else title, fontsize=8)
-                ax.set_ylabel(f'{label} [MPa]', fontsize=8)
+                self.ax.plot(x, y, label=label, color=color)
+                self.ax.set_title(f"{title} (Node ID: {node_id})" if node_id else title, fontsize=8)
+                self.ax.set_ylabel(f'{label} [MPa]', fontsize=8)
 
-                if len(y) > 0 and np.any(y):  # Check if y is not empty or all zeros
+                if len(y) > 0 and np.any(y):
                     max_y_value = np.max(y)
                     time_of_max = x[np.argmax(y)]
                     textstr = f'Max Magnitude: {max_y_value:.4f}\nTime of Max: {time_of_max:.5f} s'
 
-        # Common plot styling
-        ax.set_xlabel('Time [seconds]', fontsize=8)
-        ax.set_xlim(np.min(x), np.max(x))
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
-        ax.grid(True, which='both', linestyle='-', linewidth=0.5)
-        ax.minorticks_on()
-        ax.tick_params(axis='both', which='major', labelsize=8)
+        # 7. Apply common styling and interactive features to the plot.
+        self.ax.set_xlabel('Time [seconds]', fontsize=8)
+        self.ax.set_xlim(np.min(x), np.max(x))
+        self.ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+        self.ax.grid(True, which='both', linestyle='-', linewidth=0.5)
+        self.ax.minorticks_on()
+        self.ax.tick_params(axis='both', which='major', labelsize=8)
 
-        handles, labels = ax.get_legend_handles_labels()
+        # 8. Create the legend and make its items interactive (pickable).
+        handles, labels = self.ax.get_legend_handles_labels()
         if handles:
-            # Create the legend
-            leg = ax.legend(handles, labels, fontsize=7)
-
-            # Map legend artists to original plot lines and make them pickable
+            leg = self.ax.legend(handles, labels, fontsize=7, loc='upper right')
             for legline, legtext, origline in zip(leg.get_lines(), leg.get_texts(), self.plotted_lines):
-                legline.set_picker(True)  # Enable picking on the legend line
-                legline.set_pickradius(5)  # Set a click-able area
-                self.legend_map[legline] = origline  # Map legend line to plot line
-
+                legline.set_picker(True)
+                legline.set_pickradius(5)
+                self.legend_map[legline] = origline
                 legtext.set_picker(True)
-                self.legend_map[legtext] = origline  # Map legend text to the same plot line
+                self.legend_map[legtext] = origline
 
+        # 9. Add the max/min annotation text to the plot.
         if textstr:
-            ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=8,
+            self.ax.text(0.05, 0.95, textstr, transform=self.ax.transAxes, fontsize=8,
                     verticalalignment='top', horizontalalignment='left',
                     bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.2'))
 
-        # Resize table columns to fit the new content
+        # 10. Finalize UI updates: resize table columns and redraw the canvas.
+        # The splitter adjustment is done on a timer to ensure the widget has its final size first.
         self.table.resizeColumnsToContents()
         self.canvas.draw()
-
         QTimer.singleShot(0, self.adjust_splitter_size)
 
     def copy_selection(self):
@@ -2476,7 +2506,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.97.1')
+        self.setWindowTitle('MSUP Smart Solver - v0.97.2')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
