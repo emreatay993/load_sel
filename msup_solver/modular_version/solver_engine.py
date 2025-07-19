@@ -13,7 +13,6 @@ import torch
 from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtWidgets import QApplication
 
-
 # region Define global variables
 # --- Solver Configuration ---
 RAM_PERCENT = 0.9  # Default RAM allocation percentage based on available memory.
@@ -35,48 +34,6 @@ elif DEFAULT_PRECISION == 'Double':
 os.environ["OPENBLAS_NUM_THREADS"] = str(os.cpu_count())
 # endregion
 
-# region Define engine helper functions
-@njit
-def rainflow_counter(series):
-    n = len(series)
-    cycles = []
-    stack = []
-    for i in range(n):
-        s = series[i]
-        stack.append(s)
-        while len(stack) >= 3:
-            s0, s1, s2 = stack[-3], stack[-2], stack[-1]
-            if (s1 - s0) * (s1 - s2) >= 0:
-                stack.pop(-2)
-            else:
-                break
-        if len(stack) >= 4:
-            s0, s1, s2, s3 = stack[-4], stack[-3], stack[-2], stack[-1]
-            if abs(s1 - s2) <= abs(s0 - s1):
-                cycles.append((abs(s1 - s2), 0.5))
-                stack.pop(-3)
-    # Count residuals
-    for i in range(len(stack) - 1):
-        cycles.append((abs(stack[i] - stack[i + 1]), 0.5))
-    # Convert cycles to ranges and counts
-    ranges = np.array([c[0] for c in cycles])
-    counts = np.array([c[1] for c in cycles])
-    return ranges, counts
-
-
-@njit(parallel=True)
-def compute_potential_damage_for_all_nodes(sigma_vm, A, m):
-    num_nodes = sigma_vm.shape[0]
-    damages = np.zeros(num_nodes, dtype=NP_DTYPE)
-    for i in prange(num_nodes):
-        series = sigma_vm[i, :]
-        ranges, counts = rainflow_counter(series)
-        # Compute damage
-        damage = np.sum(counts / (A / ((ranges + 1e-10) ** m)))
-        damages[i] = damage
-    return damages
-# endregion
-
 class MSUPSmartSolverTransient(QObject):
     progress_signal = pyqtSignal(int)
 
@@ -84,6 +41,22 @@ class MSUPSmartSolverTransient(QObject):
                  steady_sx=None, steady_sy=None, steady_sz=None, steady_sxy=None, steady_syz=None, steady_sxz=None,
                  steady_node_ids=None, modal_node_ids=None, output_directory=None, modal_deformations=None):
         super().__init__()
+
+        # Initializing class attributes used
+        self.total_memory = None
+        self.available_memory = None
+        self.allocated_memory = None
+
+        self.max_over_time_s1 = None
+        self.min_over_time_s3 = None
+        self.max_over_time_svm = None
+        self.max_over_time_def = None
+        self.max_over_time_vel = None
+        self.max_over_time_acc = None
+
+        self.fatigue_A = None
+        self.fatigue_m = None
+
 
         # Use selected output directory or fallback to script location
         self.output_directory = output_directory if output_directory else os.path.dirname(os.path.abspath(__file__))
@@ -143,25 +116,30 @@ class MSUPSmartSolverTransient(QObject):
         # Store time axis once for gradient calcs
         self.time_values = time_values.astype(self.NP_DTYPE)
 
-    def estimate_chunk_size(self, num_nodes, num_time_points, calculate_von_mises, calculate_max_principal_stress,
-                            calculate_damage, calculate_deformation=False,
-                            calculate_velocity=False, calculate_acceleration=False):
+    # region Memory Management
+    def _estimate_chunk_size(self, num_time_points, calculate_von_mises, calculate_max_principal_stress,
+                             calculate_damage, calculate_deformation=False,
+                             calculate_velocity=False, calculate_acceleration=False):
         """Calculate the optimal chunk size for processing based on available memory."""
         available_memory = psutil.virtual_memory().available * self.RAM_PERCENT
-        memory_per_node = self.get_memory_per_node(num_time_points, calculate_von_mises, calculate_max_principal_stress,
-                                                   calculate_damage, calculate_deformation,
-                                                   calculate_velocity, calculate_acceleration)
+        memory_per_node = self._get_memory_per_node(num_time_points,
+                                                    calculate_von_mises,
+                                                    calculate_max_principal_stress,
+                                                    calculate_damage,
+                                                    calculate_deformation,
+                                                    calculate_velocity,
+                                                    calculate_acceleration)
         max_nodes_per_iteration = available_memory // memory_per_node
         return max(1, int(max_nodes_per_iteration))  # Ensure at least one node per chunk
 
-    def estimate_ram_required_per_iteration(self, chunk_size, memory_per_node):
+    def _estimate_ram_required_per_iteration(self, chunk_size, memory_per_node):
         """Estimate the total RAM required per iteration to compute stresses."""
         total_memory = chunk_size * memory_per_node
         return total_memory / (1024 ** 3)  # Convert bytes to GB
 
-    def get_memory_per_node(self, num_time_points, calculate_von_mises, calculate_max_principal_stress,
-                            calculate_damage, calculate_deformation=False,
-                            calculate_velocity=False, calculate_acceleration=False):
+    def _get_memory_per_node(self, num_time_points, calculate_von_mises, calculate_max_principal_stress,
+                             calculate_damage, calculate_deformation=False,
+                             calculate_velocity=False, calculate_acceleration=False):
         num_arrays = 6  # For actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
 
         if calculate_von_mises:
@@ -186,70 +164,9 @@ class MSUPSmartSolverTransient(QObject):
 
         memory_per_node = num_arrays * num_time_points * self.ELEMENT_SIZE
         return memory_per_node
+    # endregion
 
-    def map_steady_state_stresses(self, steady_stress, steady_node_ids, modal_node_ids):
-        """Map steady-state stress data to modal node IDs."""
-        # Create a mapping from steady_node_ids to steady_stress
-        steady_node_dict = dict(zip(steady_node_ids.flatten(), steady_stress.flatten()))
-        # Create an array for mapped steady stress
-        mapped_steady_stress = np.array([steady_node_dict.get(node_id, 0.0) for node_id in modal_node_ids],
-                                        dtype=NP_DTYPE)
-        return mapped_steady_stress
-
-    def compute_normal_stresses(self, start_idx, end_idx):
-        """Compute actual stresses using matrix multiplication."""
-        actual_sx = torch.matmul(self.modal_sx[start_idx:end_idx, :], self.modal_coord)
-        actual_sy = torch.matmul(self.modal_sy[start_idx:end_idx, :], self.modal_coord)
-        actual_sz = torch.matmul(self.modal_sz[start_idx:end_idx, :], self.modal_coord)
-        actual_sxy = torch.matmul(self.modal_sxy[start_idx:end_idx, :], self.modal_coord)
-        actual_syz = torch.matmul(self.modal_syz[start_idx:end_idx, :], self.modal_coord)
-        actual_sxz = torch.matmul(self.modal_sxz[start_idx:end_idx, :], self.modal_coord)
-
-        # Add steady-state stresses if included
-        if self.is_steady_state_included:
-            actual_sx += self.steady_sx[start_idx:end_idx].unsqueeze(1)
-            actual_sy += self.steady_sy[start_idx:end_idx].unsqueeze(1)
-            actual_sz += self.steady_sz[start_idx:end_idx].unsqueeze(1)
-            actual_sxy += self.steady_sxy[start_idx:end_idx].unsqueeze(1)
-            actual_syz += self.steady_syz[start_idx:end_idx].unsqueeze(1)
-            actual_sxz += self.steady_sxz[start_idx:end_idx].unsqueeze(1)
-
-        return actual_sx.cpu().numpy(), actual_sy.cpu().numpy(), actual_sz.cpu().numpy(), actual_sxy.cpu().numpy(), actual_syz.cpu().numpy(), actual_sxz.cpu().numpy()
-
-    def compute_normal_stresses_for_a_single_node(self, selected_node_idx):
-        """Compute actual stresses using matrix multiplication."""
-        actual_sx = torch.matmul(self.modal_sx[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
-        actual_sy = torch.matmul(self.modal_sy[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
-        actual_sz = torch.matmul(self.modal_sz[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
-        actual_sxy = torch.matmul(self.modal_sxy[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
-        actual_syz = torch.matmul(self.modal_syz[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
-        actual_sxz = torch.matmul(self.modal_sxz[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
-
-        # Add steady-state stresses if included
-        if self.is_steady_state_included:
-            actual_sx += self.steady_sx[selected_node_idx].unsqueeze(0)
-            actual_sy += self.steady_sy[selected_node_idx].unsqueeze(0)
-            actual_sz += self.steady_sz[selected_node_idx].unsqueeze(0)
-            actual_sxy += self.steady_sxy[selected_node_idx].unsqueeze(0)
-            actual_syz += self.steady_syz[selected_node_idx].unsqueeze(0)
-            actual_sxz += self.steady_sxz[selected_node_idx].unsqueeze(0)
-
-        return actual_sx.cpu().numpy(), actual_sy.cpu().numpy(), actual_sz.cpu().numpy(), actual_sxy.cpu().numpy(), actual_syz.cpu().numpy(), actual_sxz.cpu().numpy()
-
-    def compute_deformations(self, start_idx, end_idx):
-        """
-        Compute actual nodal displacements (deformations) for all nodes in [start_idx, end_idx].
-        This method multiplies the modal deformation modes with the modal coordinate matrix.
-        """
-        if self.modal_deformations_ux is None:
-            return None  # No deformations data available
-
-        # Compute displacements
-        actual_ux = torch.matmul(self.modal_deformations_ux[start_idx:end_idx, :], self.modal_coord)
-        actual_uy = torch.matmul(self.modal_deformations_uy[start_idx:end_idx, :], self.modal_coord)
-        actual_uz = torch.matmul(self.modal_deformations_uz[start_idx:end_idx, :], self.modal_coord)
-        return (actual_ux.cpu().numpy(), actual_uy.cpu().numpy(), actual_uz.cpu().numpy())
-
+    # region JIT Compiled Kernels (for heavy numerical operations)
     @staticmethod
     @njit(parallel=True)
     def compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz):
@@ -437,6 +354,7 @@ class MSUPSmartSolverTransient(QObject):
         return vel_mag, acc_mag, vel_x, vel_y, vel_z, acc_x, acc_y, acc_z
 
     @staticmethod
+    @njit(parallel=True)
     def compute_signed_von_mises_stress(sigma_vm, actual_sx, actual_sy, actual_sz):
         """
         Compute the signed von Mises stress by assigning a sign to the existing von Mises stress.
@@ -565,9 +483,12 @@ class MSUPSmartSolverTransient(QObject):
                 # This block of code performs a simple sort to ensure that s1 is always the
                 # maximum value, s2 is the middle, and s3 is the minimum. This is the standard
                 # engineering convention.
-                if s1 < s2: s1, s2 = s2, s1
-                if s2 < s3: s2, s3 = s3, s2
-                if s1 < s2: s1, s2 = s2, s1
+                if s1 < s2:
+                    s1, s2 = s2, s1
+                if s2 < s3:
+                    s2, s3 = s3, s2
+                if s1 < s2:
+                    s1, s2 = s2, s1
 
                 # --- Step 6: Store the Final Results ---
                 # Assign the sorted principal stresses to their correct place in our output arrays.
@@ -578,6 +499,289 @@ class MSUPSmartSolverTransient(QObject):
         # After the loops have finished, return the three complete 2D arrays of results.
         return s1_out, s2_out, s3_out
 
+    @staticmethod
+    @njit
+    def rainflow_counter(series):
+        n = len(series)
+        cycles = []
+        stack = []
+        for i in range(n):
+            s = series[i]
+            stack.append(s)
+            while len(stack) >= 3:
+                s0, s1, s2 = stack[-3], stack[-2], stack[-1]
+                if (s1 - s0) * (s1 - s2) >= 0:
+                    stack.pop(-2)
+                else:
+                    break
+            if len(stack) >= 4:
+                s0, s1, s2, s3 = stack[-4], stack[-3], stack[-2], stack[-1]
+                if abs(s1 - s2) <= abs(s0 - s1):
+                    cycles.append((abs(s1 - s2), 0.5))
+                    stack.pop(-3)
+        # Count residuals
+        for i in range(len(stack) - 1):
+            cycles.append((abs(stack[i] - stack[i + 1]), 0.5))
+        # Convert cycles to ranges and counts
+        ranges = np.array([c[0] for c in cycles])
+        counts = np.array([c[1] for c in cycles])
+        return ranges, counts
+
+    @staticmethod
+    @njit(parallel=True)
+    def compute_potential_damage_for_all_nodes(sigma_vm, coeff_A, coeff_m):
+        num_nodes = sigma_vm.shape[0]
+        damages = np.zeros(num_nodes, dtype=NP_DTYPE)
+        for i in prange(num_nodes):
+            series = sigma_vm[i, :]
+            ranges, counts = rainflow_counter(series)
+            # Compute damage
+            damage = np.sum(counts / (coeff_A / ((ranges + 1e-10) ** coeff_m)))
+            damages[i] = damage
+        return damages
+    # endregion
+
+    # region Core Computations (PyTorch/Numpy)
+    @staticmethod
+    def map_steady_state_stresses(steady_stress, steady_node_ids, modal_node_ids):
+        """Map steady-state stress data to modal node IDs."""
+        # Create a mapping from steady_node_ids to steady_stress
+        steady_node_dict = dict(zip(steady_node_ids.flatten(), steady_stress.flatten()))
+        # Create an array for mapped steady stress
+        mapped_steady_stress = np.array([steady_node_dict.get(node_id, 0.0) for node_id in modal_node_ids],
+                                        dtype=NP_DTYPE)
+        return mapped_steady_stress
+
+    def compute_normal_stresses(self, start_idx, end_idx):
+        """Compute actual stresses using matrix multiplication."""
+        actual_sx = torch.matmul(self.modal_sx[start_idx:end_idx, :], self.modal_coord)
+        actual_sy = torch.matmul(self.modal_sy[start_idx:end_idx, :], self.modal_coord)
+        actual_sz = torch.matmul(self.modal_sz[start_idx:end_idx, :], self.modal_coord)
+        actual_sxy = torch.matmul(self.modal_sxy[start_idx:end_idx, :], self.modal_coord)
+        actual_syz = torch.matmul(self.modal_syz[start_idx:end_idx, :], self.modal_coord)
+        actual_sxz = torch.matmul(self.modal_sxz[start_idx:end_idx, :], self.modal_coord)
+
+        # Add steady-state stresses if included
+        if self.is_steady_state_included:
+            actual_sx += self.steady_sx[start_idx:end_idx].unsqueeze(1)
+            actual_sy += self.steady_sy[start_idx:end_idx].unsqueeze(1)
+            actual_sz += self.steady_sz[start_idx:end_idx].unsqueeze(1)
+            actual_sxy += self.steady_sxy[start_idx:end_idx].unsqueeze(1)
+            actual_syz += self.steady_syz[start_idx:end_idx].unsqueeze(1)
+            actual_sxz += self.steady_sxz[start_idx:end_idx].unsqueeze(1)
+
+        return actual_sx.cpu().numpy(), actual_sy.cpu().numpy(), actual_sz.cpu().numpy(), \
+            actual_sxy.cpu().numpy(), actual_syz.cpu().numpy(), actual_sxz.cpu().numpy()
+
+    def compute_normal_stresses_for_a_single_node(self, selected_node_idx):
+        """Compute actual stresses using matrix multiplication."""
+        actual_sx = torch.matmul(self.modal_sx[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+        actual_sy = torch.matmul(self.modal_sy[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+        actual_sz = torch.matmul(self.modal_sz[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+        actual_sxy = torch.matmul(self.modal_sxy[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+        actual_syz = torch.matmul(self.modal_syz[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+        actual_sxz = torch.matmul(self.modal_sxz[selected_node_idx: selected_node_idx + 1, :], self.modal_coord)
+
+        # Add steady-state stresses if included
+        if self.is_steady_state_included:
+            actual_sx += self.steady_sx[selected_node_idx].unsqueeze(0)
+            actual_sy += self.steady_sy[selected_node_idx].unsqueeze(0)
+            actual_sz += self.steady_sz[selected_node_idx].unsqueeze(0)
+            actual_sxy += self.steady_sxy[selected_node_idx].unsqueeze(0)
+            actual_syz += self.steady_syz[selected_node_idx].unsqueeze(0)
+            actual_sxz += self.steady_sxz[selected_node_idx].unsqueeze(0)
+
+        return actual_sx.cpu().numpy(), actual_sy.cpu().numpy(), actual_sz.cpu().numpy(), actual_sxy.cpu().numpy(), actual_syz.cpu().numpy(), actual_sxz.cpu().numpy()
+
+    def compute_deformations(self, start_idx, end_idx):
+        """
+        Compute actual nodal displacements (deformations) for all nodes in [start_idx, end_idx].
+        This method multiplies the modal deformation modes with the modal coordinate matrix.
+        """
+        if self.modal_deformations_ux is None:
+            return None  # No deformations data available
+
+        # Compute displacements
+        actual_ux = torch.matmul(self.modal_deformations_ux[start_idx:end_idx, :], self.modal_coord)
+        actual_uy = torch.matmul(self.modal_deformations_uy[start_idx:end_idx, :], self.modal_coord)
+        actual_uz = torch.matmul(self.modal_deformations_uz[start_idx:end_idx, :], self.modal_coord)
+        return (actual_ux.cpu().numpy(), actual_uy.cpu().numpy(), actual_uz.cpu().numpy())
+    # endregion
+
+    # region Internal Batch Processing Helpers
+    def _setup_calculation_jobs(self, calculate_von_mises, calculate_max_principal_stress,
+                                calculate_min_principal_stress, calculate_deformation,
+                                calculate_velocity, calculate_acceleration, calculate_damage):
+        """
+        Initializes a dictionary of calculation jobs, their memmap files, and result metadata.
+        This centralizes the configuration for all possible calculations.
+        """
+        jobs = {}
+
+        if calculate_von_mises:
+            self.max_over_time_svm = -np.inf * np.ones(self.modal_coord.shape[1], dtype=self.NP_DTYPE)
+            jobs['von_mises'] = {
+                'max_memmap': np.memmap(os.path.join(self.output_directory, 'max_von_mises_stress.dat'),
+                                        dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'time_memmap': np.memmap(os.path.join(self.output_directory, 'time_of_max_von_mises_stress.dat'),
+                                         dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'csv_header_val': "SVM_Max",
+                'csv_header_time': "Time_of_SVM_Max"
+            }
+
+        if calculate_max_principal_stress:
+            self.max_over_time_s1 = -np.inf * np.ones(self.modal_coord.shape[1], dtype=self.NP_DTYPE)
+            jobs['s1_max'] = {
+                'max_memmap': np.memmap(os.path.join(self.output_directory, 'max_s1_stress.dat'),
+                                        dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'time_memmap': np.memmap(os.path.join(self.output_directory, 'time_of_max_s1_stress.dat'),
+                                         dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'csv_header_val': "S1_Max",
+                'csv_header_time': "Time_of_S1_Max"
+            }
+
+        if calculate_min_principal_stress:
+            self.min_over_time_s3 = np.inf * np.ones(self.modal_coord.shape[1], dtype=self.NP_DTYPE)
+            jobs['s3_min'] = {
+                'min_memmap': np.memmap(os.path.join(self.output_directory, 'min_s3_stress.dat'),
+                                        dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'time_memmap': np.memmap(os.path.join(self.output_directory, 'time_of_min_s3_stress.dat'),
+                                         dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'csv_header_val': "S3_Min",
+                'csv_header_time': "Time_of_S3_Min"
+            }
+
+        if calculate_deformation:
+            self.max_over_time_def = -np.inf * np.ones(self.modal_coord.shape[1], dtype=self.NP_DTYPE)
+            jobs['deformation'] = {
+                'max_memmap': np.memmap(os.path.join(self.output_directory, 'max_deformation.dat'),
+                                        dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'time_memmap': np.memmap(os.path.join(self.output_directory, 'time_of_max_deformation.dat'),
+                                         dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'csv_header_val': "DEF_Max",
+                'csv_header_time': "Time_of_DEF_Max"
+            }
+
+        if calculate_velocity:
+            self.max_over_time_vel = -np.inf * np.ones(self.modal_coord.shape[1], dtype=self.NP_DTYPE)
+            jobs['velocity'] = {
+                'max_memmap': np.memmap(os.path.join(self.output_directory, 'max_velocity.dat'),
+                                        dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'time_memmap': np.memmap(os.path.join(self.output_directory, 'time_of_max_velocity.dat'),
+                                         dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'csv_header_val': "VEL_Max",
+                'csv_header_time': "Time_of_VEL_Max"
+            }
+
+        if calculate_acceleration:
+            self.max_over_time_acc = -np.inf * np.ones(self.modal_coord.shape[1], dtype=self.NP_DTYPE)
+            jobs['acceleration'] = {
+                'max_memmap': np.memmap(os.path.join(self.output_directory, 'max_acceleration.dat'),
+                                        dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'time_memmap': np.memmap(os.path.join(self.output_directory, 'time_of_max_acceleration.dat'),
+                                         dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'csv_header_val': "ACC_Max",
+                'csv_header_time': "Time_of_ACC_Max"
+            }
+
+        if calculate_damage:
+            jobs['damage'] = {
+                'damage_memmap': np.memmap(os.path.join(self.output_directory, 'potential_damage_results.dat'),
+                                           dtype=self.RESULT_DTYPE, mode='w+', shape=(self.modal_sx.shape[0],)),
+                'csv_header_val': "Potential Damage (Damage Index)"
+            }
+
+        return jobs
+
+    def _process_stress_chunk(self, jobs, time_values, start_idx, end_idx, actual_sx, actual_sy, actual_sz, actual_sxy,
+                              actual_syz, actual_sxz):
+        """Processes all stress-derived calculations for a given chunk of nodes."""
+        # --- Von Mises Stress Calculation ---
+        if 'von_mises' in jobs or 'damage' in jobs:
+            start_time = time.time()
+            sigma_vm = self.compute_von_mises_stress(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
+                                                     actual_sxz)
+            print(f"Elapsed time for von Mises stresses: {(time.time() - start_time):.3f} seconds")
+
+            if 'von_mises' in jobs:
+                job = jobs['von_mises']
+                self.max_over_time_svm = np.maximum(self.max_over_time_svm, np.max(sigma_vm, axis=0))
+                job['max_memmap'][start_idx:end_idx] = np.max(sigma_vm, axis=1)
+                job['time_memmap'][start_idx:end_idx] = time_values[np.argmax(sigma_vm, axis=1)]
+
+        # --- Principal Stress Calculation ---
+        if 's1_max' in jobs or 's3_min' in jobs:
+            start_time = time.time()
+            s1, _, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
+                                                        actual_sxz)
+            print(f"Elapsed time for principal stresses: {(time.time() - start_time):.3f} seconds")
+
+            if 's1_max' in jobs:
+                job = jobs['s1_max']
+                self.max_over_time_s1 = np.maximum(self.max_over_time_s1, np.max(s1, axis=0))
+                job['max_memmap'][start_idx:end_idx] = np.max(s1, axis=1)
+                job['time_memmap'][start_idx:end_idx] = time_values[np.argmax(s1, axis=1)]
+
+            if 's3_min' in jobs:
+                job = jobs['s3_min']
+                self.min_over_time_s3 = np.minimum(self.min_over_time_s3, np.min(s3, axis=0))
+                job['min_memmap'][start_idx:end_idx] = np.min(s3, axis=1)
+                job['time_memmap'][start_idx:end_idx] = time_values[np.argmin(s3, axis=1)]
+
+        # --- Damage Calculation ---
+        if 'damage' in jobs:
+            start_time = time.time()
+            job = jobs['damage']
+            signed_von_mises = self.compute_signed_von_mises_stress(sigma_vm, actual_sx, actual_sy, actual_sz)
+            # Use fatigue parameters if they have been set; otherwise, fall back to defaults.
+            coeff_A = getattr(self, 'fatigue_A', 1)
+            coeff_m = getattr(self, 'fatigue_m', -3)
+            potential_damages = self.compute_potential_damage_for_all_nodes(signed_von_mises, coeff_A, coeff_m)
+            job['damage_memmap'][start_idx:end_idx] = potential_damages
+            print(f"Elapsed time for damage index calculation: {(time.time() - start_time):.3f} seconds")
+
+    def _process_kinematics_chunk(self, jobs, time_values, start_idx, end_idx):
+        """Processes deformation, velocity, and acceleration for a given chunk."""
+        if self.modal_deformations_ux is None:
+            return
+
+        ux, uy, uz = self.compute_deformations(start_idx, end_idx)
+
+        # --- Deformation ---
+        if 'deformation' in jobs:
+            start_time = time.time()
+            job = jobs['deformation']
+            def_mag = np.sqrt(ux ** 2 + uy ** 2 + uz ** 2)
+            self.max_over_time_def = np.maximum(self.max_over_time_def, np.max(def_mag, axis=0))
+            job['max_memmap'][start_idx:end_idx] = np.max(def_mag, axis=1)
+            job['time_memmap'][start_idx:end_idx] = time_values[np.argmax(def_mag, axis=1)]
+            print(f"Elapsed time for deformation magnitude and time: {(time.time() - start_time):.3f} seconds")
+
+        # --- Velocity & Acceleration ---
+        if 'velocity' in jobs or 'acceleration' in jobs:
+            start_time = time.time()
+            vel_mag, acc_mag, _, _, _, _, _, _ = self._vel_acc_from_disp(ux, uy, uz, self.time_values)
+            print(
+                f"Elapsed time for calculation of velocity/acceleration components: {(time.time() - start_time):.3f} seconds")
+
+            if 'velocity' in jobs:
+                start_time = time.time()
+                job = jobs['velocity']
+                self.max_over_time_vel = np.maximum(self.max_over_time_vel, np.max(vel_mag, axis=0))
+                job['max_memmap'][start_idx:end_idx] = np.max(vel_mag, axis=1)
+                job['time_memmap'][start_idx:end_idx] = time_values[np.argmax(vel_mag, axis=1)]
+                print(f"Elapsed time for velocity magnitude and time: {(time.time() - start_time):.3f} seconds")
+
+            if 'acceleration' in jobs:
+                start_time = time.time()
+                job = jobs['acceleration']
+                self.max_over_time_acc = np.maximum(self.max_over_time_acc, np.max(acc_mag, axis=0))
+                job['max_memmap'][start_idx:end_idx] = np.max(acc_mag, axis=1)
+                job['time_memmap'][start_idx:end_idx] = time_values[np.argmax(acc_mag, axis=1)]
+                print(f"Elapsed time for acceleration magnitude and time: {(time.time() - start_time):.3f} seconds")
+    # endregion
+
+    # region Main Methods
     def process_results_in_batch(self,
                                  time_values,
                                  df_node_ids,
@@ -589,8 +793,15 @@ class MSUPSmartSolverTransient(QObject):
                                  calculate_deformation=False,
                                  calculate_velocity=False,
                                  calculate_acceleration=False):
-        """Process stress results in batch to compute user requested outputs and their max/min values over time."""
-        # region Memory Details
+        """
+        Processes stress and deformation results in batches to manage memory usage.
+        This method coordinates the setup, execution, and finalization of calculations.
+        """
+        # --- 1. Initialization and Memory Estimation ---
+        print("--- Starting Batch Processing ---")
+        num_nodes, _ = self.modal_sx.shape
+        num_time_points = self.modal_coord.shape[1]
+
         my_virtual_memory = psutil.virtual_memory()
         self.total_memory = my_virtual_memory.total / (1024 ** 3)
         self.available_memory = my_virtual_memory.available / (1024 ** 3)
@@ -598,340 +809,69 @@ class MSUPSmartSolverTransient(QObject):
         print(f"Total system RAM: {self.total_memory:.2f} GB")
         print(f"Available system RAM: {self.available_memory:.2f} GB")
         print(f"Allocated system RAM: {self.allocated_memory:.2f} GB")
-        # endregion
 
-        # region Initialization
-        # Initialize tensor size
-        num_nodes, num_modes = self.modal_sx.shape
-        num_time_points = self.modal_coord.shape[1]
-        # endregion
-
-        # region Get the chunk size based on selected options
-        chunk_size = self.estimate_chunk_size(
-            num_nodes, num_time_points,
-            calculate_von_mises, calculate_max_principal_stress, calculate_damage,
-            calculate_deformation, calculate_velocity, calculate_acceleration)
-
-        num_iterations = (num_nodes + chunk_size - 1) // chunk_size
-        print(f"Estimated number of iterations to avoid memory overflow: {num_iterations}")
-
-        memory_per_node = self.get_memory_per_node(
+        chunk_size = self._estimate_chunk_size(
             num_time_points, calculate_von_mises, calculate_max_principal_stress, calculate_damage,
             calculate_deformation, calculate_velocity, calculate_acceleration)
-        memory_required_per_iteration = self.estimate_ram_required_per_iteration(chunk_size, memory_per_node)
+        num_iterations = (num_nodes + chunk_size - 1) // chunk_size
+
+        memory_per_node = self._get_memory_per_node(
+            num_time_points, calculate_von_mises, calculate_max_principal_stress, calculate_damage,
+            calculate_deformation, calculate_velocity, calculate_acceleration)
+        memory_required_per_iteration = self._estimate_ram_required_per_iteration(chunk_size, memory_per_node)
+
+        print(f"Processing {num_nodes} nodes in {num_iterations} iterations (chunk size: {chunk_size}).")
         print(f"Estimated RAM required per iteration: {memory_required_per_iteration:.2f} GB\n")
-        # endregion
 
-        # region Create temporary (memmap) files
-        if calculate_max_principal_stress:
-            # Initialize max over time vector
-            self.max_over_time_s1 = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
+        # --- 2. Setup Calculation Jobs and Memmap Files ---
+        calculation_jobs = self._setup_calculation_jobs(
+            calculate_von_mises, calculate_max_principal_stress, calculate_min_principal_stress,
+            calculate_deformation, calculate_velocity, calculate_acceleration, calculate_damage
+        )
 
-            # Create memmap files for storing the maximum principal stresses per node (s1)
-            s1_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_s1_stress.dat'),
-                                      dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-            s1_max_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_s1_stress.dat'),
-                                           dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
+        is_stress_needed = any(k in calculation_jobs for k in ['von_mises', 's1_max', 's3_min', 'damage'])
+        is_kinematics_needed = any(k in calculation_jobs for k in ['deformation', 'velocity', 'acceleration'])
 
-        if calculate_min_principal_stress:
-            self.min_over_time_s3 = np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
-
-            s3_min_memmap = np.memmap(os.path.join(self.output_directory, 'min_s3_stress.dat'),
-                                      dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-            s3_min_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_min_s3_stress.dat'),
-                                           dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-
-        if calculate_von_mises:
-            # Initialize max over time vector
-            self.max_over_time_svm = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
-
-            # Create memmap files for storing the maximum von Mises stresses per node
-            von_mises_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_von_mises_stress.dat'),
-                                             dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-            von_mises_max_time_memmap = np.memmap(
-                os.path.join(self.output_directory, 'time_of_max_von_mises_stress.dat'),
-                dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-
-        if calculate_deformation:
-            # Initialize max over time vector
-            self.max_over_time_def = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
-
-            # Create memmap files for storing the maximum deformation magnitudes per node
-            def_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_deformation.dat'),
-                                       dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-            def_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_deformation.dat'),
-                                        dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-
-        if calculate_velocity:
-            # Initialize max over time vector
-            self.max_over_time_vel = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
-
-            # Create memmap files for storing the maximum velocity magnitudes per node
-            vel_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_velocity.dat'),
-                                       dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-            vel_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_velocity.dat'),
-                                        dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-
-        if calculate_acceleration:
-            # Initialize max over time vector
-            self.max_over_time_acc = -np.inf * np.ones(num_time_points, dtype=NP_DTYPE)
-
-            # Create memmap files for storing the maximum velocity magnitudes per node
-            acc_max_memmap = np.memmap(os.path.join(self.output_directory, 'max_acceleration.dat'),
-                                       dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-            acc_time_memmap = np.memmap(os.path.join(self.output_directory, 'time_of_max_acceleration.dat'),
-                                        dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-
-        if calculate_damage:
-            potential_damage_memmap = np.memmap(os.path.join(self.output_directory, 'potential_damage_results.dat'),
-                                                dtype=RESULT_DTYPE, mode='w+', shape=(num_nodes,))
-        # endregion
-
-        # region --- MAIN CALCULATION ROUTINE ---
-        for start_idx in range(0, num_nodes, chunk_size):
+        # --- 3. Main Processing Loop ---
+        for i, start_idx in enumerate(range(0, num_nodes, chunk_size)):
             end_idx = min(start_idx + chunk_size, num_nodes)
+            print(f"\n--- Iteration {i + 1}/{num_iterations} (Nodes {start_idx}-{end_idx - 1}) ---")
 
-            # region Calculate normal stresses
+            actual_stresses = None
+            if is_stress_needed:
+                start_time = time.time()
+                actual_stresses = self.compute_normal_stresses(start_idx, end_idx)
+                print(f"Elapsed time for normal stresses: {(time.time() - start_time):.3f} seconds")
+
+            if is_stress_needed:
+                self._process_stress_chunk(calculation_jobs, time_values, start_idx, end_idx, *actual_stresses)
+
+            if is_kinematics_needed:
+                self._process_kinematics_chunk(calculation_jobs, time_values, start_idx, end_idx)
+
+            # --- Memory Management and Progress Update ---
             start_time = time.time()
-            actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz = \
-                self.compute_normal_stresses(start_idx, end_idx)
-            print(f"Elapsed time for normal stresses: {(time.time() - start_time):.3f} seconds")
-            # endregion
-
-            # region Calculate the requested outputs
-            if calculate_von_mises:
-                # Calculate von Mises stresses
-                start_time = time.time()
-                sigma_vm = self.compute_von_mises_stress(actual_sx, actual_sy, actual_sz,
-                                                         actual_sxy, actual_syz, actual_sxz)
-                print(f"Elapsed time for von Mises stresses: {(time.time() - start_time):.3f} seconds")
-
-                # Update max_over_time using the maximum from this chunk (axis=0 for time points)
-                chunk_max = np.max(sigma_vm, axis=0)
-                self.max_over_time_svm = np.maximum(self.max_over_time_svm, chunk_max)
-
-                # Calculate the maximum von Mises stress and its time index for each node
-                start_time = time.time()
-                max_von_mises_stress_per_node = np.max(sigma_vm, axis=1)
-                time_indices = np.argmax(sigma_vm, axis=1)
-                time_of_max_von_mises_stress_per_node = time_values[time_indices]
-                von_mises_max_memmap[start_idx:end_idx] = max_von_mises_stress_per_node
-                von_mises_max_time_memmap[start_idx:end_idx] = time_of_max_von_mises_stress_per_node
-                print(f"Elapsed time for max von Mises stress and time: {(time.time() - start_time):.3f} seconds")
-
-            if calculate_max_principal_stress or calculate_min_principal_stress:
-                # Calculate principal stresses
-                start_time = time.time()
-                s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz,
-                                                             actual_sxy, actual_syz, actual_sxz)
-                print(f"Elapsed time for principal stresses: {(time.time() - start_time):.3f} seconds")
-
-            if calculate_max_principal_stress:
-                # Update global max for s1 (maximum principal stress)
-                chunk_max = np.max(s1, axis=0)
-                self.max_over_time_s1 = np.maximum(self.max_over_time_s1, chunk_max)
-
-                # Calculate the maximum principal stress (s1) and its time index for each node
-                start_time = time.time()
-                max_s1_per_node = np.max(s1, axis=1)
-                time_indices = np.argmax(s1, axis=1)
-                time_of_max_s1_per_node = time_values[time_indices]
-                s1_max_memmap[start_idx:end_idx] = max_s1_per_node
-                s1_max_time_memmap[start_idx:end_idx] = time_of_max_s1_per_node
-                print(f"Elapsed time for max principal stress (s1) and time: {(time.time() - start_time):.3f} seconds")
-
-            if calculate_min_principal_stress:
-                # global minima over time (element-wise)
-                chunk_min = np.min(s3, axis=0)
-                self.min_over_time_s3 = np.minimum(self.min_over_time_s3, chunk_min)
-
-                # per-node minimum & its time index
-                min_s3_per_node = np.min(s3, axis=1)
-                time_indices = np.argmin(s3, axis=1)
-                time_of_min_s3_per_node = time_values[time_indices]
-
-                s3_min_memmap[start_idx:end_idx] = min_s3_per_node
-                s3_min_time_memmap[start_idx:end_idx] = time_of_min_s3_per_node
-
-            if (calculate_velocity or calculate_acceleration or calculate_deformation) and \
-                    self.modal_deformations_ux is not None:
-                ux, uy, uz = self.compute_deformations(start_idx, end_idx)
-
-                # --- ADD THIS NEW IF BLOCK ---
-                if calculate_deformation:
-                    start_time = time.time()
-                    def_mag = np.sqrt(ux ** 2 + uy ** 2 + uz ** 2)
-                    chunk_max = np.max(def_mag, axis=0)
-                    self.max_over_time_def = np.maximum(self.max_over_time_def, chunk_max)
-                    max_def_per_node = np.max(def_mag, axis=1)
-                    time_indices = np.argmax(def_mag, axis=1)
-                    def_max_memmap[start_idx:end_idx] = max_def_per_node
-                    def_time_memmap[start_idx:end_idx] = time_values[time_indices]
-                    print(f"Elapsed time for deformation magnitude and time: {(time.time() - start_time):.3f} seconds")
-
-                if calculate_velocity or calculate_acceleration:
-                    start_time = time.time()
-                    vel_mag, acc_mag, _, _, _, _, _, _ = self._vel_acc_from_disp(ux, uy, uz, self.time_values)
-                    print(f"Elapsed time for calculation of velocity/acceleration components: {(time.time() - start_time):.3f} seconds")
-
-                    if calculate_velocity:
-                        start_time = time.time()
-                        chunk_max = np.max(vel_mag, axis=0)
-                        self.max_over_time_vel = np.maximum(self.max_over_time_vel, chunk_max)
-                        max_vel_per_node = np.max(vel_mag, axis=1)
-                        time_indices = np.argmax(vel_mag, axis=1)
-                        vel_max_memmap[start_idx:end_idx]  = max_vel_per_node
-                        vel_time_memmap[start_idx:end_idx] = time_values[time_indices]
-                        print(f"Elapsed time for velocity magnitude and time: {(time.time() - start_time):.3f} seconds")
-
-                    if calculate_acceleration:
-                        start_time = time.time()
-                        chunk_max = np.max(acc_mag, axis=0)
-                        self.max_over_time_acc = np.maximum(self.max_over_time_acc, chunk_max)
-                        max_acc_per_node = np.max(acc_mag, axis=1)
-                        time_indices = np.argmax(acc_mag, axis=1)
-                        acc_max_memmap[start_idx:end_idx]  = max_acc_per_node
-                        acc_time_memmap[start_idx:end_idx] = time_values[time_indices]
-                        print(f"Elapsed time for acceleration magnitude and time: {(time.time() - start_time):.3f} seconds")
-
-            # Calculate potential damage index for all nodes in the chunk
-            if calculate_damage:
-                start_time = time.time()
-
-                # Compute the signed von Mises stress using the existing von Mises results
-                signed_von_mises = self.compute_signed_von_mises_stress(sigma_vm, actual_sx, actual_sy, actual_sz)
-
-                # Use the signed von Mises stress for damage calculation
-                # Instead of hardcoding, use fatigue parameters if they have been set; otherwise, fall back to defaults.
-                A = self.fatigue_A if hasattr(self, 'fatigue_A') else 1
-                m = self.fatigue_m if hasattr(self, 'fatigue_m') else -3
-                potential_damages = compute_potential_damage_for_all_nodes(signed_von_mises, A, m)
-                potential_damage_memmap[start_idx:end_idx] = potential_damages
-                print(f"Elapsed time for damage index calculation: {(time.time() - start_time):.3f} seconds")
-            # endregion
-
-            # region Free up some memory
-            start_time = time.time()
-            del actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz, actual_sxz
-
-            if calculate_von_mises:
-                del sigma_vm
-            if calculate_max_principal_stress or calculate_min_principal_stress:
-                del s1, s2, s3
-            if calculate_deformation:
-                del def_mag
-            if calculate_velocity:
-                del vel_mag
-            if calculate_acceleration:
-                del acc_mag
-
+            del actual_stresses
             gc.collect()
             print(f"Elapsed time for garbage collection: {(time.time() - start_time):.3f} seconds")
-            current_available_memory = psutil.virtual_memory().available * self.RAM_PERCENT
-            # endregion
 
-            # region Emit progress signal as a percentage of the total iterations
-            current_iteration = (start_idx // chunk_size) + 1
-            progress_percentage = (current_iteration / num_iterations) * 100
+            progress_percentage = ((i + 1) / num_iterations) * 100
             self.progress_signal.emit(int(progress_percentage))
-            QApplication.processEvents()  # Keep UI responsive
+            QApplication.processEvents()
 
-            print(f"Iteration completed for nodes {start_idx} to {end_idx}. "
-                  f"Allocated system RAM: {current_available_memory / (1024 ** 3):.2f} GB\n")
-            # endregion
-        # endregion
+            current_available_memory = psutil.virtual_memory().available
+            print(
+                f"Iteration {i + 1} complete. Available RAM: {current_available_memory / (1024 ** 3):.2f} GB. Progress: {progress_percentage:.1f}%")
 
-        # region Ensure all memmap files are flushed to disk
-        if calculate_von_mises:
-            von_mises_max_memmap.flush()
-            von_mises_max_time_memmap.flush()
-        if calculate_max_principal_stress:
-            s1_max_memmap.flush()
-            s1_max_time_memmap.flush()
-        if calculate_min_principal_stress:
-            s3_min_memmap.flush()
-            s3_min_time_memmap.flush()
-        if calculate_deformation:
-            def_max_memmap.flush()
-            def_time_memmap.flush()
-        if calculate_velocity:
-            vel_max_memmap.flush()
-            vel_time_memmap.flush()
-        if calculate_acceleration:
-            acc_max_memmap.flush()
-            acc_time_memmap.flush()
-        if calculate_damage:
-            potential_damage_memmap.flush()
-        # endregion
-
-        # region Convert the .dat files to .csv
-        if calculate_von_mises:
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "max_von_mises_stress.dat"),
-                                    os.path.join(self.output_directory, "max_von_mises_stress.csv"),
-                                    "SVM_Max")
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "time_of_max_von_mises_stress.dat"),
-                                    os.path.join(self.output_directory, "time_of_max_von_mises_stress.csv"),
-                                    "Time_of_SVM_Max")
-        if calculate_max_principal_stress:
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "max_s1_stress.dat"),
-                                    os.path.join(self.output_directory, "max_s1_stress.csv"),
-                                    "S1_Max")
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "time_of_max_s1_stress.dat"),
-                                    os.path.join(self.output_directory, "time_of_max_s1_stress.csv"),
-                                    "Time_of_S1_Max")
-        if calculate_min_principal_stress:
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "min_s3_stress.dat"),
-                                    os.path.join(self.output_directory, "min_s3_stress.csv"),
-                                    "S3_Min")
-
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "time_of_min_s3_stress.dat"),
-                                    os.path.join(self.output_directory, "time_of_min_s3_stress.csv"),
-                                    "Time_of_S3_Min")
-        if calculate_deformation:
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "max_deformation.dat"),
-                                    os.path.join(self.output_directory, "max_deformation.csv"),
-                                    "DEF_Max")
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "time_of_max_deformation.dat"),
-                                    os.path.join(self.output_directory, "time_of_max_deformation.csv"),
-                                    "Time_of_DEF_Max")
-        if calculate_velocity:
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "max_velocity.dat"),
-                                    os.path.join(self.output_directory, "max_velocity.csv"),
-                                    "VEL_Max")
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "time_of_max_velocity.dat"),
-                                    os.path.join(self.output_directory, "time_of_max_velocity.csv"),
-                                    "Time_of_VEL_Max")
-        if calculate_acceleration:
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "max_acceleration.dat"),
-                                    os.path.join(self.output_directory, "max_acceleration.csv"),
-                                    "ACC_Max")
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "time_of_max_acceleration.dat"),
-                                    os.path.join(self.output_directory, "time_of_max_acceleration.csv"),
-                                    "Time_of_ACC_Max")
-
-        if calculate_damage:
-            self.convert_dat_to_csv(df_node_ids, node_coords, num_nodes,
-                                    os.path.join(self.output_directory, "potential_damage_results.dat"),
-                                    os.path.join(self.output_directory, "potential_damage_results.csv"),
-                                    "Potential Damage (Damage Index)")
-        # endregion
+        # --- 4. Finalization ---
+        print("\n--- Finalizing Results ---")
+        self._finalize_and_convert_results(calculation_jobs, df_node_ids, node_coords)
+        print("--- Batch Processing Finished ---")
 
     def process_results_for_a_single_node(self,
                                           selected_node_idx,
                                           selected_node_id,
-                                          df_node_ids,
+                                          _df_node_ids, # will be used in future for multiple node plots
                                           calculate_von_mises=False,
                                           calculate_max_principal_stress=False,
                                           calculate_min_principal_stress=False,
@@ -969,7 +909,7 @@ class MSUPSmartSolverTransient(QObject):
                 return np.arange(sigma_vm.shape[1]), sigma_vm[0, :]  # time_points, stress_values
 
             if calculate_max_principal_stress or calculate_min_principal_stress:
-                s1, s2, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
+                s1, _, s3 = self.compute_principal_stresses(actual_sx, actual_sy, actual_sz, actual_sxy, actual_syz,
                                                              actual_sxz)
                 if calculate_max_principal_stress:
                     # Compute Principal Stresses for the selected node
@@ -1021,12 +961,14 @@ class MSUPSmartSolverTransient(QObject):
 
         # Return none if no output is requested
         return None, None
+    # endregion
 
-    def convert_dat_to_csv(self, node_ids, node_coords, num_nodes, dat_filename, csv_filename, header):
+    # region File I/O Utilities
+    def _convert_dat_to_csv(self, node_ids, node_coords, dat_filename, csv_filename, header):
         """Converts a .dat file to a .csv file with NodeID and, if available, X,Y,Z coordinates."""
         try:
             # Read the memmap file as a NumPy array
-            data = np.memmap(dat_filename, dtype=RESULT_DTYPE, mode='r', shape=(num_nodes,))
+            data = np.memmap(dat_filename, dtype=RESULT_DTYPE, mode='r', shape=(len(node_ids),))
             # Create a DataFrame for NodeID and the computed stress data
             df_out = pd.DataFrame({
                 'NodeID': node_ids,
@@ -1041,3 +983,41 @@ class MSUPSmartSolverTransient(QObject):
             print(f"Successfully converted {dat_filename} to {csv_filename}.")
         except Exception as e:
             print(f"Error converting {dat_filename} to {csv_filename}: {e}")
+
+    def _finalize_and_convert_results(self, jobs, df_node_ids, node_coords):
+        """Flushes all memmap files and converts them to CSV."""
+        for job_name, job_data in jobs.items():
+            if job_name == 'damage':
+                memmap_file = job_data['damage_memmap']
+                memmap_file.flush()
+                self._convert_dat_to_csv(df_node_ids, node_coords,
+                                         memmap_file.filename,
+                                         memmap_file.filename.replace('.dat', '.csv'),
+                                         job_data['csv_header_val'])
+            elif job_name == 's3_min':
+                min_memmap = job_data['min_memmap']
+                time_memmap = job_data['time_memmap']
+                min_memmap.flush()
+                time_memmap.flush()
+                self._convert_dat_to_csv(df_node_ids, node_coords,
+                                         min_memmap.filename,
+                                         min_memmap.filename.replace('.dat', '.csv'),
+                                         job_data['csv_header_val'])
+                self._convert_dat_to_csv(df_node_ids, node_coords,
+                                         time_memmap.filename,
+                                         time_memmap.filename.replace('.dat', '.csv'),
+                                         job_data['csv_header_time'])
+            else:  # Handles max value cases (s1, svm, def, vel, acc)
+                max_memmap = job_data['max_memmap']
+                time_memmap = job_data['time_memmap']
+                max_memmap.flush()
+                time_memmap.flush()
+                self._convert_dat_to_csv(df_node_ids, node_coords,
+                                         max_memmap.filename,
+                                         max_memmap.filename.replace('.dat', '.csv'),
+                                         job_data['csv_header_val'])
+                self._convert_dat_to_csv(df_node_ids, node_coords,
+                                         time_memmap.filename,
+                                         time_memmap.filename.replace('.dat', '.csv'),
+                                         job_data['csv_header_time'])
+    # endregion
