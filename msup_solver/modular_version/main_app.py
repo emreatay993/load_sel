@@ -11,20 +11,17 @@ print("Importing libraries...")
 
 # ---- Standard Library Imports ----
 import gc
-import io
-import math
+#import io
 import os
 import subprocess
 import sys
+import traceback
 import tempfile
 import time
-import threading
 from datetime import datetime
-from io import StringIO
 
 # ---- Third-Party Imports ----
-# ImageIO and Psutil
-import imageio
+# Psutil
 import psutil
 
 # Matplotlib
@@ -35,9 +32,6 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
-# Numba
-from numba import njit, prange
-
 # NumPy
 import numpy as np
 
@@ -47,7 +41,6 @@ import pandas as pd
 # Plotly
 import plotly.graph_objects as go
 import plotly.io as pio
-import plotly.offline as pyo
 from plotly_resampler import FigureResampler
 
 # PySide/PyQt
@@ -74,12 +67,6 @@ import torch
 # PyVista
 import pyvista as pv
 from pyvistaqt import QtInteractor
-
-# SciPy
-from scipy.signal import butter, detrend, filtfilt
-
-# VTK
-import vtk
 
 # Back-end Modules
 from solver_engine import MSUPSmartSolverTransient
@@ -702,15 +689,63 @@ class PlotlyMaxWidget(QWidget):
         copy_sc.activated.connect(self.copy_selection)
 
         # Splitter to hold plot + table
-        splitter = QSplitter(Qt.Horizontal, self)
-        splitter.addWidget(self.web_view)
-        splitter.addWidget(self.table)
-        splitter.setStretchFactor(0, 90)  # plot ~90%
-        splitter.setStretchFactor(1, 10)  # table ~10%
+        self.splitter = QSplitter(Qt.Horizontal, self)
+        self.splitter.addWidget(self.web_view)
+        self.splitter.addWidget(self.table)
 
         lay = QVBoxLayout(self)
-        lay.addWidget(splitter)
+        lay.addWidget(self.splitter)
         self.setLayout(lay)
+
+    def showEvent(self, event):
+        """
+        Adjusts the splitter when the widget is first shown.
+        """
+        super().showEvent(event)
+        # Use a QTimer to ensure the adjustment happens after the widget has its final geometry
+        QTimer.singleShot(50, self.adjust_splitter_size)
+
+    def resizeEvent(self, event):
+        """
+        Adjusts the splitter whenever the widget is resized.
+        """
+        super().resizeEvent(event)
+        self.adjust_splitter_size()
+
+    def adjust_splitter_size(self):
+        """
+        Calculates the ideal width for the table based on its content and
+        resizes the splitter accordingly. This logic is adapted from your
+        MatplotlibWidget for optimal resizing.
+        """
+        header = self.table.horizontalHeader()
+
+        # Temporarily resize columns to content to calculate the required width
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+
+        # Check if a vertical scrollbar is visible and get its width
+        v_scrollbar = self.table.verticalScrollBar()
+        scrollbar_width = v_scrollbar.width() if v_scrollbar.isVisible() else 0
+
+        # Calculate the total required width for the table
+        required_width = (header.length() +
+                          self.table.verticalHeader().width() +
+                          self.table.frameWidth() * 2 +
+                          scrollbar_width)
+
+        # Restore interactive resizing so the user can adjust columns manually
+        header.setSectionResizeMode(QHeaderView.Interactive)
+
+        # Set the splitter sizes
+        total_width = self.splitter.width()
+        plot_width = total_width - required_width
+
+        # Enforce a minimum width for the plot for usability
+        if plot_width < 450:
+            plot_width = 450
+            required_width = total_width - plot_width
+
+        self.splitter.setSizes([int(plot_width), int(required_width)])
 
     def update_plot(self, time_values, traces=None):
         """
@@ -753,6 +788,10 @@ class PlotlyMaxWidget(QWidget):
             for trace in traces:
                 row_items.append(QStandardItem(f"{trace['data'][i]:.6f}"))
             self.model.appendRow(row_items)
+
+        # Finalize UI updates by resizing table columns and adjusting the splitter
+        self.table.resizeColumnsToContents()
+        QTimer.singleShot(0, self.adjust_splitter_size)
 
     def copy_selection(self):
         """Copy the currently selected block of cells to the clipboard as TSV."""
@@ -825,6 +864,9 @@ class MSUPSmartSolverGUI(QWidget):
         self.plot_dialog = None
 
         self._update_solve_button_state()
+
+        self.plot_min_over_time_tab = PlotlyMaxWidget()
+        self.plot_max_over_time_tab = PlotlyMaxWidget()
 
     def init_ui(self):
         # Set window background color
@@ -1286,7 +1328,7 @@ class MSUPSmartSolverGUI(QWidget):
 
         # Damage index is only available when Von Mises is checked AND Time History is OFF.
         is_enabled = is_von_mises_checked and not is_time_history_checked
-        self.damage_index_checkbox.setEnabled(is_enabled)
+        self.damage_index_checkbox.setEnabled(False) #TODO Enable this checkbox later after all benchmarks
 
         # If the checkbox becomes disabled, also uncheck and hide it for clarity.
         if not is_enabled:
@@ -1417,7 +1459,7 @@ class MSUPSmartSolverGUI(QWidget):
         global df_node_ids, node_coords, modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz
         df_node_ids, node_coords = None, None
         modal_sx, modal_sy, modal_sz, modal_sxy, modal_syz, modal_sxz = (None,) * 6
-        self.window().display_tab.clear_visualization()
+        self.window().display_tab._clear_visualization()
         self.plot_single_node_tab.clear_plot()
 
         # --- 3. Load NEW Data and Update UI ---
@@ -1571,6 +1613,9 @@ class MSUPSmartSolverGUI(QWidget):
 
     def solve(self, force_time_history_for_node_id=None):
         try:
+            # Save the current tab index before doing anything else
+            current_tab_index = self.show_output_tab_widget.currentIndex()
+
             # Check if we are in time history mode either by the checkbox OR the forced argument
             is_time_history_mode = self.time_history_checkbox.isChecked() or \
                                    (force_time_history_for_node_id is not None)
@@ -1679,7 +1724,7 @@ class MSUPSmartSolverGUI(QWidget):
             is_include_steady_state = self.steady_state_checkbox.isChecked()
 
             # Check if Damage Index / Potential Damage is requested
-            if self.damage_index_checkbox.isChecked():
+            if calculate_damage:
                 try:
                     fatigue_A = float(self.A_line_edit.text())
                     fatigue_m = float(self.m_line_edit.text())
@@ -1757,17 +1802,14 @@ class MSUPSmartSolverGUI(QWidget):
                 )
 
                 # Use the new method for single node processing
-                time_indices, y_data = self.solver.process_results_for_a_single_node(
-                    selected_node_idx,
-                    selected_node_id,
-                    df_node_ids,
-                    calculate_von_mises = calculate_von_mises,
-                    calculate_max_principal_stress = calculate_max_principal_stress,
-                    calculate_min_principal_stress = calculate_min_principal_stress,
-                    calculate_deformation          = calculate_deformation,
-                    calculate_velocity             = calculate_velocity,
-                    calculate_acceleration         = calculate_acceleration
-                )
+                time_indices, y_data = self.solver.process_results_for_a_single_node(selected_node_idx,
+                                                                                     selected_node_id, df_node_ids,
+                                                                                     calculate_von_mises=calculate_von_mises,
+                                                                                     calculate_max_principal_stress=calculate_max_principal_stress,
+                                                                                     calculate_min_principal_stress=calculate_min_principal_stress,
+                                                                                     calculate_deformation=calculate_deformation,
+                                                                                     calculate_velocity=calculate_velocity,
+                                                                                     calculate_acceleration=calculate_acceleration)
 
                 if time_indices is not None and y_data is not None:
                     # Plot the time history of the selected stress component
@@ -1887,7 +1929,7 @@ class MSUPSmartSolverGUI(QWidget):
                         row_items.append(QStandardItem(f"{trace['data'][i]:.5f}"))
                     self.model.appendRow(items)
 
-            # region Create maximum over time plot if solver is not run in Time History mode
+            # region Create maximum/minimum over time plots if solver is not run in Time History mode
             if not self.time_history_checkbox.isChecked():
                 # --- Maximum Over Time Plot ---
                 max_traces = []
@@ -1923,11 +1965,9 @@ class MSUPSmartSolverGUI(QWidget):
                     acceleration_data_max_over_time = None
 
                 if max_traces:  # Only create and show the tab if there is data
-                    if not hasattr(self, 'plot_max_over_time_tab'):
-                        self.plot_max_over_time_tab = PlotlyMaxWidget()
-                        modal_tab_index = self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab)
-                        self.show_output_tab_widget.insertTab(modal_tab_index + 1, self.plot_max_over_time_tab,
-                                                              "Maximum Over Time")
+                    modal_tab_index = self.show_output_tab_widget.indexOf(self.plot_modal_coords_tab)
+                    self.show_output_tab_widget.insertTab(modal_tab_index + 1, self.plot_max_over_time_tab,
+                                                          "Maximum Over Time")
 
                     self.plot_max_over_time_tab.update_plot(time_values, traces=max_traces)
                     self.show_output_tab_widget.setTabVisible(
@@ -1937,10 +1977,8 @@ class MSUPSmartSolverGUI(QWidget):
                 if calculate_min_principal_stress:
                     min_traces = [{'name': 'S3 (MPa)', 'data': self.solver.min_over_time_s3}]
 
-                    if not hasattr(self, 'plot_min_over_time_tab'):
-                        self.plot_min_over_time_tab = PlotlyMaxWidget()
-                        idx = self.show_output_tab_widget.indexOf(self.plot_max_over_time_tab)
-                        self.show_output_tab_widget.insertTab(idx + 1, self.plot_min_over_time_tab, "Minimum Over Time")
+                    idx = self.show_output_tab_widget.indexOf(self.plot_max_over_time_tab)
+                    self.show_output_tab_widget.insertTab(idx + 1, self.plot_min_over_time_tab, "Minimum Over Time")
 
                     self.plot_min_over_time_tab.update_plot(time_values, traces=min_traces)
                     self.show_output_tab_widget.setTabVisible(
@@ -1979,6 +2017,10 @@ class MSUPSmartSolverGUI(QWidget):
                     display_tab.scalar_min_spin.blockSignals(False)
                     display_tab.scalar_max_spin.blockSignals(False)
                 # endregion
+
+                # Try to restore the previously selected tab if it's still visible
+                if self.show_output_tab_widget.isTabVisible(current_tab_index):
+                    self.show_output_tab_widget.setCurrentIndex(current_tab_index)
             # endregion
 
         except Exception as e:
@@ -2145,7 +2187,25 @@ class MSUPSmartSolverGUI(QWidget):
 
     @pyqtSlot(float, dict)
     def perform_time_point_calculation(self, selected_time, options):
-        """Receives a request, performs a single time-point calc, and emits the result."""
+        """
+                Performs a single time-point calculation based on user options.
+
+        This slot is triggered by the DisplayTab when a user requests to view
+        results for a specific moment in time. It calculates the requested
+        output (e.g., Von Mises stress, deformation, velocity) for all nodes
+        at the nearest available time step.
+
+        For velocity and acceleration, a centered finite difference method is
+        used, requiring a small window of data points around the selected time.
+        The method then packages the results into a PyVista mesh object and
+        emits a signal to send it back to the DisplayTab for rendering.
+
+        Args:
+            selected_time (float): The time value requested by the user.
+            options (dict): A dictionary of boolean flags and values from the
+                            UI specifying what to calculate (e.g.,
+                            {'compute_von_mises': True, 'scale_factor': 1.0}).
+        """
         print("Control Panel: Received request to perform calculation.")
 
         try:
@@ -2178,15 +2238,31 @@ class MSUPSmartSolverGUI(QWidget):
 
             is_vel_or_accel = options['compute_velocity'] or options['compute_acceleration']
             if is_vel_or_accel:
-                WINDOW, half = 7, 3
+                # For velocity/acceleration, a centered finite difference
+                # approach is used, requiring a small window of data around
+                # the selected time point.
+                half = 3  # Use 3 points on either side of the target point.
+
+                # Determine the window's start (idx0) and end (idx1) indices.
+                # The window is centered on 'time_index' but is clipped at the
+                # start (0) and end of the data to prevent index errors.
+                # This means the actual window size can be smaller than 7 if
+                # the calculation is near the beginning or end of the simulation.
                 idx0, idx1 = max(0, time_index - half), min(modal_coord.shape[1], time_index + half + 1)
+
+                # Ensure the window is large enough for a valid calculation.
                 if idx1 - idx0 < 2:
                     QMessageBox.warning(self, "Too few samples", "Velocity/acceleration need at least two time steps.")
                     return
+
+                # Slice the data to get the subset for the calculation window.
                 selected_modal_coord = modal_coord[mode_slice, idx0:idx1]
                 dt_window = time_values[idx0:idx1]
+
+                # Calculate the position of the original target time within the new, smaller window.
                 centre_offset = time_index - idx0
             else:
+                # For all other calculations, only a single time point is needed.
                 selected_modal_coord = modal_coord[mode_slice, time_index:time_index + 1]
                 dt_window = time_values[time_index:time_index + 1]
 
@@ -2250,7 +2326,7 @@ class MSUPSmartSolverGUI(QWidget):
                     QMessageBox.warning(self, "Missing Data", "Modal deformations must be loaded for this calculation.")
                     return
                 ux_blk, uy_blk, uz_blk = temp_solver.compute_deformations(0, num_nodes)
-                vel_mag, acc_mag, vel_x, vel_y, vel_z, acc_x, acc_y, acc_z = temp_solver._vel_acc_from_disp(ux_blk, uy_blk, uz_blk,
+                vel_mag, acc_mag, vel_x, vel_y, vel_z, _acc_x, _acc_y, _acc_z = temp_solver._vel_acc_from_disp(ux_blk, uy_blk, uz_blk,
                                                                                     dt_window.astype(
                                                                                         temp_solver.NP_DTYPE))
 
@@ -2280,7 +2356,6 @@ class MSUPSmartSolverGUI(QWidget):
 
         except Exception as e:
             print(f"ERROR during time point calculation: {e}")
-            import traceback
             traceback.print_exc()
             QApplication.restoreOverrideCursor()
 
@@ -2506,7 +2581,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.97.2')
+        self.setWindowTitle('MSUP Smart Solver - v0.97.5')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
@@ -2611,7 +2686,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.display_tab, "Display")
 
         # Connect signals
-        self.batch_solver_tab.initial_data_loaded.connect(self.display_tab.setup_initial_view)
+        self.batch_solver_tab.initial_data_loaded.connect(self.display_tab._setup_initial_view)
         self.display_tab.node_picked_signal.connect(self.batch_solver_tab.plot_history_for_node)
         self.display_tab.time_point_update_requested.connect(self.batch_solver_tab.perform_time_point_calculation)
         self.batch_solver_tab.time_point_result_ready.connect(self.display_tab.update_view_with_results)
@@ -2824,6 +2899,13 @@ class MainWindow(QMainWindow):
 
 
 class AdvancedSettingsDialog(QDialog):
+    """
+    A dialog for configuring advanced global settings for the solver engine.
+
+    This dialog allows the user to view the current solver settings and modify
+    key performance parameters such as RAM allocation, numerical precision,
+    and GPU acceleration.
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Advanced Settings")
