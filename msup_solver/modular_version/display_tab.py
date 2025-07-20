@@ -70,6 +70,18 @@ class DisplayTab(QWidget):
         self.original_node_coords = None
 
         self.highlight_actor = None  # This tracks the highlight sphere
+
+        # Attributes for the dynamic "Go To Node" marker
+        self.target_node_index = None         # Index of the node to track
+        self.target_node_id = None            # ID of the node (for the label text)
+        self.target_node_label_actor = None   # The label actor
+        self.label_point_data = None          # A single-point PolyData to anchor the label
+        self.marker_poly = None
+        self.target_node_marker_actor = None  # glyph actor drawn in pixels
+        self.last_goto_node_id = None
+        self.freeze_tracked_node = False  # on/off
+        self.freeze_baseline = None  # np.array([x0, y0, z0]) when mode enabled
+
         self.box_widget = None
         self.hotspot_dialog = None
         self.is_point_picking_active = False
@@ -578,18 +590,32 @@ class DisplayTab(QWidget):
                                 "Please load or initialize the mesh before animating.")
             return
 
+        # Preserve tracked node state before cleanup
+        # Read the current tracking state into local variables
+        tracked_node_index = self.target_node_index
+        tracked_node_id = self.target_node_id
+        is_frozen = self.freeze_tracked_node
+
+        # Hide marker/label if frozen mode is active when animation starts/resumes
+        if tracked_node_index is not None and is_frozen:
+            if self.target_node_marker_actor:
+                self.target_node_marker_actor.SetVisibility(False)
+            if self.target_node_label_actor:
+                self.target_node_label_actor.SetVisibility(False)
+            self.plotter.render() # Immediately hide them
+
         # region Resume Logic
         if self.animation_paused:
-            if self.precomputed_scalars is None:
+            if self.precomputed_scalars is None:        # NEW LINE: Disable play button immediately when animation starts or resumes
                 QMessageBox.warning(self, "Resume Error",
                                     "Cannot resume. Precomputed data is missing. Please stop and start again.")
                 self.stop_animation()
                 return
             print("Resuming animation...")
             self.animation_paused = False
-            self.play_button.setEnabled(False)
             self.pause_button.setEnabled(True)
             self.stop_button.setEnabled(True)
+            self.play_button.setEnabled(False)  # keep Play disabled while running
             self.deformation_scale_edit.setEnabled(False)
             if self.anim_timer:
                 self.anim_timer.start(self.anim_interval_spin.value())
@@ -602,6 +628,33 @@ class DisplayTab(QWidget):
 
         # Start fresh by stopping any existing animation
         self.stop_animation()
+
+        # Disable play button immediately when animation starts or resumes
+        self.play_button.setEnabled(False)
+
+        # Restore tracked node state after cleanup
+        # If a node was being tracked, restore its state so the new animation can use it.
+        if tracked_node_index is not None:
+            self.target_node_index = tracked_node_index
+            self.target_node_id = tracked_node_id
+            self.freeze_tracked_node = is_frozen
+            # The markers themselves will be re-created by update_visualization
+            # or moved by the animation loop, so we don't need to restore the actor objects.
+
+            # NEW BLOCK: Re-establish freeze_baseline if freezing was active
+            if self.freeze_tracked_node and self.original_node_coords is not None:
+                # The _setup_initial_view or _visualize_data sets self.current_mesh.points
+                # to original_node_coords when the mesh is first loaded or reset.
+                # So, if original_node_coords exists, use it to set the baseline for the first frame.
+                # The actual mesh points might be deformed in on_animation_data_ready,
+                # but freeze_baseline needs to be relative to the coordinate system
+                # in which the node's position is *initially* defined for the first frame.
+                if self.current_mesh is not None and self.current_mesh.n_points > tracked_node_index:
+                    self.freeze_baseline = self.current_mesh.points[self.target_node_index].copy()
+                else:
+                    print("Warning: Cannot set freeze_baseline, current_mesh or original_node_coords not ready.")
+                    self.freeze_tracked_node = False # Disable feature if baseline cannot be set.
+
 
         # region 1. Get Animation Parameters & Time Steps
         anim_times, _, error_msg = self._get_animation_time_steps()
@@ -653,6 +706,16 @@ class DisplayTab(QWidget):
             self.animation_paused = True  # Set the flag
             self.play_button.setEnabled(True)
             self.pause_button.setEnabled(False)
+
+            # Make marker and label visible when paused, if a node is being tracked and frozen
+            if self.target_node_index is not None and self.freeze_tracked_node:
+                if self.target_node_marker_actor:
+                    self.target_node_marker_actor.SetVisibility(True)
+                if self.target_node_label_actor:
+                    self.target_node_label_actor.SetVisibility(True)
+                self.plotter.render() # Crucial to immediately update visibility
+
+
             print("\nAnimation paused.")
         else:
             print("\nPause command ignored: Animation timer not active.")
@@ -664,6 +727,8 @@ class DisplayTab(QWidget):
 
         # Check if there is an animation to stop before printing.
         is_stoppable = self.anim_timer is not None or self.precomputed_scalars is not None
+
+        self._clear_goto_node_markers()
 
         if is_stoppable:
             print("\nStopping animation and releasing resources...")
@@ -780,18 +845,51 @@ class DisplayTab(QWidget):
             current_scalars = self.precomputed_scalars[:, frame_index]
             current_time = self.precomputed_anim_times[frame_index]
 
+            # MODIFICATION 1: Initialize current_coords with a copy of the base coordinates
+            # This line needs to be ADDED.
+            current_coords = self.current_mesh.points.copy()
+
             # Get deformed coordinates if available and enabled
             if self.is_deformation_included_in_anim and self.precomputed_coords is not None:
                 if frame_index >= self.precomputed_coords.shape[2]:
                     print(f"Error: Frame index {frame_index} out of bounds for precomputed coordinates.")
                     return False
-                current_coords = self.precomputed_coords[:, :, frame_index]
-                # Ensure mesh object still exists
-                if self.current_mesh is not None:
-                    self.current_mesh.points = current_coords  # Update node positions
-                else:
-                    print("Error: Current mesh is None, cannot update points.")
-                    return False
+                # MODIFICATION 2: Ensure precomputed_coords is copied when used
+                # Change: current_coords = self.precomputed_coords[:, :, frame_index]
+                # To:
+                current_coords = self.precomputed_coords[:, :, frame_index].copy() # Make a copy to modify
+
+            # region Keep tracked node fixed by translating the mesh
+            if self.freeze_tracked_node and self.freeze_baseline is not None:
+                # Position of the tracked node AFTER the initial coordinate update (deformation or original)
+                tracked_now = current_coords[self.target_node_index]
+                shift = tracked_now - self.freeze_baseline
+
+                if np.any(shift):
+                    # MODIFICATION 3: Apply the shift to the `current_coords` array directly
+                    # Remove the 'if' block that was here before, so `current_coords -= shift` is always executed
+                    # (The 'if self.is_deformation_included_in_anim' and its 'else' block are removed)
+                    current_coords -= shift
+
+                    # 2) move the marker + label anchors
+                    if self.marker_poly is not None:
+                        self.marker_poly.points[:] -= shift
+                        self.marker_poly.Modified()
+            # endregion
+
+            # MODIFICATION 4: Now, update the actual mesh points with the potentially shifted coordinates
+            # This block was previously inside an 'if self.is_deformation_included_in_anim' and its 'else'
+            # Now it's always executed after current_coords has been determined and potentially shifted.
+            if self.current_mesh is not None:
+                self.current_mesh.points = current_coords  # Update node positions
+                # Tell VTK/PyVista that the coordinates array changed
+                try:
+                    self.current_mesh.points_modified()  # PyVista >= 0.37
+                except AttributeError:
+                    self.current_mesh.GetPoints().Modified()  # older versions
+            else:
+                print("Error: Current mesh is None, cannot update points.")
+                return False
 
             # Update scalars on the mesh
             if self.current_mesh is not None:
@@ -843,6 +941,23 @@ class DisplayTab(QWidget):
                 self.time_text_actor = self.plotter.add_text(time_text, position=(0.8, 0.9), viewport=False,
                                                              font_size=10)
 
+            # Update "Go To Node" Marker Position During Animation
+            # This block ensures the marker moves with the mesh on every frame.
+            if self.target_node_index is not None:
+                # Get the new coordinates of the tracked node from the deformed mesh
+                new_coords = self.current_mesh.points[self.target_node_index]
+
+                # If camera is NOT frozen, update the label's position.
+                # If camera IS frozen, the label should be hidden (handled in toggle_freeze_node)
+                if not self.freeze_tracked_node and self.target_node_label_actor and self.label_point_data:
+                    self.label_point_data.points[0, :] = new_coords
+                    self.label_point_data.Modified()  # Notify VTK that the data has changed
+
+                # Move pixel glyph
+                if self.target_node_marker_actor and self.marker_poly:
+                    self.marker_poly.points[0] = new_coords
+                    self.marker_poly.Modified()
+
             return True
 
         except IndexError as e:
@@ -854,6 +969,10 @@ class DisplayTab(QWidget):
             # Optionally show a QMessageBox here for critical errors
             # QMessageBox.critical(self, "Animation Error", f"Failed to update mesh for frame {frame_index}: {str(e)}")
             return False
+
+    def _close_enough(self, a: np.ndarray, b: np.ndarray, tol: float) -> bool:
+        """Return True if vectors a and b are within 'tol' (Euclidean) distance."""
+        return np.linalg.norm(a - b) < tol
 
     def _capture_animation_frame(self, frame_index):
         """Updates the plotter for the given frame index and returns a screenshot (NumPy array)."""
@@ -1344,6 +1463,38 @@ class DisplayTab(QWidget):
                 'n_labels': 10  # Number of labels to display
             }
         )
+
+        # Re-create the 'Go To Node' markers if a node is being tracked ---
+        # This ensures the markers persist after the plotter is cleared for a time point update.
+        if self.target_node_index is not None:
+            try:
+                # Get the current coordinates for the tracked node from the newly loaded mesh
+                point_coords = self.current_mesh.points[self.target_node_index]
+
+                # Re-create the marker actor
+                self.marker_poly = pv.PolyData([point_coords])
+                self.target_node_marker_actor = self.plotter.add_points(
+                    self.marker_poly,
+                    color='black',
+                    point_size=self.point_size.value() * 2,
+                    render_points_as_spheres=True,
+                    opacity=0.3,
+                )
+
+                # Re-create the dynamic anchor point and the label actor
+                self.label_point_data = pv.PolyData([point_coords])
+                self.target_node_label_actor = self.plotter.add_point_labels(
+                    self.label_point_data, [f"Node {self.target_node_id}"],
+                    name="target_node_label",
+                    font_size=16, text_color='red',
+                    always_visible=True, show_points=False
+                )
+            except IndexError:
+                # This can happen if the new mesh has fewer points than the old one.
+                # In this case, the tracked index is invalid, so we clear the markers.
+                print(f"Warning: Tracked node index {self.target_node_index} is out of bounds for the new mesh. Clearing marker.")
+                self._clear_goto_node_markers()
+
         self._setup_hover_annotation()
 
         # Restore camera state if available
@@ -1435,6 +1586,7 @@ class DisplayTab(QWidget):
         """Properly clear existing visualization"""
         self.stop_animation()
         self._clear_hover_elements()
+        self._clear_goto_node_markers()
 
         # Manually disable and remove the box widget if it exists
         if self.box_widget:
@@ -1552,7 +1704,7 @@ class DisplayTab(QWidget):
         point_analysis_title_action.setDefaultWidget(point_analysis_title_label)
         context_menu.addAction(point_analysis_title_action)
 
-        plot_point_history_action = QAction("Plot Time History for Point", self)
+        plot_point_history_action = QAction("Plot Time History for Selected Node", self)
         plot_point_history_action.triggered.connect(self.enable_time_history_picking)
         context_menu.addAction(plot_point_history_action)
 
@@ -1564,6 +1716,31 @@ class DisplayTab(QWidget):
         view_title_action = QWidgetAction(context_menu)
         view_title_action.setDefaultWidget(view_title_label)
         context_menu.addAction(view_title_action)
+
+        # Go To Node action
+        go_to_node_action = QAction("Go To Node", self)
+        # Determine if the action should be enabled
+        has_mesh_and_node_ids = (self.current_mesh is not None and
+                                 'NodeID' in self.current_mesh.array_names)
+
+        is_animation_running_and_frozen = (self.anim_timer is not None and
+                                           self.anim_timer.isActive() and
+                                           self.freeze_tracked_node)
+
+        can_go_to_node = has_mesh_and_node_ids and not is_animation_running_and_frozen
+
+        go_to_node_action.setEnabled(can_go_to_node)
+
+        go_to_node_action.triggered.connect(self.go_to_node)
+        context_menu.addAction(go_to_node_action)
+
+        # Lock Camera action
+        freeze_action = QAction("Lock Camera for Animation (freeze node)", self)
+        freeze_action.setCheckable(True)
+        freeze_action.setChecked(self.freeze_tracked_node)
+        freeze_action.setEnabled(self.target_node_index is not None)
+        freeze_action.triggered.connect(self.toggle_freeze_node)
+        context_menu.addAction(freeze_action)
 
         # Reset Camera action
         reset_camera_action = QAction("Reset Camera", self)
@@ -1671,9 +1848,10 @@ class DisplayTab(QWidget):
                 point_coords, [label_text],
                 name="hotspot_label",
                 font_size=16,
-                point_color='red',
-                point_size=15,
-                text_color='red',
+                point_color='black',
+                shape_opacity=0.5,
+                point_size=self.point_size.value() * 2,
+                text_color='purple',
                 always_visible=True # Ensures the label is not hidden by the mesh
             )
 
@@ -1802,6 +1980,8 @@ class DisplayTab(QWidget):
             self.plotter.remove_actor("hotspot_label", reset_camera=False)
             self.highlight_actor = None
 
+        self._clear_goto_node_markers()
+
         # Re-enable the box widget if it still exists
         if self.box_widget:
             self.box_widget.On()
@@ -1812,9 +1992,26 @@ class DisplayTab(QWidget):
         self.plotter.render()
 
     def enable_time_history_picking(self):
-        """Activates one-shot point picking mode to select a node for plotting."""
+        """Activates point‑history plotting, first offering the tracked node (if any)."""
+
+        # --- 1. Offer tracked node directly -----------------------------------
+        if self.target_node_index is not None and self.target_node_id is not None:
+            reply = QMessageBox.question(
+                self,
+                "Use Tracked Node?",
+                f"Plot time history for tracked node {self.target_node_id}?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self.node_picked_signal.emit(self.target_node_id)  # plot immediately
+                return
+            # If the user clicks “No”, fall through to visual picking
+
+        # --- 2. Fall back to normal picking -----------------------------------
         if not self.current_mesh or 'NodeID' not in self.current_mesh.array_names:
-            QMessageBox.warning(self, "No Data", "Cannot pick a point. Please load data with NodeIDs first.")
+            QMessageBox.warning(self, "No Data",
+                                "Cannot pick a point. Please load data with NodeIDs first.")
             return
 
         print("Picking mode enabled: Click on a node to plot its time history.")
@@ -1858,6 +2055,109 @@ class DisplayTab(QWidget):
         else:
             # The user clicked on empty space or the pick was otherwise invalid.
             print("Picking cancelled or missed the mesh.")
+
+    def go_to_node(self):
+        """Prompts for a Node ID, sets up dynamic markers, and flies the camera to it."""
+        if not self.current_mesh or 'NodeID' not in self.current_mesh.array_names:
+            QMessageBox.warning(self, "Action Unavailable", "No mesh with NodeIDs is currently loaded.")
+            return
+
+        default_val = self.last_goto_node_id if self.last_goto_node_id is not None else 0
+        node_id, ok = QInputDialog.getInt(self, "Go To Node", "Enter Node ID:", value=default_val)
+        if not ok:
+            return
+
+        try:
+            # Clear any previously tracked node first
+            self._clear_goto_node_markers()
+
+            node_indices = np.where(self.current_mesh['NodeID'] == node_id)[0]
+            if not node_indices.size:
+                QMessageBox.warning(self, "Not Found", f"Node ID {node_id} was not found.")
+                return
+
+            # Remember node id for a possible re-run of "Go To Node" command
+            self.last_goto_node_id = node_id
+
+            # --- Store information for dynamic tracking ---
+            self.target_node_index = node_indices[0]
+            self.target_node_id = node_id
+            point_coords = self.current_mesh.points[self.target_node_index]
+
+            # 1. Create pixel glyph marker
+            self.marker_poly = pv.PolyData([point_coords])
+            self.target_node_marker_actor = self.plotter.add_points(
+                self.marker_poly,
+                color='black',
+                point_size=self.point_size.value() * 2,  # 2 × current point size
+                render_points_as_spheres=True,
+                opacity=0.3,
+            )
+
+            # 2. Create a dynamic anchor point for the label
+            self.label_point_data = pv.PolyData([point_coords])
+
+            # 3. Create the label using the dynamic anchor
+            self.target_node_label_actor = self.plotter.add_point_labels(
+                self.label_point_data, [f"Node {self.target_node_id}"],
+                name="target_node_label",
+                font_size=16, text_color='red',
+                always_visible=True, show_points=False
+            )
+
+            self.plotter.fly_to(point_coords)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not go to node {node_id}: {e}")
+
+    def _clear_goto_node_markers(self):
+        """Removes all actors and resets state for the 'Go To Node' feature."""
+        if self.target_node_marker_actor:
+            self.plotter.remove_actor(self.target_node_marker_actor)
+        if self.target_node_label_actor:
+            self.plotter.remove_actor(self.target_node_label_actor)
+
+        self.target_node_index = None
+        self.target_node_id = None
+        self.marker_poly = None
+        self.target_node_marker_actor = None
+        self.target_node_label_actor = None
+
+        self.freeze_tracked_node = False
+        self.freeze_baseline = None
+
+    def toggle_freeze_node(self, checked: bool):
+        """
+        Activates / de‑activates the mesh‑translation trick that keeps
+        the tracked node visually fixed.
+        """
+        if self.target_node_index is None or self.current_mesh is None:
+            QMessageBox.warning(self, "No Tracked Node",
+                                "Use 'Go To Node' first, then lock the camera.")
+            return
+
+        self.freeze_tracked_node = checked
+        if checked:
+            # store reference position AFTER the mesh has already been updated
+            self.freeze_baseline = self.current_mesh.points[
+                self.target_node_index].copy()
+
+            # Hide the label and marker, ONLY if animation is active
+            if self.anim_timer is not None and self.anim_timer.isActive():
+                if self.target_node_label_actor:
+                    self.target_node_label_actor.SetVisibility(False)
+                if self.target_node_marker_actor:
+                    self.target_node_marker_actor.SetVisibility(False)
+        else: # If unchecked (unfreezing)
+            self.freeze_baseline = None
+
+            # Always show the label and marker when unfreezing, regardless of animation state
+            if self.target_node_label_actor:
+                self.target_node_label_actor.SetVisibility(True)
+            if self.target_node_marker_actor:
+                self.target_node_marker_actor.SetVisibility(True)
+
+        self.plotter.render()  # Render the changes to visibility??
 
     @pyqtSlot(object, str, float, float)
     def update_view_with_results(self, mesh, scalar_bar_title, data_min, data_max):
@@ -1904,6 +2204,42 @@ class DisplayTab(QWidget):
         # Set/Refresh the legend title before the animation begins.
         if hasattr(self.plotter, 'scalar_bar') and self.plotter.scalar_bar:
             self.plotter.scalar_bar.SetTitle(self.data_column_name)
+
+        # If a node is being tracked, its actors were cleared by stop_animation.
+        # We must re-create them here before the first frame is rendered.
+        if self.target_node_index is not None:
+            try:
+                # Use the coordinates from the very first animation frame
+                point_coords = self.precomputed_coords[self.target_node_index, :, 0] if self.precomputed_coords is not None else self.current_mesh.points[self.target_node_index]
+
+                self.marker_poly = pv.PolyData([point_coords])
+                self.target_node_marker_actor = self.plotter.add_points(
+                    self.marker_poly,
+                    color='black',
+                    point_size=self.point_size.value() * 2,
+                    render_points_as_spheres=True,
+                    opacity=0.3
+                )
+
+                self.label_point_data = pv.PolyData([point_coords])
+                self.target_node_label_actor = self.plotter.add_point_labels(
+                    self.label_point_data, [f"Node {self.target_node_id}"],
+                    name="target_node_label",
+                    font_size=16, text_color='red',
+                    always_visible=True, show_points=False
+                )
+
+                # If the user had chosen to lock camera, keep both actors hidden
+                if self.freeze_tracked_node:
+                    if self.target_node_marker_actor:
+                        self.target_node_marker_actor.SetVisibility(False)
+                    if self.target_node_label_actor:
+                        self.target_node_label_actor.SetVisibility(False)
+                    self.plotter.render()
+
+            except IndexError:
+                print("Warning: Could not re-create tracked node marker for animation.")
+                self._clear_goto_node_markers()
 
         # --- Start the animation playback ---
         self.current_anim_frame_index = 0
@@ -1995,3 +2331,5 @@ class HotspotDialog(QDialog):
             # Emit the signal with the node ID
             self.node_selected.emit(node_id)
 # endregion
+
+# TODO - Lock Camera should work for Update Single Time Point as well

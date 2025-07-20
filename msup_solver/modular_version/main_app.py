@@ -11,12 +11,11 @@ print("Importing libraries...")
 
 # ---- Standard Library Imports ----
 import gc
-#import io
 import os
 import subprocess
 import sys
 import traceback
-import tempfile
+from tempfile import NamedTemporaryFile
 import time
 from datetime import datetime
 
@@ -2581,7 +2580,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.97.5')
+        self.setWindowTitle('MSUP Smart Solver - v0.97.6')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
@@ -2841,7 +2840,7 @@ class MainWindow(QMainWindow):
                                        include_plotlyjs=True,  # Embed JS
                                        config={'responsive': True})
 
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as tmp_file:
+            with NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as tmp_file:
                 tmp_file.write(html_content)
                 file_path = tmp_file.name
                 self.temp_files.append(file_path)
