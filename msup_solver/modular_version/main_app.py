@@ -2462,7 +2462,7 @@ class MSUPSmartSolverGUI(QWidget):
                 data_column_name = "S1 (MPa)"
 
             elif params['compute_min_principal']:
-                _, _, s3_amin = temp_solver.compute_principal_stresses(actual_sx_anim, actual_sy_anim, actual_sz_anim,
+                _, _, s3_anim = temp_solver.compute_principal_stresses(actual_sx_anim, actual_sy_anim, actual_sz_anim,
                                                                        actual_sxy_anim, actual_syz_anim,
                                                                        actual_sxz_anim)
                 precomputed_scalars = s3_anim
