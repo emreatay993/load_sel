@@ -2460,7 +2460,14 @@ class MSUPSmartSolverGUI(QWidget):
                                                                        actual_sxz_anim)
                 precomputed_scalars = s1_anim
                 data_column_name = "S1 (MPa)"
-            # ... (add elif for min_principal, etc. following the same pattern) ...
+
+            elif params['compute_min_principal']:
+                _, _, s3_amin = temp_solver.compute_principal_stresses(actual_sx_anim, actual_sy_anim, actual_sz_anim,
+                                                                       actual_sxy_anim, actual_syz_anim,
+                                                                       actual_sxz_anim)
+                precomputed_scalars = s3_anim
+                data_column_name = "S3 (MPa)"
+
             elif params['compute_velocity'] or params['compute_acceleration'] or params['compute_deformation_contour']:
                 if not self.deformation_loaded:
                     raise ValueError("Deformation data not loaded for requested calculation.")
@@ -2580,7 +2587,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.97.6')
+        self.setWindowTitle('MSUP Smart Solver - v0.97.7')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
