@@ -834,6 +834,7 @@ class MSUPSmartSolverGUI(QWidget):
     time_point_result_ready = pyqtSignal(object, str, float, float)
     animation_data_ready = pyqtSignal(object)
 
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.init_ui()
@@ -1133,8 +1134,8 @@ class MSUPSmartSolverGUI(QWidget):
         file_layout.addWidget(self.deformations_checkbox, 4, 0, 1, 2)
         file_layout.addWidget(self.deformations_file_button, 5, 0)
         file_layout.addWidget(self.deformations_file_path, 5, 1)
-        file_layout.addWidget(self.skip_modes_label, 5, 2)
-        file_layout.addWidget(self.skip_modes_combo, 5, 3)
+        file_layout.addWidget(self.skip_modes_label, 1, 2)
+        file_layout.addWidget(self.skip_modes_combo, 1, 3)
 
         file_group.setLayout(file_layout)
 
@@ -1251,10 +1252,6 @@ class MSUPSmartSolverGUI(QWidget):
         # Control the visibility of the file input widgets and the "skip modes" combo box.
         self.deformations_file_button.setVisible(is_checked)
         self.deformations_file_path.setVisible(is_checked)
-
-        are_details_enabled = is_checked and self.deformation_loaded
-        self.skip_modes_label.setVisible(are_details_enabled)
-        self.skip_modes_combo.setVisible(are_details_enabled)
 
         # Call helper method to ensure exclusivity due to availability of input files
         self.update_output_checkboxes_state()
@@ -1474,6 +1471,15 @@ class MSUPSmartSolverGUI(QWidget):
         modal_syz = df_val.filter(regex='(?i)syz_.*').to_numpy().astype(NP_DTYPE)
         modal_sxz = df_val.filter(regex='(?i)sxz_.*').to_numpy().astype(NP_DTYPE)
         del df_val
+
+        # Populate the skip modes combo box now that mode count is known
+        self.skip_modes_combo.clear()  # Clear any previous values
+        num_modes = modal_sx.shape[1]
+        self.skip_modes_combo.addItems([str(i) for i in range(num_modes + 1)])
+
+        # Make the "skip modes" control visible
+        self.skip_modes_label.setVisible(True)
+        self.skip_modes_combo.setVisible(True)
 
         self.console_textbox.append(f"Successfully validated and loaded modal stress file: {os.path.basename(filename)}\n")
         self.console_textbox.append(f"Node IDs tensor shape: {df_node_ids.shape}\n")
@@ -2587,7 +2593,7 @@ class MainWindow(QMainWindow):
         self.temp_files = []  # List to track temp files
 
         # Window title and dimensions
-        self.setWindowTitle('MSUP Smart Solver - v0.97.7')
+        self.setWindowTitle('MSUP Smart Solver - v0.97.8')
         self.setGeometry(40, 40, 600, 800)
 
         # Create a menu bar
