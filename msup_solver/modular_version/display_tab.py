@@ -524,8 +524,7 @@ class DisplayTab(QWidget):
             'compute_acceleration': main_tab.acceleration_checkbox.isChecked(),
             'display_deformed_shape': main_tab.deformations_checkbox.isChecked(),
             'include_steady': main_tab.steady_state_checkbox.isChecked(),
-            'skip_n_modes': int(
-                main_tab.skip_modes_combo.currentText()) if main_tab.skip_modes_combo.isVisible() else 0,
+            'skip_n_modes': int(main_tab.skip_modes_combo.currentText()),
             'scale_factor': float(self.deformation_scale_edit.text())
         }
 
@@ -683,8 +682,7 @@ class DisplayTab(QWidget):
             'compute_velocity': main_tab.velocity_checkbox.isChecked(),
             'compute_acceleration': main_tab.acceleration_checkbox.isChecked(),
             'include_steady': main_tab.steady_state_checkbox.isChecked(),
-            'skip_n_modes': int(
-                main_tab.skip_modes_combo.currentText()) if main_tab.skip_modes_combo.isVisible() else 0,
+            'skip_n_modes': int(main_tab.skip_modes_combo.currentText()),
             'scale_factor': float(self.deformation_scale_edit.text())
         }
         # endregion
