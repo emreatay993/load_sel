@@ -33,9 +33,6 @@ import shutil
 from endaq.plot import rolling_min_max_envelope
 from endaq.plot import spectrum_over_time
 from endaq.calc.fft import rolling_fft
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 import tempfile
 import plotly.io as pio
 from scipy.signal import butter, filtfilt
@@ -407,8 +404,14 @@ class WE_load_plotter(QMainWindow):
         self.plot_type_selector.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         self.plot_type_selector.currentIndexChanged.connect(self.update_spectrum_plot)
 
-        self.specgram_checkbox = QCheckBox("Show Spectrum in Full Scale Plot")
-        self.specgram_checkbox.stateChanged.connect(self.toggle_spectrum_plot)
+        self.num_slices_label = QLabel("Spectrum Slices:")
+        self.num_slices_input = QLineEdit()
+        self.num_slices_input.setPlaceholderText("e.g., 400")
+        self.num_slices_input.setText("400")  # Set initial value
+        self.num_slices_label.setVisible(False)
+        self.num_slices_input.setVisible(False)
+        self.num_slices_input.returnPressed.connect(self.update_spectrum_plot)
+        self.num_slices_input.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
 
         if 'TIME' in self.df.columns:
             self.filter_checkbox = QCheckBox("Apply Low-Pass Filter")
@@ -435,13 +438,17 @@ class WE_load_plotter(QMainWindow):
         if 'TIME' in self.df.columns:
             selector_layout.addWidget(self.spectrum_checkbox)
             selector_layout.addWidget(self.plot_type_selector)
-            selector_layout.addWidget(self.specgram_checkbox)
+            selector_layout.addWidget(self.num_slices_label)
+            selector_layout.addWidget(self.num_slices_input)
 
             selector_layout.addWidget(self.filter_checkbox)
             selector_layout.addWidget(self.cutoff_frequency_label)
             selector_layout.addWidget(self.cutoff_frequency_input)
             selector_layout.addWidget(self.filter_order_label)
             selector_layout.addWidget(self.filter_order_input)
+
+            # Push widgets to the left
+            selector_layout.addStretch(1)
 
         layout = QVBoxLayout(tab)
         layout.addLayout(selector_layout)
@@ -650,24 +657,14 @@ class WE_load_plotter(QMainWindow):
     def toggle_spectrum_plot(self, state):
         try:
             show_spectrum = self.spectrum_checkbox.isChecked()
-            show_specgram = self.specgram_checkbox.isChecked()
+
+            # Control visibility of all spectrum-related widgets
+            self.plot_type_selector.setVisible(show_spectrum)
+            self.num_slices_label.setVisible(show_spectrum)
+            self.num_slices_input.setVisible(show_spectrum)
+            self.spectrum_plot.setVisible(show_spectrum)
 
             if show_spectrum:
-                self.specgram_checkbox.setChecked(False)
-                self.specgram_checkbox.setDisabled(True)
-                self.plot_type_selector.setVisible(True)  # Show the plot type selector
-            else:
-                self.specgram_checkbox.setDisabled(False)
-                self.plot_type_selector.setVisible(False)  # Hide the plot type selector
-
-            if show_specgram:
-                self.spectrum_checkbox.setChecked(False)
-                self.spectrum_checkbox.setDisabled(True)
-            else:
-                self.spectrum_checkbox.setDisabled(False)
-
-            if show_spectrum or show_specgram:
-                self.spectrum_plot.setVisible(True)
                 if 'FREQ' in self.df.columns:
                     self.splitter_tab1.setSizes([self.height() // 3, self.height() // 3, self.height() // 3])
                 else:
@@ -675,7 +672,6 @@ class WE_load_plotter(QMainWindow):
                 self.spectrum_plot.setHtml("<html><body></body></html>")
                 self.update_spectrum_plot()
             else:
-                self.spectrum_plot.setVisible(False)
                 if 'FREQ' in self.df.columns:
                     self.splitter_tab1.setSizes([self.height() // 2, self.height() // 2])
                 else:
@@ -2272,7 +2268,7 @@ def after_post(this, solution):  # Do not edit this line
             folder_name = os.path.basename(self.raw_data_folder) if self.raw_data_folder else ""
             parent_folder = os.path.basename(os.path.dirname(self.raw_data_folder)) if self.raw_data_folder else ""
             # Rename the windows title so that directory is updated
-            self.setWindowTitle(f"WE MechLoad Viewer - v0.97.1    |    (Directory Folder: {parent_folder})")
+            self.setWindowTitle(f"WE MechLoad Viewer - v0.97.2    |    (Directory Folder: {parent_folder})")
 
             self.refresh_directory_tree()
 
@@ -2858,17 +2854,25 @@ def after_post(this, solution):  # Do not edit this line
         if self.working_df_tab1 is not None:
             value_col = self.column_selector.currentText()
             plot_type = self.plot_type_selector.currentText()
-            if value_col:
+            if value_col and self.spectrum_checkbox.isChecked():
                 try:
-                    # Remove the previous canvas if it exists
-                    if hasattr(self, 'spectrum_canvas') and self.spectrum_canvas is not None:
-                        self.spectrum_plot.layout().removeWidget(self.spectrum_canvas)
-                        self.spectrum_canvas.deleteLater()
-                        self.spectrum_canvas = None
+                    freq_max = None
+                    if self.filter_checkbox.isChecked():
+                        try:
+                            cutoff_freq = float(self.cutoff_frequency_input.text())
+                            freq_max = cutoff_freq * 1.2
+                        except ValueError:
+                            pass
+
+                    # Get num_slices value from the GUI
+                    try:
+                        num_slices = int(self.num_slices_input.text())
+                    except ValueError:
+                        num_slices = 400  # Fallback to default if input is invalid
+                    # --- END of new logic ---
 
                     y_data = self.working_df_tab1[value_col].values
 
-                    # Handle non-uniform time data by interpolating to a uniform grid
                     if isinstance(self.working_df_tab1.index, pd.DatetimeIndex) or isinstance(
                             self.working_df_tab1.index, pd.Index):
                         time_data = self.working_df_tab1.index.values
@@ -2876,50 +2880,17 @@ def after_post(this, solution):  # Do not edit this line
                         delta_t_min = np.min(time_diffs)
                         uniform_time = np.arange(time_data.min(), time_data.max(), delta_t_min)
                         y_data = np.interp(uniform_time, time_data, y_data)
-                        fs = 1 / delta_t_min  # Recalculate sample rate for the uniform grid
+                        fs = 1 / delta_t_min
                     else:
                         fs = self.sample_rate
 
-                    # Dynamically set nperseg as a fraction of the data length
-                    nperseg = max(len(y_data) // 8, 128)  # Use at least 128 data points per segment
-                    noverlap = min(nperseg // 2, len(y_data) // 4)  # Ensure noverlap is less than nperseg
+                    # Use the num_slices variable from the GUI
+                    fft_df = rolling_fft(self.working_df_tab1[[value_col]], num_slices=num_slices, add_resultant=True)
 
-                    if self.specgram_checkbox.isChecked():
-                        # Create a Matplotlib figure and axis
-                        fig, ax = plt.subplots()
+                    fig_spectrum = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=freq_max,
+                                                      var_to_process=value_col)
 
-                        # Generate the spectrogram
-                        Pxx, freqs, bins, im = ax.specgram(y_data, NFFT=nperseg, Fs=fs, noverlap=noverlap,
-                                                           cmap='viridis')
-
-                        # Set plot titles and labels
-                        ax.set_title(f'Spectrogram of {value_col}')
-                        ax.set_xlabel('Time [s]')
-                        ax.set_ylabel('Frequency [Hz]')
-
-                        # Synchronize width
-                        plotly_graph_width = self.regular_plot.size().width()
-                        fig.set_size_inches(1.05 * plotly_graph_width / fig.dpi, fig.get_figheight())
-                        fig.subplots_adjust(left=0.055, right=0.975, top=0.9, bottom=0.1)
-
-                        # Create a FigureCanvas and add it to the spectrum_plot layout
-                        self.spectrum_canvas = FigureCanvas(fig)
-                        layout = self.spectrum_plot.layout()
-                        if layout is None:
-                            layout = QVBoxLayout(self.spectrum_plot)
-                        layout.addWidget(self.spectrum_canvas)
-
-                        # Draw the canvas
-                        self.spectrum_canvas.draw()
-
-                        plt.close(fig)  # Close the figure after drawing to save memory
-                    elif self.spectrum_checkbox.isChecked():
-                        # Apply FFT on the uniform time grid data
-                        fft_df = rolling_fft(self.working_df_tab1[[value_col]], num_slices=400, add_resultant=True)
-                        fig_spectrum = spectrum_over_time(fft_df, plot_type=plot_type, freq_max=None,
-                                                     var_to_process=value_col)
-
-                        self.load_fig_to_webview(fig_spectrum, self.spectrum_plot)
+                    self.load_fig_to_webview(fig_spectrum, self.spectrum_plot)
                 except Exception as e:
                     QMessageBox.critical(None, 'Error', f"An error occurred while creating the spectrum plot: {str(e)}")
 
@@ -2959,53 +2930,6 @@ def after_post(this, solution):  # Do not edit this line
     # endregion
 
     # region Main methods for updating the plots after a selection is made
-
-    def update_plots_tab1_Yedek(self):
-        selected_column = self.column_selector.currentText()
-        if selected_column:
-            x_data = self.df['FREQ'] if 'FREQ' in self.df.columns else self.df['TIME']
-            x_label = 'Freq [Hz]' if 'FREQ' in self.df.columns else 'Time [s]'
-            custom_hover = ('%{fullData.name}<br>' + (
-                'Hz: ' if 'FREQ' in self.df.columns else 'Time: ') + '%{x}<br>Value: %{y:.3f}<extra></extra>')
-
-            # Creating dataframe container for tab1 (magnitude)
-            y_data_dict = {selected_column: self.df[selected_column]}
-            self.original_df_tab1, self.working_df_tab1 = self.create_dataframes(x_data, x_label, y_data_dict)
-
-            # Apply Butterworth filter if enabled and TIME is in the columns
-            if 'TIME' in self.df.columns and self.filter_checkbox.isChecked():
-                filtered_y_data = self.apply_butterworth_filter(self.working_df_tab1[selected_column])
-                self.working_df_tab1[selected_column] = filtered_y_data
-
-            # Plot with rolling min-max envelope
-            self.plot_with_rolling_min_max_envelope(
-                self.working_df_tab1,
-                x_data,
-                [selected_column],
-                self.regular_plot,
-                f'{selected_column} Plot',
-                x_label
-            )
-
-            # Handle phase plot if 'FREQ' is in the columns
-            if 'FREQ' in self.df.columns:
-                phase_column = 'Phase_' + selected_column
-                y_data_dict = {phase_column: self.df[phase_column]}
-                self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
-                                                                                                 y_data_dict)
-
-                self.create_and_style_figure(
-                    self.phase_plot,
-                    self.working_df_phase_tab1,
-                    x_data,
-                    f'Phase {selected_column} Plot'
-                )
-
-                # Creating dataframe container for tab1 (phase)
-                y_data_dict = {phase_column: self.df[phase_column]}
-                self.original_df_phase_tab1, self.working_df_phase_tab1 = self.create_dataframes(x_data, x_label,
-                                                                                                 y_data_dict)
-
     def update_plots_tab1(self):
         selected_column = self.column_selector.currentText()
         if not selected_column:
@@ -3287,6 +3211,9 @@ def after_post(this, solution):  # Do not edit this line
             elif hasattr(self, 'phase_plot'):
                   self.phase_plot.setHtml("")
 
+            # Ensure the spectrum plot refreshes if the filter state changes
+            if 'TIME' in self.df.columns and self.spectrum_checkbox.isChecked():
+                self.update_spectrum_plot()
 
         except Exception as e:
              print(f"Error updating plots in Tab 1: {e}")
