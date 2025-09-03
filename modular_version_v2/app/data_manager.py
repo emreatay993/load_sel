@@ -12,9 +12,7 @@ class DataManager(QtCore.QObject):
     Handles all data loading, parsing, and management.
     Emits a signal when data is successfully loaded.
     """
-    # Signal carries: a pandas DataFrame, a string for the domain ('TIME'/'FREQ'),
-    # and a string for the folder path.
-    dataLoaded = QtCore.pyqtSignal(pd.DataFrame, str, str)
+    dataLoaded = QtCore.pyqtSignal(pd.DataFrame, str, str) # Strings are for domain type and folder path, respectively.
     dataLoadFailed = QtCore.pyqtSignal(str)
     comparisonDataLoaded = QtCore.pyqtSignal(pd.DataFrame)
 
@@ -26,7 +24,7 @@ class DataManager(QtCore.QObject):
         if not folder:
             sys.exit(1)
 
-        # This initial load is now just a special case of loading from a list of paths
+        # This initial load is just a special case of loading from a list of paths
         self.load_data_from_paths([folder])
 
     ## The core method for handling single or multiple folder selections
@@ -81,7 +79,7 @@ class DataManager(QtCore.QObject):
                     new_columns.extend([f"Extra_Column_{i}" for i in range(1, additional_cols + 1)])
                 df_temp.columns = new_columns[:len(df_temp.columns)]
 
-                # 5. CRUCIAL: Add the DataFolder column for grouping later
+                # 5. Add the DataFolder column for grouping later
                 df_temp['DataFolder'] = os.path.basename(folder)
                 combined_dfs.append(df_temp)
 
@@ -106,7 +104,7 @@ class DataManager(QtCore.QObject):
         # Emit the signal with the combined results
         self.dataLoaded.emit(final_df, data_domain, first_valid_folder)
 
-    # Helper to avoid code duplication
+
     def _get_column_headers(self, df_intf_before, data_domain):
         """Determines the correct column headers based on the data domain."""
         if data_domain == 'FREQ':
@@ -117,22 +115,18 @@ class DataManager(QtCore.QObject):
         return []
 
     def _select_directory(self, title):
-        # Now a private helper method
         folder = QFileDialog.getExistingDirectory(None, title)
         return folder
 
     def _get_file_path(self, folder, file_suffix):
-        # Now a private helper method
         return [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(file_suffix)]
 
     def _read_pld_log_file(self, file_path):
-        # Now a private helper method
         df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True)
         df = df.iloc[:, 1].dropna().str.strip().to_frame()
         return df.T
 
     def _insert_phase_columns(self, df):
-        # Now a private helper method
         interface_labels = df.iloc[0, :].copy()
         transformed_labels = []
         for label in interface_labels:
@@ -143,7 +137,6 @@ class DataManager(QtCore.QObject):
         return df
 
     def _read_pld_file(self, file_path):
-        # Now a private helper method
         df = pd.read_csv(file_path, delimiter='|', skipinitialspace=True, skip_blank_lines=True, comment='_', low_memory=False)
         df = df.apply(pd.to_numeric)
         df = df.dropna(how='all')
