@@ -14,7 +14,7 @@ class PartLoadsTab(QtWidgets.QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        # --- Upper Controls ---
+        # Upper Controls
         self.side_filter_selector = QComboBox()
         self.side_filter_selector.setEditable(True)
 
@@ -40,20 +40,20 @@ class PartLoadsTab(QtWidgets.QWidget):
         self.section_max_label.setVisible(False)
         self.section_max_input.setVisible(False)
 
-        # --- Plots ---
+        # Plots
         self.t_series_plot = QtWebEngineWidgets.QWebEngineView()
         self.r_series_plot = QtWebEngineWidgets.QWebEngineView()
         splitter = QSplitter(QtCore.Qt.Vertical)
         splitter.addWidget(self.t_series_plot)
         splitter.addWidget(self.r_series_plot)
 
-        # --- Lower Controls ---
+        # Lower Controls
         self.data_point_selector = QComboBox()
         self.data_point_selector.setEditable(True)
         self.extract_data_button = QPushButton("Extract Data")
         self.extract_all_data_button = QPushButton("Extract Part Loads as FEA Input (ANSYS)")
 
-        # --- Layouts ---
+        # Layouts
         upper_layout = QHBoxLayout()
         upper_layout.addWidget(self.side_filter_selector)
         upper_layout.addWidget(self.exclude_checkbox)
@@ -81,12 +81,11 @@ class PartLoadsTab(QtWidgets.QWidget):
         self.exclude_checkbox.stateChanged.connect(self.plot_parameters_changed)
         self.tukey_checkbox.stateChanged.connect(self._on_tukey_toggled)
         self.tukey_alpha_spin.valueChanged.connect(self.plot_parameters_changed)
-        # We will connect sectioning later when we add validation
-        self.section_checkbox.stateChanged.connect(
-            lambda s: [w.setVisible(s == QtCore.Qt.Checked) for w in
-                       (self.section_min_label, self.section_min_input,
-                        self.section_max_label, self.section_max_input)]
-        )
+        self.section_checkbox.stateChanged.connect(self._on_section_toggled)
+        self.section_min_input.editingFinished.connect(self.plot_parameters_changed)
+        self.section_max_input.editingFinished.connect(self.plot_parameters_changed)
+
+
         self.extract_all_data_button.clicked.connect(self.export_to_ansys_requested)
 
     def set_time_domain_features_visibility(self, visible):
@@ -102,8 +101,17 @@ class PartLoadsTab(QtWidgets.QWidget):
             self.section_max_label.setVisible(False)
             self.section_max_input.setVisible(False)
 
+    @QtCore.pyqtSlot(int)
     def _on_tukey_toggled(self, state):
         self.tukey_alpha_spin.setVisible(state == QtCore.Qt.Checked)
+        self.plot_parameters_changed.emit()
+
+    @QtCore.pyqtSlot(int)
+    def _on_section_toggled(self, state):
+        is_checked = (state == QtCore.Qt.Checked)
+        for widget in (self.section_min_label, self.section_min_input,
+                       self.section_max_label, self.section_max_input):
+            widget.setVisible(is_checked)
         self.plot_parameters_changed.emit()
 
     def display_t_series_plot(self, fig):

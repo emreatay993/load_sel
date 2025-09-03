@@ -13,7 +13,7 @@ class SettingsTab(QtWidgets.QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        # --- Data Processing Group ---
+        # Data Processing Group
         data_processing_group = QGroupBox("Data Processing Tools For Time Domain Data (Beta)")
         data_processing_layout = QVBoxLayout()
         self.rolling_min_max_checkbox = QCheckBox("Show Plots as Rolling Min-Max Envelope")
@@ -21,7 +21,7 @@ class SettingsTab(QtWidgets.QWidget):
         self.desired_num_points_input = QLineEdit("50000")
         self.num_points_label = QLabel("Number of Points Shown:")
 
-        ## Set dependent widgets to be invisible initially
+        # Set dependent widgets to be invisible initially
         self.plot_as_bars_checkbox.setVisible(False)
         self.num_points_label.setVisible(False)
         self.desired_num_points_input.setVisible(False)
@@ -35,7 +35,7 @@ class SettingsTab(QtWidgets.QWidget):
         data_processing_layout.addLayout(control_layout)
         data_processing_group.setLayout(data_processing_layout)
 
-        # --- Graphical Settings Group ---
+        # Graphical Settings Group
         graphical_settings_group = QGroupBox("Graphical Settings")
         graphical_settings_layout = QVBoxLayout()
 
@@ -55,21 +55,21 @@ class SettingsTab(QtWidgets.QWidget):
 
         graphical_settings_group.setLayout(graphical_settings_layout)
 
-        # --- Contact Label ---
+        # Contact Label
         contact_label = QLabel("Please reach K. Emre Atay for bug reports or feature requests.")
 
-        # --- Main Layout ---
+        # Main Layout
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(data_processing_group)
         main_layout.addWidget(graphical_settings_group)
         main_layout.addStretch()
         main_layout.addWidget(contact_label, alignment=QtCore.Qt.AlignBottom)
 
-        # --- Styles ---
+        # Styles
         data_processing_group.setStyleSheet(config_manager.GROUPBOX_STYLE)
         graphical_settings_group.setStyleSheet(config_manager.GROUPBOX_STYLE)
 
-        # --- Connections ---
+        # Connections
         self.rolling_min_max_checkbox.stateChanged.connect(self.settings_changed)
         self.rolling_min_max_checkbox.stateChanged.connect(self._on_rolling_min_max_toggled)
         self.plot_as_bars_checkbox.stateChanged.connect(self.settings_changed)

@@ -13,19 +13,19 @@ class ComparePartLoadsTab(QtWidgets.QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        # --- Controls ---
+        # Controls
         self.side_filter_selector = QComboBox()
         self.side_filter_selector.setEditable(True)
         self.exclude_checkbox = QCheckBox("Filter out T2, T3, R2, and R3 from graphs")
 
-        # --- Plots ---
+        # Plots
         self.t_series_plot = QtWebEngineWidgets.QWebEngineView()
         self.r_series_plot = QtWebEngineWidgets.QWebEngineView()
         splitter = QSplitter(QtCore.Qt.Vertical)
         splitter.addWidget(self.t_series_plot)
         splitter.addWidget(self.r_series_plot)
 
-        # --- Layouts ---
+        # Layouts
         upper_layout = QHBoxLayout()
         upper_layout.addWidget(self.side_filter_selector)
         upper_layout.addWidget(self.exclude_checkbox)
@@ -35,7 +35,7 @@ class ComparePartLoadsTab(QtWidgets.QWidget):
         main_layout.addLayout(upper_layout)
         main_layout.addWidget(splitter)
 
-        # --- Connections ---
+        # Connections
         self.side_filter_selector.currentIndexChanged.connect(self.plot_parameters_changed)
         self.exclude_checkbox.stateChanged.connect(self.plot_parameters_changed)
 

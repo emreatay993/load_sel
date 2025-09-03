@@ -3,6 +3,7 @@
 from PyQt5 import QtWidgets, QtCore, QtWebEngineWidgets
 from PyQt5.QtWidgets import (QVBoxLayout, QHBoxLayout, QSplitter, QComboBox,
                              QLabel, QSizePolicy, QCheckBox, QLineEdit, QSpinBox)
+
 from ..plotting.plotter import load_fig_to_webview
 from .. import tooltips
 
@@ -160,13 +161,13 @@ class SingleDataTab(QtWidgets.QWidget):
 
         # Manage the splitter layout
         if is_checked:
-            # We are showing the spectrum plot
+            # Show the spectrum plot
             self.set_spectrum_plot_visibility(True)
             # Restore the previous splitter sizes if they exist
             if self.splitter_sizes:
                 self.splitter.setSizes(self.splitter_sizes)
             else:
-                # If it is the first time, distribute sizes equally
+                # If it is the first time, distribute plot sizes equally
                 count = self.splitter.count()
                 if count > 0:
                     equal_sizes = [self.splitter.height() // count] * count

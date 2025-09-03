@@ -16,7 +16,7 @@ class TimeDomainRepresentTab(QtWidgets.QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        # --- Widgets ---
+        # Widgets
         self.data_point_selector = QComboBox()
         self.data_point_selector.setEditable(True)
         self.data_point_selector.addItem("Select a frequency [Hz] to plot")
@@ -32,7 +32,7 @@ class TimeDomainRepresentTab(QtWidgets.QWidget):
 
         self.extract_button = QPushButton("Extract Data at Each Interval as CSV file")
 
-        # --- Layouts ---
+        # Layouts
         selector_layout = QHBoxLayout()
         selector_layout.addWidget(QLabel("Select a Frequency:"))
         selector_layout.addWidget(self.data_point_selector)
@@ -47,7 +47,7 @@ class TimeDomainRepresentTab(QtWidgets.QWidget):
         main_layout.addWidget(self.time_domain_plot)
         main_layout.addLayout(extract_layout)
 
-        # --- Connections ---
+        # Connections
         self.data_point_selector.currentIndexChanged.connect(self.plot_parameters_changed)
         self.extract_button.clicked.connect(self.extract_data_requested)
 
