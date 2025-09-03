@@ -200,9 +200,24 @@ class PlotController(QtCore.QObject):
         if not side: return
 
         exclude = tab.exclude_checkbox.isChecked()
-        def filter_cols(cols, components):
-            filtered = [c for c in cols if side in c and any(s in c for s in components) and 'Phase_' not in c]
-            return [c for c in filtered if not (exclude and any(s in c for s in [' T2', ' T3', ' R2', ' R3']))]
+        def filter_cols(all_columns, required_components):
+            """
+            Filters DataFrame columns to find specific part load components based on UI selections.
+            """
+            # Step 1: Find columns relevant to the selected side (e.g., 'Upper Side').
+            side_cols = [col for col in all_columns if side in col]
+
+            # Step 2: From those, find columns for the required components (e.g., 'T1', 'T2').
+            component_cols = [col for col in side_cols if any(comp in col for comp in required_components)]
+
+            # Step 3: Exclude any phase angle columns.
+            final_cols = [col for col in component_cols if 'Phase_' not in col]
+
+            # Step 4: If the exclude box is checked, remove T2, T3, R2, R3 (but keep resultants).
+            if exclude:
+                final_cols = [col for col in final_cols if not self._should_exclude_component(col)]
+
+            return final_cols
 
         t_cols = filter_cols(df.columns, ['T1', 'T2', 'T3', 'T2/T3'])
         r_cols = filter_cols(df.columns, ['R1', 'R2', 'R3', 'R2/R3'])
