@@ -9,7 +9,6 @@ from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import (QMainWindow, QTabWidget, QMenuBar, QMenu, QAction, QMessageBox)
 from PyQt5.QtGui import QIcon
 
-# Import internal classes
 from .ui.directory_tree_dock import DirectoryTreeDock
 from .ui.tab_single_data import SingleDataTab
 from .ui.tab_interface_data import InterfaceDataTab
@@ -29,16 +28,16 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.data_manager = data_manager
         
-        # --- Core application state ---
+        # Core application state
         self.df = None
         self.df_compare = None
         self.data_domain = None
         self.raw_data_folder = None
         
-        # --- Core components ---
+        # Core components
         self.plotter = Plotter()
 
-        # --- UI and Controllers ---
+        # UI and Controllers
         self._setup_ui()
         self.action_handler = ActionHandler(self, self.data_manager)
         self.plot_controller = PlotController(self)
@@ -47,7 +46,7 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, event):
         key = event.key()
 
-        # Your custom logic for specific keys
+        # Custom logic for specific keys
         if key == QtCore.Qt.Key_K:
             self.plotter.cycle_legend_position()
             self.plot_controller.update_all_plots_from_settings()
@@ -56,9 +55,8 @@ class MainWindow(QMainWindow):
             self.plotter.toggle_legend_visibility()
             self.plot_controller.update_all_plots_from_settings()
 
-        # The "else" is for every other key not recognized
         else:
-            # If program does not know what I key does,
+            # If program does not know what a key does,
             # it will pass it back to the default handler.
             super().keyPressEvent(event)
 
@@ -68,7 +66,7 @@ class MainWindow(QMainWindow):
         icon_path = os.path.join("resources", "icon.ico")
         if os.path.exists(icon_path): self.setWindowIcon(QIcon(icon_path))
 
-        # --- Menu Bar ---
+        # Menu Bar
         menu_bar = QMenuBar(self)
         self.setMenuBar(menu_bar)
         file_menu = menu_bar.addMenu("File")
@@ -76,12 +74,12 @@ class MainWindow(QMainWindow):
         self.open_action = QAction("Open New Data", self)
         file_menu.addAction(self.open_action)
 
-        # --- Dock Widget ---
+        # Dock Widget
         self.dock = DirectoryTreeDock(self)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.dock)
         view_menu.addAction(self.dock.toggleViewAction())
 
-        # --- Tab Widgets ---
+        # Tab Widgets
         self.tab_widget = QTabWidget()
         self.setCentralWidget(self.tab_widget)
         self.tab_single_data = SingleDataTab()
@@ -99,18 +97,18 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.tab_compare_part_loads, "Compare Data (Part Loads)")
         self.tab_widget.addTab(self.tab_settings, "Settings")
 
-        # --- Apply Styles ---
+        # Apply Styles
         self.dock.tree_view.setStyleSheet(config_manager.TREEVIEW_STYLE)
         self.tab_widget.setStyleSheet(config_manager.TABWIDGET_STYLE)
 
     def _connect_signals(self):
-        # --- Data Loading Signals ---
+        # Data Loading Signals
         self.data_manager.dataLoaded.connect(self.on_data_loaded)
         self.data_manager.comparisonDataLoaded.connect(self.on_comparison_data_loaded)
         self.dock.directories_selected.connect(self._on_directories_selected)
         self.open_action.triggered.connect(self.data_manager.load_data_from_directory)
 
-        # --- Plot Update Signals (Connected to PlotController) ---
+        # Plot Update Signals (Connected to PlotController)
         self.tab_single_data.plot_parameters_changed.connect(self.plot_controller.update_single_data_plots)
         self.tab_single_data.spectrum_parameters_changed.connect(self.plot_controller.update_spectrum_plot_only)
         self.tab_interface_data.plot_parameters_changed.connect(self.plot_controller.update_interface_data_plots)
@@ -119,11 +117,10 @@ class MainWindow(QMainWindow):
         self.tab_compare_data.plot_parameters_changed.connect(self.plot_controller.update_compare_data_plots)
         self.tab_compare_part_loads.plot_parameters_changed.connect(self.plot_controller.update_compare_part_loads_plots)
         self.tab_settings.settings_changed.connect(self.plot_controller.update_all_plots_from_settings)
-        # The time domain plot also needs to update when part loads side changes
         self.tab_part_loads.plot_parameters_changed.connect(self.plot_controller.update_time_domain_represent_plot)
 
 
-        # --- Action Signals (Connected to ActionHandler) ---
+        # Action Signals (Connected to ActionHandler)
         self.tab_compare_data.select_compare_data_requested.connect(self.action_handler.handle_compare_data_selection)
         self.tab_part_loads.export_to_ansys_requested.connect(self.action_handler.handle_ansys_export)
         self.tab_time_domain_represent.extract_data_requested.connect(self.action_handler.handle_time_domain_represent_export)
