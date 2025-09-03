@@ -36,6 +36,14 @@ class Plotter:
         position_name = self.legend_positions[self.current_legend_position_index]
         return positions.get(position_name, positions['default'])
 
+    def cycle_legend_position(self):
+        """Cycles to the next legend position."""
+        self.current_legend_position_index = (self.current_legend_position_index + 1) % len(self.legend_positions)
+
+    def toggle_legend_visibility(self):
+        """Toggles the legend's visibility on or off."""
+        self.legend_visible = not self.legend_visible
+    
     def _get_hover_template(self, index_name):
         """Generates the custom hovertemplate string based on the data domain."""
         is_freq_domain = 'freq' in index_name.lower()
