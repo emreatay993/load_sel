@@ -45,6 +45,25 @@ class PlotController(QtCore.QObject):
         plot_df.index.name = x_label
         return plot_df
 
+    def _should_exclude_component(self, col_name: str) -> bool:
+        """
+        Checks if a column should be excluded based on the T2/T3/R2/R3 filter,
+        while correctly preserving resultants like 'T2/T3'.
+        """
+        # Match T2 but not T2/T3
+        if re.search(r'\bT2\b', col_name) and not re.search(r'T2/T3', col_name):
+            return True
+        # Match T3 but not T2/T3
+        if re.search(r'\bT3\b', col_name) and not re.search(r'T2/T3', col_name):
+            return True
+        # Match R2 but not R2/R3
+        if re.search(r'\bR2\b', col_name) and not re.search(r'R2/R3', col_name):
+            return True
+        # Match R3 but not R2/R3
+        if re.search(r'\bR3\b', col_name) and not re.search(r'R2/R3', col_name):
+            return True
+        return False
+    
     def _calculate_differences(self, columns):
         """Calculates the absolute difference between two dataframes for given columns."""
         df = self._get_df()
