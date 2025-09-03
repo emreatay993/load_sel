@@ -9,6 +9,7 @@ from .. import tooltips
 
 class SingleDataTab(QtWidgets.QWidget):
     plot_parameters_changed = QtCore.pyqtSignal()
+    spectrum_parameters_changed = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -76,15 +77,18 @@ class SingleDataTab(QtWidgets.QWidget):
         main_layout.addLayout(selector_layout)
         main_layout.addWidget(self.splitter)
 
+        # Controls that affect the main plot
         self.column_selector.currentIndexChanged.connect(self.plot_parameters_changed)
         self.filter_checkbox.stateChanged.connect(self._on_filter_toggled)
         self.cutoff_frequency_input.textChanged.connect(self.plot_parameters_changed)
         self.filter_order_input.valueChanged.connect(self.plot_parameters_changed)
         self.spectrum_checkbox.stateChanged.connect(self._on_spectrum_toggled)
-        self.plot_type_selector.currentIndexChanged.connect(self.plot_parameters_changed)
+
+        # Controls that only affect the spectrum plot
+        self.plot_type_selector.currentIndexChanged.connect(self.spectrum_parameters_changed)
         self.plot_type_selector.currentIndexChanged.connect(self._update_colorscale_visibility)
-        self.colorscale_selector.currentIndexChanged.connect(self.plot_parameters_changed)
-        self.num_slices_input.returnPressed.connect(self.plot_parameters_changed)
+        self.colorscale_selector.currentIndexChanged.connect(self.spectrum_parameters_changed)
+        self.num_slices_input.returnPressed.connect(self.spectrum_parameters_changed)
 
         # Set Tooltips
         self.num_slices_input.setToolTip(tooltips.SPECTRUM_SLICES)
@@ -129,6 +133,11 @@ class SingleDataTab(QtWidgets.QWidget):
             self.plot_type_selector.setVisible(False)
             self.num_slices_label.setVisible(False)
             self.num_slices_input.setVisible(False)
+            self.colorscale_label.setVisible(False)
+            self.colorscale_selector.setVisible(False)
+
+            # Ensure the spectrum plot is also hidden
+            self.set_spectrum_plot_visibility(False)
 
     def _on_filter_toggled(self, state):
         is_checked = state == QtCore.Qt.Checked
