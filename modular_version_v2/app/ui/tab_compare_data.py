@@ -16,7 +16,7 @@ class CompareDataTab(QtWidgets.QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        # --- Plots ---
+        # Plots
         self.compare_regular_plot = QtWebEngineWidgets.QWebEngineView()
         self.compare_absolute_diff_plot = QtWebEngineWidgets.QWebEngineView()
         self.compare_percent_diff_plot = QtWebEngineWidgets.QWebEngineView()
@@ -32,21 +32,21 @@ class CompareDataTab(QtWidgets.QWidget):
         splitter_main.addWidget(splitter_upper)
         splitter_main.addWidget(splitter_lower)
 
-        # --- Controls ---
+        # Controls
         self.compare_column_selector = QComboBox()
         self.compare_column_selector.setEditable(False)
         self.compare_button = QPushButton("Select Data for Comparison")
 
-        # --- Layout ---
+        # Layout
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(self.compare_column_selector)
         main_layout.addWidget(splitter_main)
         main_layout.addWidget(self.compare_button)
 
-        # --- Styles ---
+        # Styles
         self.compare_button.setStyleSheet(config_manager.COMPARE_BUTTON_STYLE)
 
-        # --- Connections ---
+        # Connections
         self.compare_button.clicked.connect(self.select_compare_data_requested)
         self.compare_column_selector.currentIndexChanged.connect(self.plot_parameters_changed)
 
