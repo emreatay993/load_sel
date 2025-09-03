@@ -21,7 +21,7 @@ class Plotter:
         self.hover_font_size = 15
         self.hover_mode = 'closest'
         self.legend_visible = True
-        self.current_legend_position_index = 1 # 'top left'
+        self.current_legend_position_index = 0 # 'default'
         self.legend_positions = ['default', 'top left', 'top right', 'bottom right', 'bottom left']
 
     def _get_legend_position(self):
@@ -59,7 +59,7 @@ class Plotter:
         fig = go.Figure()
 
         if isinstance(data_to_plot, pd.DataFrame):
-            # --- Case 1: Input is a DataFrame ---
+            # Case 1: Input is a DataFrame
             if data_to_plot.empty:
                 return go.Figure()
 
@@ -75,7 +75,7 @@ class Plotter:
             x_axis_title = data_to_plot.index.name
 
         elif isinstance(data_to_plot, dict):
-            # --- Case 2: Input is a dictionary of DataFrames ---
+            # Case 2: Input is a dictionary of DataFrames
             df_dict = data_to_plot
             if not df_dict:
                 return go.Figure()
@@ -115,7 +115,7 @@ class Plotter:
         data_column_name = df.columns[0]
         fft_df = rolling_fft(df, num_slices=num_slices, add_resultant=True)
 
-        # --- MODIFIED: Create the figure first ---
+        # Create the figure first
         fig = spectrum_over_time(
             fft_df,
             plot_type=plot_type,
@@ -135,7 +135,7 @@ class Plotter:
         self._apply_standard_layout(fig, f"Spectrum Plot ({plot_type})", "Frequency (Hz)", "Time (s)")
         return fig
 
-        # Apply the standard layout for a consistent look and feel
+        # Apply the standard layout for a consistent styling
         self._apply_standard_layout(fig, f"Spectrum Plot ({plot_type})", "Frequency (Hz)", "Time (s)")
         return fig
 
@@ -223,8 +223,7 @@ def load_fig_to_webview(fig, web_view):
     """Generates full HTML, saves to a temp file, and loads it into a QWebEngineView."""
     try:
         html_content = pio.to_html(fig, full_html=True, include_plotlyjs=True, config={'responsive': True})
-        # Using a NamedTemporaryFile can be tricky with URLs. Let's manage it manually.
-        # We'll store temp files on the web_view object itself to manage their lifecycle.
+        # Store temp files on the web_view object
         if not hasattr(web_view, '_temp_files'):
             web_view._temp_files = []
 
