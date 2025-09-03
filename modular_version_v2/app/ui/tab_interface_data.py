@@ -65,7 +65,7 @@ class InterfaceDataTab(QtWidgets.QWidget):
             return
 
         pattern = re.compile(r'I\d+[a-zA-Z]?\s*-\s*(.*?)(?=\s*\()')
-        relevant_cols = [col for col in self.df.columns if col.startswith(current_interface)]
+        relevant_cols = [col for col in self.df.columns if re.match(rf"^{re.escape(current_interface)}(?=\D)", col)]
         sides = sorted(set(pattern.search(col).group(1).strip() for col in relevant_cols if pattern.search(col)))
 
         self.side_selector.blockSignals(True)
@@ -77,4 +77,5 @@ class InterfaceDataTab(QtWidgets.QWidget):
         load_fig_to_webview(fig, self.t_series_plot)
 
     def display_r_series_plot(self, fig):
+
         load_fig_to_webview(fig, self.r_series_plot)
