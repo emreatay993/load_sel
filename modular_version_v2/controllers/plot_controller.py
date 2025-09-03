@@ -63,6 +63,27 @@ class PlotController(QtCore.QObject):
         if re.search(r'\bR3\b', col_name) and not re.search(r'R2/R3', col_name):
             return True
         return False
+
+    def _filter_part_load_cols(self, all_columns, side, required_components, exclude):
+        """
+        A shared helper to filter DataFrame columns for part loads based on UI selections.
+        """
+        side_pattern = re.compile(rf'\b{re.escape(side)}\b')
+
+        # Step 1: Find columns relevant to the selected side using a regex pattern.
+        side_cols = [col for col in all_columns if side_pattern.search(col)]
+
+        # Step 2: From those, find columns for the required components (e.g., 'T1', 'T2').
+        component_cols = [col for col in side_cols if any(comp in col for comp in required_components)]
+
+        # Step 3: Exclude any phase angle columns.
+        final_cols = [col for col in component_cols if 'Phase_' not in col]
+
+        # Step 4: If the exclude box is checked, remove T2, T3, R2, R3 (but keep resultants).
+        if exclude:
+            final_cols = [col for col in final_cols if not self._should_exclude_component(col)]
+
+        return final_cols
     
     def _calculate_differences(self, columns):
         """Calculates the absolute difference between two dataframes for given columns."""
@@ -188,8 +209,8 @@ class PlotController(QtCore.QObject):
         t_cols = [c for c in df.columns if c.startswith(interface) and side in c and any(s in c for s in ['T1', 'T2', 'T3', 'T2/T3']) and 'Phase_' not in c]
         r_cols = [c for c in df.columns if c.startswith(interface) and side in c and any(s in c for s in ['R1', 'R2', 'R3', 'R2/R3']) and 'Phase_' not in c]
 
-        tab.display_t_series_plot(self.plotter.create_standard_figure(self._get_plot_df(t_cols), f'Translational - {side}'))
-        tab.display_r_series_plot(self.plotter.create_standard_figure(self._get_plot_df(r_cols), f'Rotational - {side}'))
+        tab.display_t_series_plot(self.plotter.create_standard_figure(self._get_plot_df(t_cols), f'Translational Components - {side}'))
+        tab.display_r_series_plot(self.plotter.create_standard_figure(self._get_plot_df(r_cols), f'Rotational Components - {side}'))
 
     @QtCore.pyqtSlot()
     def update_part_loads_plots(self):
@@ -200,31 +221,13 @@ class PlotController(QtCore.QObject):
         if not side: return
 
         exclude = tab.exclude_checkbox.isChecked()
-        def filter_cols(all_columns, required_components):
-            """
-            Filters DataFrame columns to find specific part load components based on UI selections.
-            """
-            # Step 1: Find columns relevant to the selected side (e.g., 'Upper Side').
-            side_cols = [col for col in all_columns if side in col]
 
-            # Step 2: From those, find columns for the required components (e.g., 'T1', 'T2').
-            component_cols = [col for col in side_cols if any(comp in col for comp in required_components)]
+        t_cols = self._filter_part_load_cols(df.columns, side, ['T1', 'T2', 'T3', 'T2/T3'], exclude)
+        r_cols = self._filter_part_load_cols(df.columns, side, ['R1', 'R2', 'R3', 'R2/R3'], exclude)
 
-            # Step 3: Exclude any phase angle columns.
-            final_cols = [col for col in component_cols if 'Phase_' not in col]
-
-            # Step 4: If the exclude box is checked, remove T2, T3, R2, R3 (but keep resultants).
-            if exclude:
-                final_cols = [col for col in final_cols if not self._should_exclude_component(col)]
-
-            return final_cols
-
-        t_cols = filter_cols(df.columns, ['T1', 'T2', 'T3', 'T2/T3'])
-        r_cols = filter_cols(df.columns, ['R1', 'R2', 'R3', 'R2/R3'])
-
-        tab.display_t_series_plot(self.plotter.create_standard_figure(self._get_plot_df(t_cols), f'Translational - {side}'))
-        tab.display_r_series_plot(self.plotter.create_standard_figure(self._get_plot_df(r_cols), f'Rotational - {side}'))
-
+        tab.display_t_series_plot(self.plotter.create_standard_figure(self._get_plot_df(t_cols), f'Translational Components - {side}'))
+        tab.display_r_series_plot(self.plotter.create_standard_figure(self._get_plot_df(r_cols), f'Rotational Components - {side}'))
+    
     @QtCore.pyqtSlot()
     def update_time_domain_represent_plot(self):
         df = self._get_df()
@@ -305,19 +308,15 @@ class PlotController(QtCore.QObject):
         if not selected_side: return
 
         exclude = tab.exclude_checkbox.isChecked()
-        side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
 
-        def get_cols(components):
-            cols = [c for c in self._get_df().columns if side_pattern.search(c) and any(s in c for s in components) and not c.startswith('Phase_')]
-            return [c for c in cols if not (exclude and any(s in c for s in [' T2', ' T3', ' R2', ' R3']))]
+        t_cols = self._filter_part_load_cols(self._get_df().columns, selected_side, ["T1", "T2", "T3", "T2/T3"], exclude)
+        r_cols = self._filter_part_load_cols(self._get_df().columns, selected_side, ["R1", "R2", "R3", "R2/R3"], exclude)
 
-        t_cols = get_cols(["T1", "T2", "T3", "T2/T3"]); r_cols = get_cols(["R1", "R2", "R3", "R2/R3"])
         t_diff_df = self._get_plot_df([], source_df=self._calculate_differences(t_cols))
         r_diff_df = self._get_plot_df([], source_df=self._calculate_differences(r_cols))
         
-        fig_t = self.plotter.create_standard_figure(t_diff_df, f'Translational Difference (Δ) - {selected_side}')
+        fig_t = self.plotter.create_standard_figure(t_diff_df, f'Translational Components, Difference (Δ) - {selected_side}')
         tab.display_t_series_plot(fig_t)
         
-        fig_r = self.plotter.create_standard_figure(r_diff_df, f'Rotational Difference (Δ) - {selected_side}')
+        fig_r = self.plotter.create_standard_figure(r_diff_df, f'Rotational Components, Difference (Δ) - {selected_side}')
         tab.display_r_series_plot(fig_r)
-
