@@ -44,6 +44,24 @@ class MainWindow(QMainWindow):
         self.plot_controller = PlotController(self)
         self._connect_signals()
 
+    def keyPressEvent(self, event):
+        key = event.key()
+
+        # Your custom logic for specific keys
+        if key == QtCore.Qt.Key_K:
+            self.plotter.cycle_legend_position()
+            self.plot_controller.update_all_plots_from_settings()
+
+        elif key == QtCore.Qt.Key_L:
+            self.plotter.toggle_legend_visibility()
+            self.plot_controller.update_all_plots_from_settings()
+
+        # The "else" is for every other key not recognized
+        else:
+            # If program does not know what I key does,
+            # it will pass it back to the default handler.
+            super().keyPressEvent(event)
+
     def _setup_ui(self):
         self.setWindowTitle("WE MechLoad Viewer")
         self.setMinimumSize(1200, 800)
