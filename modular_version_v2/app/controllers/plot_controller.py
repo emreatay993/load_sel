@@ -245,7 +245,8 @@ class PlotController(QtCore.QObject):
                 return
 
             side_pattern = re.compile(rf'\b{re.escape(selected_side)}\b')
-            plot_cols = [c for c in df.columns if side_pattern.search(c) and not c.startswith('Phase_') and any(s in c for s in ['T1', 'T2', 'T3', 'R1', 'R2', 'R3', 'T2/T3', 'R2/R3'])]
+            plot_cols = [c for c in df.columns if side_pattern.search(c) and not c.startswith('Phase_') and
+                         any(s in c for s in ['T1', 'T2', 'T3', 'R1', 'R2', 'R3', 'T2/T3', 'R2/R3'])]
 
             theta = np.linspace(0, 360, 361)
             rads = np.radians(theta)
@@ -290,14 +291,16 @@ class PlotController(QtCore.QObject):
         if diff_df.empty: return
 
         abs_diff_df = self._get_plot_df([], source_df=pd.DataFrame({'Absolute Difference': diff_df.iloc[:, 0]}))
-        fig_abs_diff = self.plotter.create_standard_figure(abs_diff_df, f'{selected_column} Absolute Difference')
+        fig_abs_diff = self.plotter.create_standard_figure(abs_diff_df,
+                                                           f'{selected_column} Absolute Difference')
         tab.display_absolute_diff_plot(fig_abs_diff)
         
         with np.errstate(divide='ignore', invalid='ignore'):
             relative_diff = np.divide(100 * diff_df.iloc[:, 0], np.abs(self._get_df()[selected_column]))
             relative_diff.fillna(0, inplace=True)
         rel_diff_df = self._get_plot_df([], source_df=pd.DataFrame({'Relative Difference (%)': relative_diff}))
-        fig_rel_diff = self.plotter.create_standard_figure(rel_diff_df, f'{selected_column} Relative Difference (%)', "Percent (%)")
+        fig_rel_diff = self.plotter.create_standard_figure(rel_diff_df,
+                                                           f'{selected_column} Relative Difference (%)', "Percent (%)")
         tab.display_relative_diff_plot(fig_rel_diff)
 
     @QtCore.pyqtSlot()
@@ -309,16 +312,20 @@ class PlotController(QtCore.QObject):
 
         exclude = tab.exclude_checkbox.isChecked()
 
-        t_cols = self._filter_part_load_cols(self._get_df().columns, selected_side, ["T1", "T2", "T3", "T2/T3"], exclude)
-        r_cols = self._filter_part_load_cols(self._get_df().columns, selected_side, ["R1", "R2", "R3", "R2/R3"], exclude)
+        t_cols = self._filter_part_load_cols(self._get_df().columns, selected_side,
+                                             ["T1", "T2", "T3", "T2/T3"], exclude)
+        r_cols = self._filter_part_load_cols(self._get_df().columns, selected_side,
+                                             ["R1", "R2", "R3", "R2/R3"], exclude)
 
         t_diff_df = self._get_plot_df([], source_df=self._calculate_differences(t_cols))
         r_diff_df = self._get_plot_df([], source_df=self._calculate_differences(r_cols))
         
-        fig_t = self.plotter.create_standard_figure(t_diff_df, f'Translational Components, Difference (Δ) - {selected_side}')
+        fig_t = self.plotter.create_standard_figure(t_diff_df,
+                                                    f'Translational Components, Difference (Δ) - {selected_side}')
         tab.display_t_series_plot(fig_t)
         
-        fig_r = self.plotter.create_standard_figure(r_diff_df, f'Rotational Components, Difference (Δ) - {selected_side}')
+        fig_r = self.plotter.create_standard_figure(r_diff_df,
+                                                    f'Rotational Components, Difference (Δ) - {selected_side}')
         tab.display_r_series_plot(fig_r)
 
     @QtCore.pyqtSlot()
