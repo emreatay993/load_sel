@@ -1,0 +1,52 @@
+# ---------------------------------------------------------------------------
+# ANSYS Mechanical IronPython Script
+# Her Contact Region altına bir Command Snippet ekler.
+# Snippet içinde contact adı ve Contact ID (cid) bilgisi bulunur.
+# ---------------------------------------------------------------------------
+
+# APDL komutunun temel şablonu:
+apdl_template = r"""
+! Automatically inserted by Python script
+! Contact Name: {name}
+! Contact ID: {cid}
+
+cid = {cid}
+*cfopen,contact_{cid},txt
+*cfwrite,'Contact Name: {name}'
+*cfwrite,'Contact ID: ',cid
+*cfclose
+"""
+
+try:
+    # Aktif olarak seçili nesneyi al
+    sel = ExtAPI.DataModel.Tree.FirstActiveObject
+    if sel is None:
+        raise Exception("Lütfen ağaçtan bir Connection Group veya Connections öğesi seçin.")
+
+    added_count = 0
+
+    # Altındaki tüm ContactRegion nesnelerini dolaş
+    for child in sel.Children:
+        try:
+            # Sadece ContactRegion nesneleri için çalış
+            if "ContactRegion" in child.GetType().Name:
+                cid = child.ObjectId  # benzersiz contact ID
+                name = child.Name
+
+                # APDL metnini doldur
+                apdl_text = apdl_template.format(name=name, cid=cid)
+
+                # Command Snippet ekle
+                cs = child.AddCommandSnippet()
+                cs.Name = f"AutoSnippet_{name}"
+                cs.AppendText(apdl_text)
+
+                added_count += 1
+        except Exception as e_child:
+            mechanical._log.info(f"Atlandı: {getattr(child,'Name','<no name>')} ({e_child})")
+
+    ExtAPI.DataModel.Tree.Refresh()
+    UI.DisplayMessageBox(f"{added_count} adet Contact Region'a Command Snippet eklendi.")
+
+except Exception as e:
+    UI.DisplayMessageBox(f"Hata: {e}")
